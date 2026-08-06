@@ -1,0 +1,32 @@
+[package]
+name = "sccache-bench"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.91.0"
+license = "Apache-2.0"
+publish = false
+description = "Benchmark harness for sccache against a CMake + Ninja MSVC build."
+
+[[bin]]
+name = "sccache-bench"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1.0"
+clap = { version = "4.5.13", features = ["derive"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = ">=1.0, <1.0.147" # matches the root crate's MSRV pin
+tracing = "0.1"
+# `non_blocking` hands writes to a dedicated worker thread, so logging cannot
+# perturb the timings this harness exists to measure.
+tracing-appender = "0.2"
+tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
+
+[target.'cfg(windows)'.dependencies.windows-sys]
+version = "0.52"
+# GetVolumeInformationW. `fsutil fsinfo volumeinfo` needs elevation, and a check
+# that silently degrades to "unknown" when unelevated is worse than no check.
+features = ["Win32_Foundation", "Win32_Storage_FileSystem"]
+
+[lints]
+workspace = true
