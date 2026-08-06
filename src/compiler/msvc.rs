@@ -1,4 +1,5 @@
 // Copyright 2016 Mozilla Foundation
+// SPDX-FileCopyrightText: Copyright natyamatsya and sccache contributors
 // SPDX-License-Identifier: Apache-2.0
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -75,7 +76,7 @@ impl CCompilerImpl for Msvc {
         env_vars: &[(OsString, OsString)],
         may_dist: bool,
         rewrite_includes_only: bool,
-        _preprocessor_cache_mode: bool,
+        preprocessor_cache_mode: bool,
     ) -> Result<process::Output>
     where
         T: CommandCreatorSync,
@@ -90,6 +91,7 @@ impl CCompilerImpl for Msvc {
             &self.includes_prefix,
             rewrite_includes_only,
             self.is_clang,
+            preprocessor_cache_mode,
         )
         .await
     }
@@ -943,6 +945,7 @@ pub fn preprocess_cmd<T>(
     may_dist: bool,
     rewrite_includes_only: bool,
     is_clang: bool,
+    preprocessor_cache_mode: bool,
 ) where
     T: RunCommand,
 {
@@ -950,9 +953,16 @@ pub fn preprocess_cmd<T>(
     // reporting and to not cause spurious compilation failure (e.g. no exceptions build
     // fails due to exceptions transitively included in the stdlib).
     // With -fprofile-generate line number information is important, so use -E.
+    //
+    // Preprocessor cache mode also needs -E. It reconstructs the include list by
+    // scanning the preprocessed output for linemarkers, and -EP emits none, so under
+    // -EP the include list is always empty, the cache entry is never stored, and the
+    // mode can never hit -- it just silently costs a preprocessor run per compile.
+    // This mirrors the gcc backend, which drops -P for the same reason.
+    //
     // Otherwise, use -EP to maximize cache hits (because no absolute file paths are
     // emitted) and improve performance.
-    if may_dist || parsed_args.profile_generate {
+    if may_dist || parsed_args.profile_generate || preprocessor_cache_mode {
         cmd.arg("-E");
     } else {
         cmd.arg("-EP");
@@ -1003,6 +1013,7 @@ pub async fn preprocess<T>(
     includes_prefix: &str,
     rewrite_includes_only: bool,
     is_clang: bool,
+    preprocessor_cache_mode: bool,
 ) -> Result<process::Output>
 where
     T: CommandCreatorSync,
@@ -1016,6 +1027,7 @@ where
         may_dist,
         rewrite_includes_only,
         is_clang,
+        preprocessor_cache_mode,
     );
 
     if log_enabled!(Debug) {
@@ -2815,9 +2827,75 @@ mod test {
             child: None,
             args: vec![],
         };
-        preprocess_cmd(&mut cmd, &parsed_args, Path::new(""), &[], true, true, true);
+        preprocess_cmd(
+            &mut cmd,
+            &parsed_args,
+            Path::new(""),
+            &[],
+            true,
+            true,
+            true,
+            false,
+        );
         let expected_args = ovec!["-E", "-nologo", "-clang:-frewrite-includes", "--", "foo.c"];
         assert_eq!(cmd.args, expected_args);
+    }
+
+    /// Preprocessor cache mode reconstructs the include list from linemarkers in the
+    /// preprocessed output, and `-EP` emits none. Passing `-EP` there leaves the
+    /// include list empty, so the entry is never stored and the mode can never hit.
+    #[test]
+    fn test_preprocess_cmd_uses_dash_e_for_preprocessor_cache_mode() {
+        fn preprocessor_flag(preprocessor_cache_mode: bool) -> OsString {
+            let mut cmd = MockCommand {
+                child: None,
+                args: vec![],
+            };
+            let parsed_args = ParsedArguments {
+                input: "foo.c".into(),
+                double_dash_input: false,
+                language: Language::C,
+                compilation_flag: "-c".into(),
+                depfile: None,
+                outputs: vec![(
+                    "obj",
+                    ArtifactDescriptor {
+                        path: "foo.obj".into(),
+                        optional: false,
+                    },
+                )]
+                .into_iter()
+                .collect(),
+                dependency_args: vec![],
+                preprocessor_args: vec![],
+                common_args: vec![],
+                arch_args: vec![],
+                unhashed_args: vec![],
+                extra_dist_files: vec![],
+                extra_hash_files: vec![],
+                msvc_show_includes: false,
+                profile_generate: false,
+                color_mode: ColorMode::Auto,
+                suppress_rewrite_includes_only: false,
+                too_hard_for_preprocessor_cache_mode: None,
+            };
+            preprocess_cmd(
+                &mut cmd,
+                &parsed_args,
+                Path::new(""),
+                &[],
+                false, // may_dist
+                false, // rewrite_includes_only
+                false, // is_clang
+                preprocessor_cache_mode,
+            );
+            cmd.args[0].clone()
+        }
+
+        assert_eq!(preprocessor_flag(true), OsString::from("-E"));
+        // Without the mode, keep -EP: it emits no absolute paths, which keeps the
+        // object cache key independent of the build directory.
+        assert_eq!(preprocessor_flag(false), OsString::from("-EP"));
     }
 
     #[test]
