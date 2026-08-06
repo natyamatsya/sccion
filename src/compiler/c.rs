@@ -755,8 +755,10 @@ fn process_preprocessed_file(
         && ((slice[1] == b' ' && slice[2] >= b'0' && slice[2] <= b'9')
             // GCC precompiled header:
             || slice[1..].starts_with(PRAGMA_GCC_PCH_PREPROCESS)
-            // HP/AIX:
-            || (&slice[1..5] == b"line "))
+            // HP/AIX/MSVC:
+            // Note the range must cover the trailing space, or this compares a
+            // 4-byte slice against a 5-byte literal and is never equal.
+            || (&slice[1..6] == b"line "))
         && (start == 0 || bytes[start - 1] == b'\n')
         {
             match process_preprocessor_line(
@@ -1918,6 +1920,61 @@ mod test {
         assert_eq!(&bytes, &original_bytes);
         assert!(success);
         assert_eq!(include_files.len(), 0);
+    }
+
+    /// `#line N "file"` linemarkers must be recognised. This is the form MSVC emits
+    /// under `-E` (and HP/AIX compilers under any setting), and the detection was
+    /// comparing a 4-byte slice against the 5-byte literal `b"line "`, so it never
+    /// matched. The visible effect was an always-empty include list, which meant the
+    /// preprocessor cache entry was never stored and direct mode could never hit.
+    #[test]
+    fn test_process_preprocessed_file_detects_line_directives() {
+        let tempdir = tempfile::Builder::new()
+            .prefix("sccache_line_directive")
+            .tempdir()
+            .unwrap();
+        let header = tempdir.path().join("hdr.h");
+        std::fs::write(&header, b"#define VALUE 0\n").unwrap();
+        let input_file = tempdir.path().join("t.c");
+        std::fs::write(
+            &input_file,
+            b"#include \"hdr.h\"\nint main(void){return VALUE;}\n",
+        )
+        .unwrap();
+
+        // MSVC `-E` output shape. Backslashes are escaped in the emitted path.
+        let mut bytes = format!(
+            "#line 1 \"{path}\"\n\n#line 2 \"t.c\"\nint main(void){{ return 0; }}\n",
+            path = header.display().to_string().replace('\\', "\\\\")
+        )
+        .into_bytes();
+
+        let mut include_files = HashMap::new();
+        let config = PreprocessorCacheModeConfig {
+            use_preprocessor_cache_mode: true,
+            skip_system_headers: true,
+            ..Default::default()
+        };
+        let success = process_preprocessed_file(
+            &input_file,
+            tempdir.path(),
+            &mut bytes,
+            &mut include_files,
+            config,
+            // Well after the files were written, so `include_is_too_new` can't
+            // suppress them and make this test pass for the wrong reason.
+            std::time::SystemTime::now() + std::time::Duration::from_secs(600),
+            StandardFsAbstraction,
+        )
+        .unwrap();
+
+        assert!(success);
+        assert_eq!(
+            include_files.len(),
+            1,
+            "expected the #line header to be recorded, got {include_files:?}"
+        );
+        assert!(include_files.contains_key(&header));
     }
 
     /// A filesystem interface that only panics to test that we don't access it.
