@@ -36,7 +36,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     config::PreprocessorCacheModeConfig,
-    util::{Digest, HashToDigest, MetadataCtimeExt, Timestamp, encode_path, strip_basedirs},
+    util::{
+        Digest, HashToDigest, MetadataCtimeExt, TimeMacroFinder, Timestamp, encode_path,
+        strip_basedirs,
+    },
 };
 
 use super::Language;
@@ -176,14 +179,16 @@ impl PreprocessorCacheEntry {
 
     /// Returns the digest of the first result whose expected included files
     /// are already on disk and have not changed.
-    pub fn lookup_result_digest(
+    pub async fn lookup_result_digest(
         &mut self,
         config: PreprocessorCacheModeConfig,
         updated: &mut bool,
+        pool: &tokio::runtime::Handle,
     ) -> Option<String> {
         // Check newest result first since it's more likely to match.
         for (digest, includes) in self.results.iter_mut().rev() {
-            let result_matches = Self::result_matches(digest, includes, config, updated);
+            let result_matches =
+                Self::result_matches(digest, includes, config, updated, pool).await;
             if result_matches {
                 return Some(digest.clone());
             }
@@ -192,13 +197,27 @@ impl PreprocessorCacheEntry {
     }
 
     /// A result matches if all of its include files exist on disk and have not changed.
-    fn result_matches(
+    ///
+    /// Done in two passes. The first is sequential and cheap -- a `stat` per
+    /// include, which rejects the common "file changed size" case without reading
+    /// a byte of content, and applies the mtime/ctime shortcut. Only includes that
+    /// still need their contents compared reach the second pass, which reads and
+    /// hashes them concurrently.
+    ///
+    /// The split matters because the cost here is dominated by `open()` latency
+    /// through the filesystem filter stack rather than by hashing throughput, so
+    /// overlapping the opens is where the time goes. It also preserves the cheap
+    /// short-circuit: a mismatch found by `stat` still costs nothing.
+    async fn result_matches(
         digest: &str,
         includes: &mut [IncludeEntry],
         config: PreprocessorCacheModeConfig,
         updated: &mut bool,
+        pool: &tokio::runtime::Handle,
     ) -> bool {
-        for include in includes {
+        let mut needs_contents = Vec::new();
+
+        for (index, include) in includes.iter().enumerate() {
             let path = Path::new(include.path.as_os_str());
             let meta = match std::fs::symlink_metadata(path) {
                 Ok(meta) => {
@@ -242,52 +261,52 @@ impl PreprocessorCacheEntry {
                 }
             }
 
-            let file = match std::fs::File::open(path) {
-                Ok(file) => file,
-                Err(e) => {
-                    debug!(
-                        "{} is in a preprocessor cache entry but can't be opened ({})",
-                        path.display(),
-                        e
-                    );
-                    return false;
-                }
+            needs_contents.push(index);
+        }
+
+        // Everything was settled by `stat`. With `file_stat_matches` enabled this
+        // is the common case, and no file is opened at all.
+        if needs_contents.is_empty() {
+            return true;
+        }
+
+        let digested = digest_files_concurrently(
+            needs_contents
+                .iter()
+                .map(|&index| PathBuf::from(includes[index].path.clone())),
+            config.ignore_time_macros,
+            pool,
+        )
+        .await;
+
+        // Fold sequentially, in the original order, so the outcome does not depend
+        // on which file happened to finish first.
+        for (index, outcome) in needs_contents.into_iter().zip(digested) {
+            let include = &mut includes[index];
+            let path = PathBuf::from(include.path.clone());
+            let path = path.as_path();
+
+            let Some(contents) = outcome else {
+                return false;
             };
 
-            if config.ignore_time_macros {
-                match Digest::reader_sync(file) {
-                    Ok(new_digest) => {
-                        if include.digest != new_digest {
-                            return false;
-                        }
-                        // Matched: go on to the next include. Returning here would
-                        // decide the whole entry on its first file.
-                    }
-                    Err(e) => {
-                        debug!(
-                            "{} is in a preprocessor cache entry but can't be read ({})",
-                            path.display(),
-                            e
-                        );
+            let finder = match contents {
+                FileContents::Plain(new_digest) => {
+                    if include.digest != new_digest {
                         return false;
                     }
+                    // Matched: go on to the next include. Returning here would
+                    // decide the whole entry on its first file.
+                    continue;
                 }
-            } else {
-                let (new_digest, finder): (String, _) = match Digest::reader_sync_time_macros(file)
-                {
-                    Ok((new_digest, finder)) => (new_digest, finder),
-                    Err(e) => {
-                        debug!(
-                            "{} is in a preprocessor cache entry but can't be read ({})",
-                            path.display(),
-                            e
-                        );
+                FileContents::WithTimeMacros(new_digest, finder) => {
+                    if !finder.found_time_macros() && include.digest != new_digest {
                         return false;
                     }
-                };
-                if !finder.found_time_macros() && include.digest != new_digest {
-                    return false;
+                    finder
                 }
+            };
+            {
                 if finder.found_time() {
                     // We don't know for sure that the program actually uses the __TIME__ macro,
                     // but we have to assume it anyway and hash the time stamp. However, that's
@@ -356,6 +375,88 @@ impl PreprocessorCacheEntry {
             }
         }
         true
+    }
+}
+
+/// How many include files are read and hashed at once.
+///
+/// Sized to overlap `open()` latency, not to saturate cores: hashing a
+/// kilobyte-sized header is microseconds while opening it traverses the whole
+/// filesystem filter stack. It is deliberately a per-call bound rather than a
+/// process-wide one -- the daemon may be serving dozens of translation units
+/// concurrently, and a shared permit pool would couple them and introduce a
+/// deadlock surface for a benefit that is unproven until measured.
+const DIGEST_FANOUT: usize = 16;
+
+/// What reading an include file produced.
+enum FileContents {
+    /// Digest only, when time macros are being ignored.
+    Plain(String),
+    /// Digest plus what the time-macro scan found along the way.
+    WithTimeMacros(String, TimeMacroFinder),
+}
+
+/// Read and hash `paths` concurrently, preserving input order in the result.
+///
+/// `None` in place of a result means the file could not be read; the caller
+/// decides what that means. Order is preserved so callers can fold the outcomes
+/// deterministically regardless of which file finished first.
+async fn digest_files_concurrently(
+    paths: impl IntoIterator<Item = PathBuf>,
+    ignore_time_macros: bool,
+    pool: &tokio::runtime::Handle,
+) -> Vec<Option<FileContents>> {
+    let paths: Vec<PathBuf> = paths.into_iter().collect();
+    let mut out = Vec::with_capacity(paths.len());
+
+    for chunk in paths.chunks(DIGEST_FANOUT) {
+        let batch = chunk.iter().map(|path| {
+            let path = path.clone();
+            pool.spawn_blocking(move || digest_one_file(&path, ignore_time_macros))
+        });
+        // `join_all` rather than `try_join_all`: one unreadable include is a
+        // normal outcome that means "no match", not an error to propagate, and
+        // aborting the batch would leave the rest of the work half done.
+        for joined in futures::future::join_all(batch).await {
+            out.push(joined.unwrap_or(None));
+        }
+    }
+
+    out
+}
+
+fn digest_one_file(path: &Path, ignore_time_macros: bool) -> Option<FileContents> {
+    let file = match std::fs::File::open(path) {
+        Ok(file) => file,
+        Err(e) => {
+            debug!(
+                "{} is in a preprocessor cache entry but can't be opened ({})",
+                path.display(),
+                e
+            );
+            return None;
+        }
+    };
+
+    let read_failed = |e| {
+        debug!(
+            "{} is in a preprocessor cache entry but can't be read ({})",
+            path.display(),
+            e
+        );
+        None
+    };
+
+    if ignore_time_macros {
+        match Digest::reader_sync(file) {
+            Ok(digest) => Some(FileContents::Plain(digest)),
+            Err(e) => read_failed(e),
+        }
+    } else {
+        match Digest::reader_sync_time_macros(file) {
+            Ok((digest, finder)) => Some(FileContents::WithTimeMacros(digest, finder)),
+            Err(e) => read_failed(e),
+        }
     }
 }
 
@@ -825,12 +926,23 @@ mod test {
             ..Default::default()
         };
 
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
         // The unchanged header is deliberately first: with the old code its match
         // decided the whole entry.
         let mut includes = vec![entry_for(&unchanged), entry_for(&changed)];
         let mut updated = false;
         assert!(
-            PreprocessorCacheEntry::result_matches("digest", &mut includes, config, &mut updated),
+            runtime.block_on(PreprocessorCacheEntry::result_matches(
+                "digest",
+                &mut includes,
+                config,
+                &mut updated,
+                runtime.handle(),
+            )),
             "nothing has changed yet, so the entry should match"
         );
 
@@ -844,7 +956,13 @@ mod test {
         .unwrap();
         let mut updated = false;
         assert!(
-            !PreprocessorCacheEntry::result_matches("digest", &mut includes, config, &mut updated),
+            !runtime.block_on(PreprocessorCacheEntry::result_matches(
+                "digest",
+                &mut includes,
+                config,
+                &mut updated,
+                runtime.handle(),
+            )),
             "a change to any include must be detected, not just the first"
         );
     }

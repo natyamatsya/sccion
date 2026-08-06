@@ -484,7 +484,8 @@ where
                 let mut preprocessor_cache_entry = PreprocessorCacheEntry::read(&buf)?;
                 let mut updated = false;
                 let hit = preprocessor_cache_entry
-                    .lookup_result_digest(preprocessor_cache_mode_config, &mut updated);
+                    .lookup_result_digest(preprocessor_cache_mode_config, &mut updated, pool)
+                    .await;
 
                 let mut update_failed = false;
                 if updated {
