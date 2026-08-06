@@ -151,7 +151,8 @@ fn summarize(name: &str, mut runs: Vec<ScenarioResult>) -> ScenarioResult {
     });
     if inconsistent {
         last.notes.push(
-            "cache counters differed between repetitions; the reported ones are from the              last run and this scenario is not reproducible as written"
+            "cache counters differed between repetitions; the reported ones are from \
+             the last run, and this scenario is not reproducible as written"
                 .to_string(),
         );
     }
@@ -170,6 +171,35 @@ fn summarize(name: &str, mut runs: Vec<ScenarioResult>) -> ScenarioResult {
     last.repetitions = times.len();
     last.timed_out = last.timed_out || runs.iter().any(|r| r.timed_out);
     last
+}
+
+/// Produce repetition `rep`'s version of a touched file.
+///
+/// Prefers rewriting the generated project's revision macro, whose value reaches
+/// the preprocessed output of every translation unit. Falls back to appending a
+/// comment for a user-supplied file, where nothing can be assumed about the
+/// contents -- see the note emitted when a touch fails to invalidate anything.
+fn touch_edit(original: &[u8], rep: usize) -> Vec<u8> {
+    const MACRO: &str = "#define BENCH_HOT_REVISION ";
+    if let Ok(text) = std::str::from_utf8(original)
+        && let Some(start) = text.find(MACRO)
+    {
+        let rest = &text[start + MACRO.len()..];
+        let end = rest.find('\n').unwrap_or(rest.len());
+        return format!("{}{}{}{}", &text[..start], MACRO, rep + 1, &rest[end..]).into_bytes();
+    }
+    let mut out = original.to_vec();
+    out.extend_from_slice(
+        format!(
+            "
+// bench touch {} {}
+",
+            now_unix(),
+            rep
+        )
+        .as_bytes(),
+    );
+    out
 }
 
 fn round3(v: f64) -> f64 {
@@ -548,21 +578,14 @@ fn main() -> Result<()> {
                     );
                     info!(scenario = "touch", rep, "starting");
 
-                    // A distinct edit per repetition. Repeating the same one would
-                    // hit the entries the previous repetition just wrote, measuring
-                    // a warm rebuild instead of an invalidated one.
-                    let mut modified = original.clone();
-                    modified.extend_from_slice(
-                        format!(
-                            "
-// bench touch {} {}
-",
-                            now_unix(),
-                            rep
-                        )
-                        .as_bytes(),
-                    );
-                    fs::write(f, &modified)?;
+                    // The edit has to reach the *preprocessed* output, not just the
+                    // source. Appending a comment does not: comments are stripped, and
+                    // for MSVC only the resulting line count survives -- identical
+                    // across repetitions, so every repetition after the first would hit
+                    // the entries the first one wrote and quietly measure a warm
+                    // rebuild. Rewriting a macro the code actually uses changes the
+                    // output for real, on every compiler.
+                    fs::write(f, touch_edit(&original, rep))?;
 
                     configure(
                         &cmake,
@@ -588,7 +611,14 @@ fn main() -> Result<()> {
             // Restore whatever happened, so a failure here cannot leave the tree edited.
             fs::write(f, &original)?;
             outcome?;
-            scenarios.push(summarize("touch", touch_runs));
+            let mut touch = summarize("touch", touch_runs);
+            if touch.stats.cache_misses == 0 {
+                touch.notes.push(
+                    "the touched file produced no cache misses, so this scenario measured a                      warm rebuild rather than an invalidated one"
+                        .to_string(),
+                );
+            }
+            scenarios.push(touch);
         }
         _ => eprintln!(
             "
