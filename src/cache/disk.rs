@@ -1,4 +1,5 @@
 // Copyright 2016 Mozilla Foundation
+// SPDX-FileCopyrightText: Copyright natyamatsya and sccache contributors
 // SPDX-License-Identifier: Apache-2.0
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -86,7 +87,12 @@ impl Storage for DiskCache {
 
         self.pool
             .spawn_blocking(move || {
-                let io = match lru.lock().unwrap().get_or_init()?.get(&path) {
+                let io = match lru
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .get_or_init()?
+                    .get(&path)
+                {
                     Ok(f) => f,
                     Err(LruError::FileNotInCache) => {
                         trace!("DiskCache::get({}): FileNotInCache", key);
@@ -111,8 +117,13 @@ impl Storage for DiskCache {
         let key = key.to_owned();
 
         self.pool
-            .spawn_blocking(
-                move || match lru.lock().unwrap().get_or_init()?.get(&path) {
+            .spawn_blocking(move || {
+                match lru
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .get_or_init()?
+                    .get(&path)
+                {
                     Ok(mut io) => {
                         let mut data = Vec::new();
                         io.read_to_end(&mut data)?;
@@ -128,8 +139,8 @@ impl Storage for DiskCache {
                         Err(e.into())
                     }
                     Err(_) => unreachable!(),
-                },
-            )
+                }
+            })
             .await?
     }
 
@@ -140,7 +151,7 @@ impl Storage for DiskCache {
             .spawn_blocking(move || {
                 match lru
                     .lock()
-                    .unwrap()
+                    .unwrap_or_else(|e| e.into_inner())
                     .get_or_init()
                     .ok()
                     .and_then(|c| c.get_abs_path(&rel_path))
@@ -175,11 +186,15 @@ impl Storage for DiskCache {
                 let start = Instant::now();
                 let mut f = lru
                     .lock()
-                    .unwrap()
+                    .unwrap_or_else(|e| e.into_inner())
                     .get_or_init()?
                     .prepare_add(key, data.len() as u64)?;
                 f.as_file_mut().write_all(&data)?;
-                lru.lock().unwrap().get().unwrap().commit(f)?;
+                lru.lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .get()
+                    .unwrap()
+                    .commit(f)?;
                 Ok(start.elapsed())
             })
             .await?
@@ -190,7 +205,10 @@ impl Storage for DiskCache {
     }
 
     fn location(&self) -> String {
-        format!("Local disk: {:?}", self.lru.lock().unwrap().path())
+        format!(
+            "Local disk: {:?}",
+            self.lru.lock().unwrap_or_else(|e| e.into_inner()).path()
+        )
     }
 
     fn cache_type_name(&self) -> &'static str {
@@ -198,10 +216,20 @@ impl Storage for DiskCache {
     }
 
     async fn current_size(&self) -> Result<Option<u64>> {
-        Ok(self.lru.lock().unwrap().get().map(|l| l.size()))
+        Ok(self
+            .lru
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get()
+            .map(|l| l.size()))
     }
     async fn max_size(&self) -> Result<Option<u64>> {
-        Ok(Some(self.lru.lock().unwrap().capacity()))
+        Ok(Some(
+            self.lru
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .capacity(),
+        ))
     }
     fn preprocessor_cache_mode_config(&self) -> PreprocessorCacheModeConfig {
         self.preprocessor_cache_mode_config
@@ -214,7 +242,7 @@ impl Storage for DiskCache {
         Ok(self
             .preprocessor_cache
             .lock()
-            .unwrap()
+            .unwrap_or_else(|e| e.into_inner())
             .get_or_init()?
             .get(key)
             .ok())
@@ -232,14 +260,14 @@ impl Storage for DiskCache {
         let mut f = self
             .preprocessor_cache
             .lock()
-            .unwrap()
+            .unwrap_or_else(|e| e.into_inner())
             .get_or_init()?
             .prepare_add(key, 0)?;
         preprocessor_cache_entry.serialize_to(BufWriter::new(f.as_file_mut()))?;
         Ok(self
             .preprocessor_cache
             .lock()
-            .unwrap()
+            .unwrap_or_else(|e| e.into_inner())
             .get()
             .unwrap()
             .commit(f)?)

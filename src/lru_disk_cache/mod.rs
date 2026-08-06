@@ -1,3 +1,4 @@
+// SPDX-FileCopyrightText: Copyright natyamatsya and sccache contributors
 // SPDX-License-Identifier: Apache-2.0
 
 pub mod lru_cache;
@@ -222,10 +223,17 @@ impl LruDiskCache {
         }
         //TODO: ideally LRUCache::insert would give us back the entries it had to remove.
         while self.size() + size > self.capacity() {
-            let (rel_path, _) = self.lru.remove_lru().expect("Unexpectedly empty cache!");
+            // Nothing left to evict, yet we still don't fit. Reachable when `pending_size`
+            // alone exceeds the capacity, i.e. enough concurrent `prepare_add`s are in
+            // flight. Refuse the insertion rather than panicking: this runs inside
+            // `spawn_blocking` while holding the cache mutex, so a panic here poisons that
+            // mutex and every subsequent cache operation panics with it.
+            let Some((rel_path, _)) = self.lru.remove_lru() else {
+                return Err(Error::FileTooLarge);
+            };
             let remove_path = self.rel_to_abs_path(rel_path);
-            //TODO: check that files are removable during `init`, so that this is only
-            // due to outside interference.
+            // The entry is already out of the LRU, so `self.size()` has dropped and the
+            // loop makes progress whether or not the unlink below succeeds.
             fs::remove_file(&remove_path).unwrap_or_else(|e| {
                 // Sometimes the file has already been removed
                 // this seems to happen when the max cache size has been reached
@@ -236,12 +244,17 @@ impl LruDiskCache {
                         remove_path
                     );
                 } else {
-                    panic!(
+                    // Routine on Windows, where AV, the search indexer or a concurrent
+                    // reader can hold a handle open (ERROR_SHARING_VIOLATION). We have
+                    // already stopped accounting for the file; it will be picked up again
+                    // by `init` on the next start, so the cache may transiently exceed
+                    // `max_size` on disk. That is strictly better than a dead server.
+                    warn!(
                         "Error removing file from cache: `{:?}`: {}, {:?}",
                         remove_path,
                         e,
                         e.kind()
-                    )
+                    );
                 }
             });
         }
@@ -285,8 +298,16 @@ impl LruDiskCache {
                     rel_path.to_string_lossy(),
                     e
                 );
-                fs::remove_file(self.rel_to_abs_path(rel_path))
-                    .expect("Failed to remove file we just created!");
+                // Best-effort cleanup of the file we just wrote. Failing to unlink it must
+                // not panic: we are already on an error path, and this runs under the cache
+                // mutex where a panic would poison it for every later operation.
+                fs::remove_file(self.rel_to_abs_path(rel_path)).unwrap_or_else(|e| {
+                    warn!(
+                        "Failed to remove file `{}` after a failed insert: {}",
+                        rel_path.to_string_lossy(),
+                        e
+                    );
+                });
                 e
             })
     }
@@ -615,6 +636,69 @@ mod tests {
             Err(Error::FileTooLarge) => {}
             x => panic!("Unexpected result: {:?}", x),
         }
+    }
+
+    /// `make_space` used to `expect("Unexpectedly empty cache!")` when there was
+    /// nothing left to evict. That is reachable purely through reserved-but-uncommitted
+    /// entries, and because it runs under the cache mutex inside `spawn_blocking`, the
+    /// panic poisoned the mutex and killed every later cache operation.
+    #[test]
+    fn test_make_space_with_nothing_to_evict_is_an_error_not_a_panic() {
+        let f = TestFixture::new();
+        let mut c = LruDiskCache::new(f.tmp(), 10).unwrap();
+
+        // Reserve the whole capacity without committing, so the LRU stays empty
+        // while `size()` reports full.
+        let _pending = c.prepare_add("a", 10).unwrap();
+        assert_eq!(c.size(), 10);
+        assert_eq!(c.lru.size(), 0);
+
+        match c.prepare_add("b", 10) {
+            Err(Error::FileTooLarge) => {}
+            Err(e) => panic!("Unexpected error: {:?}", e),
+            Ok(_) => panic!("Unexpectedly reserved beyond capacity"),
+        }
+    }
+
+    /// An eviction whose unlink fails must not panic. On Windows this is routine:
+    /// AV, the search indexer or a concurrent reader can hold a handle that blocks
+    /// deletion (ERROR_SHARING_VIOLATION).
+    #[cfg(windows)]
+    #[test]
+    fn test_eviction_survives_undeletable_file() {
+        use std::os::windows::fs::OpenOptionsExt;
+
+        let f = TestFixture::new();
+        let p1 = f.create_file("file1", 10);
+        let p2 = f.create_file("file2", 10);
+        let p3 = f.create_file("file3", 10);
+        let cache_dir = f.tmp().join("cache");
+        let mut c = LruDiskCache::new(&cache_dir, 20).unwrap();
+        c.insert_file("file1", &p1).unwrap();
+        c.insert_file("file2", &p2).unwrap();
+
+        // "file1" is least-recently-used, so inserting a third file evicts it.
+        // Deny sharing on it so the unlink inside `make_space` fails.
+        let blocked = cache_dir.join("file1");
+        let _handle = std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(0)
+            .open(&blocked)
+            .unwrap();
+        assert!(
+            fs::remove_file(&blocked).is_err(),
+            "expected the handle to block deletion"
+        );
+
+        // Must succeed rather than panic.
+        c.insert_file("file3", &p3).unwrap();
+
+        // The entry is dropped from the accounting even though the file survives on
+        // disk; `init` re-registers it on the next start.
+        assert!(!c.contains_key("file1"));
+        assert!(c.contains_key("file2"));
+        assert!(c.contains_key("file3"));
+        assert!(blocked.exists());
     }
 
     #[test]
