@@ -724,7 +724,6 @@ fn process_preprocessed_file(
     let mut start = 0;
     let mut hash_start = 0;
     let total_len = bytes.len();
-    let mut digest = Digest::new();
     let mut normalized_include_paths: HashMap<Vec<u8>, Option<Vec<u8>>> = HashMap::new();
     // There must be at least 7 characters (# 1 "x") left to potentially find an
     // include file path.
@@ -770,7 +769,6 @@ fn process_preprocessed_file(
                 bytes,
                 start,
                 hash_start,
-                &mut digest,
                 total_len,
                 &mut normalized_include_paths,
                 &fs_impl,
@@ -806,7 +804,6 @@ fn process_preprocessed_file(
             // __________Using distcc-pump from /usr/bin
             // __________Using # distcc servers in pump mode
             // __________Shutting down distcc-pump include server
-            digest.update(&bytes[hash_start..start]);
             while start < total_len && slice[0] != b'\n' {
                 start += 1;
                 if start < total_len {
@@ -823,8 +820,6 @@ fn process_preprocessed_file(
             start += 1;
         }
     }
-    digest.update(&bytes[hash_start..]);
-
     Ok(true)
 }
 
@@ -843,7 +838,6 @@ fn process_preprocessor_line(
     bytes: &mut [u8],
     mut start: usize,
     mut hash_start: usize,
-    digest: &mut Digest,
     total_len: usize,
     normalized_include_paths: &mut HashMap<Vec<u8>, Option<Vec<u8>>>,
     fs_impl: &impl PreprocessorFSAbstraction,
@@ -854,7 +848,6 @@ fn process_preprocessor_line(
         if slice.starts_with(HASH_31_COMMAND_LINE_NEWLINE) {
             // Bogus extra line with #31, after the regular #1:
             // Ignore the whole line, and continue parsing.
-            digest.update(&bytes[hash_start..start]);
             while start < hash_start && slice[0] != b'\n' {
                 start += 1;
             }
@@ -864,7 +857,6 @@ fn process_preprocessor_line(
         } else if slice.starts_with(HASH_32_COMMAND_LINE_2_NEWLINE) {
             // Bogus wrong line with #32, instead of regular #1:
             // Replace the line number with the usual one.
-            digest.update(&bytes[hash_start..start]);
             start += 1;
             bytes[start..=start + 2].copy_from_slice(b"# 1");
             hash_start = start;
@@ -887,7 +879,6 @@ fn process_preprocessor_line(
         bail!("Failed to parse included file path");
     }
     // `start` points to the beginning of an include file path
-    digest.update(&bytes[hash_start..start]);
     hash_start = start;
     slice = &bytes[start..];
     while start < total_len && slice[0] != b'"' {
@@ -946,7 +937,6 @@ fn process_preprocessor_line(
         input_file,
         cwd,
         included_files,
-        digest,
         system,
         config,
         time_of_compilation,
@@ -1043,7 +1033,6 @@ fn remember_include_file(
     input_file: &Path,
     cwd: &Path,
     included_files: &mut HashMap<PathBuf, String>,
-    digest: &mut Digest,
     system: bool,
     config: PreprocessorCacheModeConfig,
     time_of_compilation: std::time::SystemTime,
@@ -1052,17 +1041,14 @@ fn remember_include_file(
     // TODO if precompiled header.
     if path.len() >= 2 && path[0] == b'<' && path[path.len() - 1] == b'>' {
         // Typically <built-in> or <command-line>.
-        digest.update(path);
         return Ok(true);
     }
 
     if system && config.skip_system_headers {
-        // Don't remember this system header, only hash its path.
-        digest.update(path);
+        // Don't remember this system header.
         return Ok(true);
     }
 
-    let original_path = path;
     // Canonicalize path for comparison; Clang uses ./header.h.
     #[cfg(windows)]
     {
@@ -1079,9 +1065,6 @@ fn remember_include_file(
     let mut path = decode_path(path).context("failed to decode path")?;
     if path.is_relative() {
         path = cwd.join(path);
-    }
-    if path != cwd || config.hash_working_directory {
-        digest.update(original_path);
     }
 
     if included_files.contains_key(&path) {
@@ -2046,7 +2029,6 @@ mod test {
             &mut bytes,
             0,
             0,
-            &mut Digest::new(),
             total_len,
             &mut HashMap::new(),
             fs_impl,
