@@ -21,3 +21,6 @@ tests/**/Cargo.lock
 .direnv/
 result
 .vscode/settings.json
+
+# Benchmark harness output (see scripts/bench/README.md)
+scripts/bench/results/
