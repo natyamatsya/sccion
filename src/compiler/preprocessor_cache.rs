@@ -1,4 +1,5 @@
 // Copyright 2023 Mozilla Foundation
+// SPDX-FileCopyrightText: Copyright natyamatsya and sccache contributors
 // SPDX-License-Identifier: Apache-2.0
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -255,7 +256,13 @@ impl PreprocessorCacheEntry {
 
             if config.ignore_time_macros {
                 match Digest::reader_sync(file) {
-                    Ok(new_digest) => return include.digest == new_digest,
+                    Ok(new_digest) => {
+                        if include.digest != new_digest {
+                            return false;
+                        }
+                        // Matched: go on to the next include. Returning here would
+                        // decide the whole entry on its first file.
+                    }
                     Err(e) => {
                         debug!(
                             "{} is in a preprocessor cache entry but can't be read ({})",
@@ -771,6 +778,74 @@ mod test {
         assert_ne!(
             hash1_no_basedirs, hash2_no_basedirs,
             "Hashes should be different without basedirs for files in different directories"
+        );
+    }
+
+    /// `result_matches` used to `return` on its first include when
+    /// `ignore_time_macros` was set, so an entry was declared matching on the
+    /// strength of its first header alone. Any later header could change freely
+    /// and the entry would still be reported as a hit -- serving a stale object
+    /// file, which is the one failure mode a compiler cache must not have.
+    #[test]
+    fn test_result_matches_checks_every_include_with_ignore_time_macros() {
+        let dir = tempfile::Builder::new()
+            .prefix("sccache_result_matches")
+            .tempdir()
+            .unwrap();
+
+        let unchanged = dir.path().join("unchanged.h");
+        let changed = dir.path().join("changed.h");
+        std::fs::write(
+            &unchanged,
+            b"#define A 1
+",
+        )
+        .unwrap();
+        std::fs::write(
+            &changed,
+            b"#define B 1
+",
+        )
+        .unwrap();
+
+        let entry_for = |path: &std::path::Path| {
+            let contents = std::fs::read(path).unwrap();
+            IncludeEntry {
+                path: path.as_os_str().to_owned(),
+                digest: Digest::reader_sync(std::io::Cursor::new(&contents)).unwrap(),
+                file_size: contents.len() as u64,
+                mtime: None,
+                ctime: None,
+            }
+        };
+
+        let config = PreprocessorCacheModeConfig {
+            use_preprocessor_cache_mode: true,
+            ignore_time_macros: true,
+            ..Default::default()
+        };
+
+        // The unchanged header is deliberately first: with the old code its match
+        // decided the whole entry.
+        let mut includes = vec![entry_for(&unchanged), entry_for(&changed)];
+        let mut updated = false;
+        assert!(
+            PreprocessorCacheEntry::result_matches("digest", &mut includes, config, &mut updated),
+            "nothing has changed yet, so the entry should match"
+        );
+
+        // Same length, different contents, so the file_size shortcut cannot be
+        // what catches it -- only the digest of the second include can.
+        std::fs::write(
+            &changed,
+            b"#define B 2
+",
+        )
+        .unwrap();
+        let mut updated = false;
+        assert!(
+            !PreprocessorCacheEntry::result_matches("digest", &mut includes, config, &mut updated),
+            "a change to any include must be detected, not just the first"
         );
     }
 }
