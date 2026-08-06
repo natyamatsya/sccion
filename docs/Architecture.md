@@ -171,3 +171,27 @@ removed. It is currently mutually exclusive with:
 
 If either is in use, the setting is ignored and sccache stays in server-side
 mode.
+
+### Client-side mode and MSVC
+
+Client-side mode is also ignored for MSVC-family drivers (`cl.exe`,
+`clang-cl.exe`), where it is a pessimization rather than a win.
+
+The daemon caches compiler information — for MSVC, the `/showIncludes` prefix
+and the compiler version — in a map that lives for the life of the process. In
+client-side mode that map lives in the CLI process instead, and each CLI process
+handles exactly one translation unit, so the map starts empty every time.
+Repopulating it runs the compiler twice: once for `detect_c_compiler`'s probe and
+once for `detect_showincludes_prefix`. A client-side cache **hit** therefore costs
+three processes, against one for the server-side path.
+
+This is decided from the executable name, because determining it properly would
+mean running the compiler — the very cost being avoided. A misjudgement is
+harmless in both directions: a false positive just uses the faster server-side
+path, and a false negative leaves behaviour unchanged.
+
+The restriction is expected to be lifted once the daemon can answer compiler
+information over the wire, letting the client reconstitute the descriptor without
+spawning anything. Because the fallback happens once per translation unit, it is
+reported at `debug` level rather than on stderr; `sccache --check-env` surfaces it
+as a finding.

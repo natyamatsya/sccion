@@ -1,4 +1,5 @@
 // Copyright 2016 Mozilla Foundation
+// SPDX-FileCopyrightText: Copyright natyamatsya and sccache contributors
 // SPDX-License-Identifier: Apache-2.0
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -399,6 +400,29 @@ pub fn request_shutdown(mut conn: ServerConnection) -> Result<ServerInfo> {
     } else {
         bail!("Unexpected server response!")
     }
+}
+
+/// Whether `exe` looks like an MSVC-family compiler driver (`cl.exe` or `clang-cl.exe`).
+///
+/// Used only to steer away from client-side mode, which is a pessimization for these
+/// compilers: `SccacheService::new` starts with an empty compiler-info map, and in
+/// client-side mode that map lives in the short-lived client process rather than the
+/// daemon. Every invocation therefore re-runs detection, which for MSVC means two extra
+/// child processes -- `detect_c_compiler`'s probe and `detect_showincludes_prefix` -- so
+/// a client-side cache *hit* costs three processes against the daemon path's one.
+///
+/// This is a name heuristic, and deliberately so: real detection requires running the
+/// compiler, which is the cost we are trying to avoid. Both failure modes are benign --
+/// a false positive just uses the (faster) daemon path, a false negative preserves
+/// today's behaviour.
+fn is_msvc_like(exe: &Path) -> bool {
+    exe.file_stem()
+        .and_then(|s| s.to_str())
+        .map(|s| {
+            let s = s.to_ascii_lowercase();
+            s == "cl" || s == "clang-cl"
+        })
+        .unwrap_or(false)
 }
 
 /// Send a `Compile` request to the server, and return the server response if successful.
@@ -908,7 +932,23 @@ pub fn run_command(cmd: Command) -> Result<i32> {
 
             let jobserver = Client::new();
             let conn = connect_or_start_server(&get_addr(), startup_timeout)?;
-            if config.client_side_mode {
+
+            // Client-side mode is a pessimization for MSVC (see `is_msvc_like`), so fall
+            // back to the daemon path. Logged rather than printed: this runs once per
+            // translation unit, and under Ninja that would put thousands of lines into
+            // the build output. `sccache --check-env` reports it loudly instead.
+            let client_side_mode = if config.client_side_mode && is_msvc_like(exe.as_ref()) {
+                debug!(
+                    "ignoring client-side mode for MSVC-family compiler {:?}: it would spawn \
+                     compiler-detection processes on every invocation",
+                    exe
+                );
+                false
+            } else {
+                config.client_side_mode
+            };
+
+            if client_side_mode {
                 // Under make -jN each CLI process gets only 2 worker threads;
                 // one for preprocessing/compilation and one for IPC.  The
                 // blocking thread pool absorbs zstd/zip work.
@@ -1033,5 +1073,34 @@ mod test {
         .unwrap();
 
         assert_eq!(code, 1);
+    }
+
+    #[test]
+    fn test_is_msvc_like() {
+        for exe in [
+            "cl.exe",
+            "CL.EXE",
+            r"C:\Program Files\MSVC\bin\Hostx64\x64\cl.exe",
+            "clang-cl.exe",
+            "clang-cl",
+            "cl",
+        ] {
+            assert!(is_msvc_like(Path::new(exe)), "expected MSVC-like: {exe}");
+        }
+
+        // clang and clang++ go through the gcc-style path and detect cheaply, so they
+        // must not be caught by the heuristic.
+        for exe in [
+            "clang.exe",
+            "clang++.exe",
+            "gcc",
+            "g++",
+            "cc",
+            "rustc",
+            r"/usr/bin/clang",
+            "nvcc.exe",
+        ] {
+            assert!(!is_msvc_like(Path::new(exe)), "unexpected MSVC-like: {exe}");
+        }
     }
 }
