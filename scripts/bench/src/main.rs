@@ -82,6 +82,12 @@ struct Args {
     #[arg(long, default_value_t = 30)]
     stall: u64,
 
+    /// Run each scenario this many times and report the median with its spread.
+    /// Only wall clock needs repeating; the cache counters are deterministic and
+    /// are checked for agreement across repetitions instead.
+    #[arg(long, default_value_t = 1)]
+    repeat: usize,
+
     /// Write a detailed log here. Rendering and I/O happen on a dedicated
     /// thread, so this does not perturb the timings. Defaults to a file
     /// alongside the JSON result; pass "none" to disable.
@@ -105,12 +111,69 @@ struct Args {
 #[derive(Debug, Serialize)]
 struct ScenarioResult {
     name: String,
+    /// Median across repetitions. The median rather than the mean because a
+    /// benchmark's outliers are one-sided -- something else on the machine can
+    /// only ever make a run slower.
     wall_seconds: f64,
+    wall_seconds_min: f64,
+    wall_seconds_max: f64,
+    /// Every repetition, so a suspicious median can be inspected rather than
+    /// taken on trust.
+    wall_seconds_all: Vec<f64>,
+    repetitions: usize,
     timed_out: bool,
     longest_silence_seconds: f64,
     #[serde(flatten)]
     stats: ScenarioStats,
     notes: Vec<String>,
+}
+
+/// Combine repetitions of one scenario into a single result.
+///
+/// Counters should be identical across repetitions; if they are not, something
+/// is non-deterministic and that is worth saying out loud rather than papering
+/// over by reporting only the last one.
+fn summarize(name: &str, mut runs: Vec<ScenarioResult>) -> ScenarioResult {
+    let mut times: Vec<f64> = runs.iter().map(|r| r.wall_seconds).collect();
+    let all = times.clone();
+    times.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let median = if times.len() % 2 == 1 {
+        times[times.len() / 2]
+    } else {
+        (times[times.len() / 2 - 1] + times[times.len() / 2]) / 2.0
+    };
+
+    let mut last = runs.pop().expect("at least one repetition");
+    let inconsistent = runs.iter().any(|r| {
+        r.stats.cache_hits != last.stats.cache_hits
+            || r.stats.cache_misses != last.stats.cache_misses
+            || r.stats.preprocessor_cache_hits != last.stats.preprocessor_cache_hits
+    });
+    if inconsistent {
+        last.notes.push(
+            "cache counters differed between repetitions; the reported ones are from the              last run and this scenario is not reproducible as written"
+                .to_string(),
+        );
+    }
+
+    last.name = name.to_string();
+    last.wall_seconds = round3(median);
+    last.wall_seconds_min = round3(
+        *all.iter()
+            .fold(&f64::INFINITY, |a, b| if b < a { b } else { a }),
+    );
+    last.wall_seconds_max = round3(
+        *all.iter()
+            .fold(&f64::NEG_INFINITY, |a, b| if b > a { b } else { a }),
+    );
+    last.wall_seconds_all = all.iter().map(|v| round3(*v)).collect();
+    last.repetitions = times.len();
+    last.timed_out = last.timed_out || runs.iter().any(|r| r.timed_out);
+    last
+}
+
+fn round3(v: f64) -> f64 {
+    (v * 1000.0).round() / 1000.0
 }
 
 #[derive(Debug, Serialize)]
@@ -371,62 +434,86 @@ fn main() -> Result<()> {
         label: label.to_string(),
     };
 
+    let reps = args.repeat.max(1);
     let mut scenarios: Vec<ScenarioResult> = Vec::new();
+    let compiler_arg = compiler.display().to_string();
+    let mut embedded_debug_info = None;
 
-    // cold: nothing cached, nothing built
-    eprintln!("\n[cold] empty cache, empty build tree");
-    restart_server(&sccache, &environment, Some(&cache_dir))?;
-    configure(
-        &cmake,
-        &sccache,
-        &compiler.display().to_string(),
-        &project_dir,
-        &build_dir,
-        &environment,
-        &sv("cmake"),
-    )?;
-    let embedded_debug_info = has_embedded_debug_info(&build_dir)?;
-    if embedded_debug_info == Some(false) {
-        findings.push(
-            Level::Error,
-            "No /Z7 in compile_commands.json. MSVC writes a shared PDB and sccache refuses to \
-             cache at all, so this run would measure nothing.",
+    // cold and cached are paired inside one repetition: cold wipes the cache, so
+    // running all the colds first would leave nothing warm for cached to hit.
+    let mut cold_runs = Vec::new();
+    let mut cached_runs = Vec::new();
+    for rep in 0..reps {
+        let n = if reps > 1 {
+            format!(" [{}/{}]", rep + 1, reps)
+        } else {
+            String::new()
+        };
+
+        eprintln!(
+            "
+[cold]{n} empty cache, empty build tree"
         );
-        findings.report();
-        if !args.skip_checks {
-            bail!("configured build is not using embedded debug info");
-        }
-    }
-    scenarios.push(run_scenario(
-        "cold",
-        &sccache,
-        &ninja,
-        &build_dir,
-        jobs,
-        &environment,
-        &sv("cold"),
-    )?);
+        info!(scenario = "cold", rep, "starting");
+        restart_server(&sccache, &environment, Some(&cache_dir))?;
+        configure(
+            &cmake,
+            &sccache,
+            &compiler_arg,
+            &project_dir,
+            &build_dir,
+            &environment,
+            &sv("cmake"),
+        )?;
 
-    // cached: same sources, warm cache, fresh build tree
-    eprintln!("\n[cached] warm cache, empty build tree");
-    configure(
-        &cmake,
-        &sccache,
-        &compiler.display().to_string(),
-        &project_dir,
-        &build_dir,
-        &environment,
-        &sv("cmake"),
-    )?;
-    let mut cached = run_scenario(
-        "cached",
-        &sccache,
-        &ninja,
-        &build_dir,
-        jobs,
-        &environment,
-        &sv("cached"),
-    )?;
+        if embedded_debug_info.is_none() {
+            embedded_debug_info = has_embedded_debug_info(&build_dir)?;
+            if embedded_debug_info == Some(false) {
+                findings.push(
+                    Level::Error,
+                    "No /Z7 in compile_commands.json. MSVC writes a shared PDB and sccache                      refuses to cache at all, so this run would measure nothing.",
+                );
+                findings.report();
+                if !args.skip_checks {
+                    bail!("configured build is not using embedded debug info");
+                }
+            }
+        }
+
+        cold_runs.push(run_scenario(
+            "cold",
+            &sccache,
+            &ninja,
+            &build_dir,
+            jobs,
+            &environment,
+            &sv("cold"),
+        )?);
+
+        eprintln!("[cached]{n} warm cache, empty build tree");
+        info!(scenario = "cached", rep, "starting");
+        configure(
+            &cmake,
+            &sccache,
+            &compiler_arg,
+            &project_dir,
+            &build_dir,
+            &environment,
+            &sv("cmake"),
+        )?;
+        cached_runs.push(run_scenario(
+            "cached",
+            &sccache,
+            &ninja,
+            &build_dir,
+            jobs,
+            &environment,
+            &sv("cached"),
+        )?);
+    }
+
+    scenarios.push(summarize("cold", cold_runs));
+    let mut cached = summarize("cached", cached_runs);
 
     // The regression test for the MSVC direct-mode bug: the mode reports as enabled
     // but, before the -E and #line fixes, could never hit. Zero hits on a fully
@@ -435,47 +522,78 @@ fn main() -> Result<()> {
         && cached.stats.preprocessor_cache_hits == Some(0)
         && cached.stats.preprocessor_cache_misses.unwrap_or(0) > 0
     {
-        let msg = "Direct mode reports enabled but recorded 0 hits on a fully cached rebuild: \
-                   the preprocessor ran for every translation unit."
+        let msg = "Direct mode reports enabled but recorded 0 hits on a fully cached rebuild:                    the preprocessor ran for every translation unit."
             .to_string();
         findings.push(Level::Error, msg.clone());
         cached.notes.push(msg);
     }
     scenarios.push(cached);
 
-    // touch: invalidate one widely-included header
+    // touch: invalidate one widely-included header. The cache is warm from the loop
+    // above, which is what this scenario needs.
     match &touch_file {
         Some(f) if f.exists() => {
-            eprintln!("\n[touch] warm cache, one header edited");
             let original = fs::read(f)?;
-            let mut modified = original.clone();
-            modified.extend_from_slice(format!("\n// bench touch {}\n", now_unix()).as_bytes());
-            fs::write(f, &modified)?;
-            let outcome = (|| -> Result<ScenarioResult> {
-                configure(
-                    &cmake,
-                    &sccache,
-                    &compiler.display().to_string(),
-                    &project_dir,
-                    &build_dir,
-                    &environment,
-                    &sv("cmake"),
-                )?;
-                run_scenario(
-                    "touch",
-                    &sccache,
-                    &ninja,
-                    &build_dir,
-                    jobs,
-                    &environment,
-                    &sv("touch"),
-                )
+            let mut touch_runs = Vec::new();
+            let outcome = (|| -> Result<()> {
+                for rep in 0..reps {
+                    let n = if reps > 1 {
+                        format!(" [{}/{}]", rep + 1, reps)
+                    } else {
+                        String::new()
+                    };
+                    eprintln!(
+                        "
+[touch]{n} warm cache, one header edited"
+                    );
+                    info!(scenario = "touch", rep, "starting");
+
+                    // A distinct edit per repetition. Repeating the same one would
+                    // hit the entries the previous repetition just wrote, measuring
+                    // a warm rebuild instead of an invalidated one.
+                    let mut modified = original.clone();
+                    modified.extend_from_slice(
+                        format!(
+                            "
+// bench touch {} {}
+",
+                            now_unix(),
+                            rep
+                        )
+                        .as_bytes(),
+                    );
+                    fs::write(f, &modified)?;
+
+                    configure(
+                        &cmake,
+                        &sccache,
+                        &compiler_arg,
+                        &project_dir,
+                        &build_dir,
+                        &environment,
+                        &sv("cmake"),
+                    )?;
+                    touch_runs.push(run_scenario(
+                        "touch",
+                        &sccache,
+                        &ninja,
+                        &build_dir,
+                        jobs,
+                        &environment,
+                        &sv("touch"),
+                    )?);
+                }
+                Ok(())
             })();
-            // Restore whatever happened, so a failure here can't leave the tree edited.
+            // Restore whatever happened, so a failure here cannot leave the tree edited.
             fs::write(f, &original)?;
-            scenarios.push(outcome?);
+            outcome?;
+            scenarios.push(summarize("touch", touch_runs));
         }
-        _ => eprintln!("\n[touch] skipped (no --touch-file)"),
+        _ => eprintln!(
+            "
+[touch] skipped (no --touch-file)"
+        ),
     }
 
     // --- output ----------------------------------------------------------
@@ -689,9 +807,15 @@ fn run_scenario(
     let info = stats::show(sccache, environment)?;
     eprintln!("  {:.2}s", out.elapsed.as_secs_f64());
 
+    let seconds = round3(out.elapsed.as_secs_f64());
     Ok(ScenarioResult {
         name: name.to_string(),
-        wall_seconds: (out.elapsed.as_secs_f64() * 1000.0).round() / 1000.0,
+        // A single repetition;  fills in the distribution.
+        wall_seconds: seconds,
+        wall_seconds_min: seconds,
+        wall_seconds_max: seconds,
+        wall_seconds_all: vec![seconds],
+        repetitions: 1,
         timed_out,
         longest_silence_seconds: (out.longest_silence.as_secs_f64() * 100.0).round() / 100.0,
         stats: ScenarioStats::from(&info),
@@ -704,21 +828,55 @@ fn print_summary(result: &BenchResult) {
         Some(n) => n.to_string(),
         None => "n/a".into(),
     };
-    eprintln!("\n--- summary ---");
+    let repeated = result.scenarios.iter().any(|s| s.repetitions > 1);
+
     eprintln!(
-        "{:<8} {:>9} {:>7} {:>8} {:>10} {:>10}",
-        "scenario", "seconds", "hits", "misses", "pp-hits", "pp-misses"
+        "
+--- summary ---"
     );
-    for s in &result.scenarios {
+    if repeated {
         eprintln!(
-            "{:<8} {:>9.2} {:>7} {:>8} {:>10} {:>10}{}",
-            s.name,
-            s.wall_seconds,
+            "{:<8} {:>9} {:>17} {:>7} {:>8} {:>10} {:>10}",
+            "scenario", "median", "min..max", "hits", "misses", "pp-hits", "pp-misses"
+        );
+    } else {
+        eprintln!(
+            "{:<8} {:>9} {:>7} {:>8} {:>10} {:>10}",
+            "scenario", "seconds", "hits", "misses", "pp-hits", "pp-misses"
+        );
+    }
+
+    for s in &result.scenarios {
+        let counters = format!(
+            "{:>7} {:>8} {:>10} {:>10}{}",
             s.stats.cache_hits,
             s.stats.cache_misses,
             fmt(s.stats.preprocessor_cache_hits),
             fmt(s.stats.preprocessor_cache_misses),
             if s.timed_out { "  TIMED OUT" } else { "" }
+        );
+        if repeated {
+            // Spread alongside the median: a tight one earns trust in a small
+            // difference between runs, a wide one says the difference is noise.
+            eprintln!(
+                "{:<8} {:>9.2} {:>17} {counters}",
+                s.name,
+                s.wall_seconds,
+                format!("{:.2}..{:.2}", s.wall_seconds_min, s.wall_seconds_max)
+            );
+        } else {
+            eprintln!("{:<8} {:>9.2} {counters}", s.name, s.wall_seconds);
+        }
+    }
+    if repeated {
+        eprintln!(
+            "({} repetitions per scenario)",
+            result
+                .scenarios
+                .iter()
+                .map(|s| s.repetitions)
+                .max()
+                .unwrap_or(1)
         );
     }
 }
