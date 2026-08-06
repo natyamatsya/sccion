@@ -1,3 +1,4 @@
+// SPDX-FileCopyrightText: Copyright natyamatsya and sccache contributors
 // SPDX-License-Identifier: Apache-2.0
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -101,6 +102,31 @@ impl Storage for ReadOnlyStorage {
     async fn get_raw(&self, key: &str) -> Result<Option<Bytes>> {
         self.0.get_raw(key).await
     }
+
+    /// Put raw serialized cache entry bytes.
+    ///
+    /// Without this the trait default's "not implemented for this storage backend"
+    /// would be reported instead, which misattributes a policy decision to a missing
+    /// capability.
+    async fn put_raw(&self, _key: &str, _data: Bytes) -> Result<Duration> {
+        Err(anyhow!("Cannot write to read-only storage"))
+    }
+
+    /// Return the filesystem path of the cached entry for `key` (forwarded).
+    ///
+    /// This is a read operation and so is permitted in read-only mode. Falling back
+    /// to the trait default here would report `Unsupported` for backends that do
+    /// support it, silently pushing client-side mode onto the slower path of shipping
+    /// entry bytes over IPC.
+    async fn get_path(&self, key: &str) -> crate::cache::GetPathResult {
+        self.0.get_path(key).await
+    }
+
+    /// Get multi-level cache statistics (forwarded), so wrapping a chain in
+    /// read-only mode doesn't blank out its per-level stats in `--show-stats`.
+    fn multilevel_stats(&self) -> Option<crate::cache::multilevel::MultiLevelStats> {
+        self.0.multilevel_stats()
+    }
 }
 
 #[cfg(test)]
@@ -198,6 +224,62 @@ mod test {
                     .to_string(),
                 "Cannot write to read-only storage"
             );
+            assert_eq!(
+                storage
+                    .put_raw("test1", Bytes::from_static(b"data"))
+                    .await
+                    .unwrap_err()
+                    .to_string(),
+                "Cannot write to read-only storage"
+            );
+        });
+    }
+
+    /// `get_path` is a read operation, so it must survive the read-only wrapper.
+    /// Without forwarding it, the trait default reports `Unsupported` and client-side
+    /// mode silently falls back to shipping entry bytes over IPC.
+    #[test]
+    fn readonly_storage_forwards_get_path() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .worker_threads(1)
+            .build()
+            .unwrap();
+
+        let tempdir = tempfile::Builder::new()
+            .prefix("readonly_storage_forwards_get_path")
+            .tempdir()
+            .expect("Failed to create tempdir");
+        let cache_dir = tempdir.path().join("cache");
+        std::fs::create_dir(&cache_dir).unwrap();
+
+        let disk_cache = crate::cache::disk::DiskCache::new(
+            &cache_dir,
+            1024 * 1024,
+            runtime.handle(),
+            super::PreprocessorCacheModeConfig::default(),
+            super::CacheMode::ReadWrite,
+            vec![],
+        );
+
+        runtime.block_on(async move {
+            // Populate through the writable cache, then wrap it.
+            let key = "abcdef0123456789";
+            disk_cache
+                .put_raw(key, Bytes::from_static(b"entry"))
+                .await
+                .unwrap();
+
+            let readonly_storage = ReadOnlyStorage(std::sync::Arc::new(disk_cache));
+
+            match readonly_storage.get_path(key).await {
+                crate::cache::GetPathResult::Found(p) => assert!(p.exists()),
+                other => panic!("Expected Found, got {:?}", other),
+            }
+            assert!(matches!(
+                readonly_storage.get_path("ffffffffffffffff").await,
+                crate::cache::GetPathResult::Miss
+            ));
         });
     }
 
