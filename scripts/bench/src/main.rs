@@ -52,6 +52,12 @@ struct Args {
     #[arg(long)]
     cache_dir: Option<PathBuf>,
 
+    /// Compiler driver to benchmark. `clang-cl` goes through the same MSVC
+    /// argument parsing but a different preprocess path, so it is worth
+    /// measuring separately rather than assuming cl results carry over.
+    #[arg(long, default_value = "cl")]
+    compiler: String,
+
     /// Ninja parallelism. Defaults to the processor count.
     #[arg(long, default_value_t = 0)]
     jobs: usize,
@@ -133,7 +139,8 @@ struct EnvInfo {
     zstd_level: Option<u32>,
     embedded_debug_info: Option<bool>,
     generated: Option<project::GeneratedProject>,
-    cl: Option<String>,
+    compiler: String,
+    compiler_path: String,
 }
 
 fn repo_root() -> Result<PathBuf> {
@@ -216,7 +223,27 @@ fn main() -> Result<()> {
 
     let cmake = env::which_in_env("cmake", &environment).context("cmake not found on PATH")?;
     let ninja = env::which_in_env("ninja", &environment).context("ninja not found on PATH")?;
-    let cl = env::which_in_env("cl", &environment);
+    // Accept a full path as well as a bare name. Which clang-cl you get matters:
+    // the MSVC STL static_asserts on compiler version (STL1000), so an older
+    // clang-cl from a side-by-side VS install cannot compile against a newer
+    // toolset's headers even though both are on the PATH.
+    let compiler = {
+        let as_path = Path::new(&args.compiler);
+        if as_path.is_file() {
+            env::canonicalize_usable(as_path)?
+        } else {
+            env::which_in_env(&args.compiler, &environment).with_context(|| {
+                format!(
+                    "compiler {:?} not found on PATH; pass a full path if it is not on the                      PATH that vcvarsall sets up",
+                    args.compiler
+                )
+            })?
+        }
+    };
+    let compiler_name = compiler
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_else(|| args.compiler.clone());
 
     // --- project ---------------------------------------------------------
     let (project_dir, touch_file, generated) = match &args.project {
@@ -352,6 +379,7 @@ fn main() -> Result<()> {
     configure(
         &cmake,
         &sccache,
+        &compiler.display().to_string(),
         &project_dir,
         &build_dir,
         &environment,
@@ -384,6 +412,7 @@ fn main() -> Result<()> {
     configure(
         &cmake,
         &sccache,
+        &compiler.display().to_string(),
         &project_dir,
         &build_dir,
         &environment,
@@ -426,6 +455,7 @@ fn main() -> Result<()> {
                 configure(
                     &cmake,
                     &sccache,
+                    &compiler.display().to_string(),
                     &project_dir,
                     &build_dir,
                     &environment,
@@ -477,7 +507,8 @@ fn main() -> Result<()> {
             zstd_level: args.zstd_level,
             embedded_debug_info,
             generated,
-            cl: cl.map(|p| p.display().to_string()),
+            compiler: compiler_name.clone(),
+            compiler_path: compiler.display().to_string(),
         },
         findings: findings.0.clone(),
         scenarios,
@@ -559,6 +590,7 @@ fn restart_server(
 fn configure(
     cmake: &Path,
     sccache: &Path,
+    compiler: &str,
     project_dir: &Path,
     build_dir: &Path,
     environment: &HashMap<String, String>,
@@ -579,8 +611,8 @@ fn configure(
         "-G".into(),
         "Ninja".into(),
         "-DCMAKE_BUILD_TYPE=Debug".into(),
-        "-DCMAKE_C_COMPILER=cl".into(),
-        "-DCMAKE_CXX_COMPILER=cl".into(),
+        format!("-DCMAKE_C_COMPILER={compiler}"),
+        format!("-DCMAKE_CXX_COMPILER={compiler}"),
         format!("-DCMAKE_C_COMPILER_LAUNCHER={launcher}"),
         format!("-DCMAKE_CXX_COMPILER_LAUNCHER={launcher}"),
         "-DCMAKE_MSVC_DEBUG_INFORMATION_FORMAT=Embedded".into(),
