@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 use crate::dist::Toolchain;
 use crate::lru_disk_cache::Result as LruResult;
 use crate::lru_disk_cache::{LruDiskCache, ReadSeek};

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 /// Helper macro to create fixed-length arrays without specifying a fixed size
 #[macro_export]
 macro_rules! counted_array {

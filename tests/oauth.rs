@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 #![deny(rust_2018_idioms)]
 #![cfg(feature = "dist-client")]
 

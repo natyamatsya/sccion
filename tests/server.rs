@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 #[cfg(not(target_os = "macos"))]
 use std::{net::TcpListener, process::Command};
 

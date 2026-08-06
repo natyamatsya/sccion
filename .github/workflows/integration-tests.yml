@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 name: integration-tests
 on: [ push, pull_request ]
 # If you want to add integration tests for linux-based binary,

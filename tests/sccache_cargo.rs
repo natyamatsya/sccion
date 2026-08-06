@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 //! System tests for compiling Rust code with cargo.
 //!
 //! Any copyright is dedicated to the Public Domain.

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 use bytes::Bytes;
 use futures::channel::oneshot;
 use http::StatusCode;

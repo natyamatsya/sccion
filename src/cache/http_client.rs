@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 use opendal::raw::HttpClient;
 use reqwest::ClientBuilder;
 

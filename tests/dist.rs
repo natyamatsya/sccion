@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 #![cfg(all(feature = "dist-client", feature = "dist-server"))]
 
 extern crate assert_cmd;

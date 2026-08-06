@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 use fs_err as fs;
 use log::trace;
 #[cfg(any(feature = "dist-client", feature = "dist-server"))]

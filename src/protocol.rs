@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 use crate::cache::{CacheMode, GetPathResult};
 use crate::compiler::ColorMode;
 use crate::config::PreprocessorCacheModeConfig;
