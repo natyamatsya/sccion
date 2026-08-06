@@ -1,5 +1,6 @@
 // Copyright 2016 Mozilla Foundation
 // SPDX-FileCopyrightText: Copyright (c) 2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+// SPDX-FileCopyrightText: Copyright natyamatsya and sccache contributors
 // SPDX-License-Identifier: Apache-2.0
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -571,7 +572,13 @@ where
                 key,
                 compilation,
                 weak_toolchain_key,
-            }) => (key, compilation, weak_toolchain_key),
+                preprocessor_cache_hit,
+            }) => {
+                if let Some(hit) = preprocessor_cache_hit {
+                    service.record_preprocessor_cache_lookup(hit).await;
+                }
+                (key, compilation, weak_toolchain_key)
+            }
         };
         debug!("[{}]: Hash key: {}", out_pretty, key);
         // If `ForceRecache` is enabled, we won't check the cache.
@@ -1156,6 +1163,13 @@ where
     pub compilation: Box<dyn Compilation<T> + 'static>,
     /// A weak key that may be used to identify the toolchain
     pub weak_toolchain_key: String,
+    /// Outcome of the preprocessor cache ("direct mode") lookup, if it ran at all.
+    ///
+    /// `None` means the mode was not in play for this compilation -- disabled by
+    /// config or `SCCACHE_DIRECT`, unsupported by the storage backend, or not
+    /// applicable to the language. `Some(true)` means the preprocessor was skipped
+    /// entirely, which is the whole point of the mode.
+    pub preprocessor_cache_hit: Option<bool>,
 }
 
 /// Possible results of parsing compiler arguments.

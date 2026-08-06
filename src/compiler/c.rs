@@ -1,4 +1,5 @@
 // Copyright 2016 Mozilla Foundation
+// SPDX-FileCopyrightText: Copyright natyamatsya and sccache contributors
 // SPDX-License-Identifier: Apache-2.0
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -460,6 +461,17 @@ where
             None
         };
 
+        // Whether direct mode was actually in play for this compilation, recorded before
+        // the lookup so that "no entry stored" counts as a miss rather than as "mode not
+        // in play". `preprocessor_key` is reset to `None` further down if the preprocessed
+        // output turns out to be unusable, which would otherwise erase the distinction.
+        let preprocessor_cache_hit =
+            if preprocessor_key.is_some() && cache_control == CacheControl::Default {
+                Some(false)
+            } else {
+                None
+            };
+
         let (preprocessor_output, include_files) = if needs_preprocessing {
             if let Some(preprocessor_key) = &preprocessor_key
                 && cache_control == CacheControl::Default
@@ -515,6 +527,7 @@ where
                                 env_vars: env_vars.clone(),
                             }),
                             weak_toolchain_key,
+                            preprocessor_cache_hit: Some(true),
                         });
                     } else {
                         debug!("Preprocessor cache miss: {preprocessor_key}");
@@ -671,6 +684,7 @@ where
                 env_vars,
             }),
             weak_toolchain_key,
+            preprocessor_cache_hit,
         })
     }
 

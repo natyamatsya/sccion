@@ -1,4 +1,5 @@
 // Copyright 2016 Mozilla Foundation
+// SPDX-FileCopyrightText: Copyright natyamatsya and sccache contributors
 // SPDX-License-Identifier: Apache-2.0
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -1199,6 +1200,21 @@ where
         }
     }
 
+    /// Record the outcome of a preprocessor cache ("direct mode") lookup.
+    ///
+    /// Only called when the mode was actually in play, so a run where both counters
+    /// stay at zero means direct mode never engaged -- which is a materially different
+    /// situation from it engaging and missing, and one the two counters are here to
+    /// tell apart.
+    pub async fn record_preprocessor_cache_lookup(&self, hit: bool) {
+        let mut stats = self.stats.lock().await;
+        if hit {
+            stats.preprocessor_cache_hits += 1;
+        } else {
+            stats.preprocessor_cache_misses += 1;
+        }
+    }
+
     /// Look up compiler info from the cache for the compiler `path`.
     /// If not cached, determine the compiler type and cache the result.
     pub async fn compiler_info(
@@ -1735,6 +1751,13 @@ pub struct ServerStats {
     pub cache_hits: PerLanguageCount,
     /// The count of cache misses for handled compile requests (per language).
     pub cache_misses: PerLanguageCount,
+    /// The count of preprocessor cache ("direct mode") hits, where the preprocessor
+    /// was skipped entirely.
+    pub preprocessor_cache_hits: u64,
+    /// The count of preprocessor cache ("direct mode") misses, where the preprocessor
+    /// had to be run. Only counted when the mode was actually in play, so
+    /// `hits + misses == 0` means direct mode never engaged at all.
+    pub preprocessor_cache_misses: u64,
     /// The count of cache misses because the cache took too long to respond.
     pub cache_timeouts: u64,
     /// The count of errors reading cache entries.
@@ -1778,6 +1801,8 @@ impl std::ops::AddAssign for ServerStats {
         self.cache_errors += rhs.cache_errors;
         self.cache_hits += rhs.cache_hits;
         self.cache_misses += rhs.cache_misses;
+        self.preprocessor_cache_hits += rhs.preprocessor_cache_hits;
+        self.preprocessor_cache_misses += rhs.preprocessor_cache_misses;
         self.cache_timeouts += rhs.cache_timeouts;
         self.cache_read_errors += rhs.cache_read_errors;
         self.non_cacheable_compilations += rhs.non_cacheable_compilations;
@@ -1840,6 +1865,8 @@ impl Default for ServerStats {
             cache_errors: PerLanguageCount::new(),
             cache_hits: PerLanguageCount::new(),
             cache_misses: PerLanguageCount::new(),
+            preprocessor_cache_hits: u64::default(),
+            preprocessor_cache_misses: u64::default(),
             cache_timeouts: u64::default(),
             cache_read_errors: u64::default(),
             non_cacheable_compilations: u64::default(),
@@ -1934,6 +1961,16 @@ impl ServerStats {
 
         self.set_percentage_stats(&mut stats_vec, advanced);
 
+        set_stat!(
+            stats_vec,
+            self.preprocessor_cache_hits,
+            "Preprocessor cache hits"
+        );
+        set_stat!(
+            stats_vec,
+            self.preprocessor_cache_misses,
+            "Preprocessor cache misses"
+        );
         set_stat!(stats_vec, self.cache_timeouts, "Cache timeouts");
         set_stat!(stats_vec, self.cache_read_errors, "Cache read errors");
         set_stat!(stats_vec, self.forced_recaches, "Forced recaches");

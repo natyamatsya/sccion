@@ -1,4 +1,5 @@
 // Copyright 2016 Mozilla Foundation
+// SPDX-FileCopyrightText: Copyright natyamatsya and sccache contributors
 // SPDX-License-Identifier: Apache-2.0
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -1740,6 +1741,9 @@ where
                 rlib_dep_reader: self.rlib_dep_reader.clone(),
             }),
             weak_toolchain_key,
+            // Preprocessor cache mode is a C-family concept; rustc has no separate
+            // preprocessing step to skip.
+            preprocessor_cache_hit: None,
         })
     }
 
