@@ -180,6 +180,21 @@ Note that some env variables may need sccache server restart to take effect.
 * `SCCACHE_CLIENT_SIDE` set to `1` to run the compile in the client process and use the daemon only as a gateway to the cache storage (see [the architecture doc](Architecture.md#client-side-mode-sccache_client_side)). This is the recommended mode and is expected to become the only supported configuration in the future. Ignored when `SCCACHE_ERROR_LOG` or distributed compilation is in use.
 * `SCCACHE_CACHE_MULTIARCH` to disable caching of multi architecture builds.
 * `SCCACHE_CACHE_ZSTD_LEVEL` to set zstd compression level of cache. the range is `1-22` and default is `3`.
+* `SCCACHE_CACHE_COMPRESSION` to disable compression entirely: set it to `none`
+  (or `off`/`false`/`0`) to store cache entries verbatim. Anything else, or unset,
+  keeps zstd at `SCCACHE_CACHE_ZSTD_LEVEL`.
+
+  This trades cache capacity for a cheaper cache hit. Measured on a 1.4 MiB MSVC
+  `/Z7` object: the entry grows from 263 KiB to 1,458 KiB (5.5x), while the
+  server-side work to materialize a hit falls from 5.1 ms to 3.0 ms and
+  end-to-end hit latency from 27.0 ms to 24.5 ms. Whether that shows up in a
+  build's wall clock depends on whether materialization is on its critical path —
+  at high `-j` it usually is not.
+
+  Both settings are read by the **server**, once, at startup: change either and
+  restart it with `sccache --stop-server`. Entries record their own encoding, so
+  a cache may hold a mix, and one written by an older sccache still reads
+  correctly — changing this does not invalidate anything.
   - For example, in `10`, it have about 0.9x size with about 1.6x time than default `3` (tested with compiling sccache code)
   - This option will only applied to newly compressed cache and don't affect existing cache.
   - If you want to be apply to all cache, you should reset cache and make new cache.

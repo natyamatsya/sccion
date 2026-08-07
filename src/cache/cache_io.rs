@@ -1,3 +1,4 @@
+// SPDX-FileCopyrightText: Copyright natyamatsya and sccache contributors
 // SPDX-License-Identifier: Apache-2.0
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -22,6 +23,53 @@ use std::path::{Path, PathBuf};
 use tempfile::NamedTempFile;
 use zip::write::FileOptions;
 use zip::{CompressionMethod, ZipArchive, ZipWriter};
+
+/// Marks a cache entry object whose payload follows verbatim.
+///
+/// Chosen so it can never be confused with what came before it: every zstd frame
+/// starts `28 B5 2F FD`, and skippable frames start `50`-`5F`, so a leading zero
+/// byte unambiguously means "not zstd". That lets uncompressed and compressed
+/// entries coexist in one cache, and lets a cache written by an older sccache
+/// still be read, without a format version or a cache-invalidating key change.
+const UNCOMPRESSED_MARKER: u8 = 0x00;
+
+/// How object payloads are stored inside a cache entry.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ObjectEncoding {
+    /// zstd at the given level.
+    Zstd(i32),
+    /// Verbatim, behind [`UNCOMPRESSED_MARKER`].
+    ///
+    /// Trades cache capacity for materialization speed. Under `/Z7` objects
+    /// compress around 7:1, so this costs roughly that much disk -- in exchange
+    /// for a cache hit that is a read and a write rather than a decompression.
+    /// It is also what makes filesystem-level block cloning possible at all: a
+    /// compressed blob shares no extents with the object it expands to.
+    Uncompressed,
+}
+
+/// Read once per process rather than per object.
+///
+/// This is the daemon's environment, so it is fixed for the daemon's lifetime;
+/// changing it requires restarting the server. That was already true of
+/// `SCCACHE_CACHE_ZSTD_LEVEL`, which used to be re-read on every single object.
+static OBJECT_ENCODING: std::sync::LazyLock<ObjectEncoding> = std::sync::LazyLock::new(|| {
+    let uncompressed = std::env::var("SCCACHE_CACHE_COMPRESSION")
+        .ok()
+        .map(|v| {
+            let v = v.trim().to_ascii_lowercase();
+            v == "none" || v == "off" || v == "false" || v == "0"
+        })
+        .unwrap_or(false);
+    if uncompressed {
+        return ObjectEncoding::Uncompressed;
+    }
+    let level = std::env::var("SCCACHE_CACHE_ZSTD_LEVEL")
+        .ok()
+        .and_then(|value| value.parse::<i32>().ok())
+        .unwrap_or(3);
+    ObjectEncoding::Zstd(level)
+});
 
 /// Cache object sourced by a file.
 #[derive(Clone)]
@@ -106,12 +154,30 @@ impl CacheRead {
     where
         T: Write,
     {
-        let file = self.zip.by_name(name).or(Err(DecompressionFailure))?;
+        let mut file = self.zip.by_name(name).or(Err(DecompressionFailure))?;
         if file.compression() != CompressionMethod::Stored {
             bail!(DecompressionFailure);
         }
         let mode = file.unix_mode();
-        zstd::stream::copy_decode(file, to).or(Err(DecompressionFailure))?;
+
+        // The encoding is a property of the entry, not of this process: a cache
+        // can hold both, and one written before uncompressed storage existed must
+        // still read correctly. So dispatch on the payload's first byte rather
+        // than on how this daemon happens to be configured.
+        let mut first = [0u8; 1];
+        match file.read(&mut first) {
+            Ok(0) => return Ok(mode), // empty object, nothing to write
+            Ok(_) => {}
+            Err(_) => bail!(DecompressionFailure),
+        }
+
+        if first[0] == UNCOMPRESSED_MARKER {
+            std::io::copy(&mut file, to).or(Err(DecompressionFailure))?;
+        } else {
+            // Put the byte back in front; zstd needs its magic intact.
+            zstd::stream::copy_decode(first.as_slice().chain(file), to)
+                .or(Err(DecompressionFailure))?;
+        }
         Ok(mode)
     }
 
@@ -271,8 +337,9 @@ impl CacheWrite {
     where
         T: Read,
     {
-        // We're going to declare the compression method as "stored",
-        // but we're actually going to store zstd-compressed blobs.
+        // The zip compression method is always "stored"; what varies is what we
+        // store inside the member -- a zstd frame, or a marker byte followed by
+        // the bytes verbatim. See `ObjectEncoding`.
         let opts = FileOptions::default().compression_method(CompressionMethod::Stored);
         let opts = if let Some(mode) = mode {
             opts.unix_permissions(mode)
@@ -283,11 +350,15 @@ impl CacheWrite {
             .start_file(name, opts)
             .context("Failed to start cache entry object")?;
 
-        let compression_level = std::env::var("SCCACHE_CACHE_ZSTD_LEVEL")
-            .ok()
-            .and_then(|value| value.parse::<i32>().ok())
-            .unwrap_or(3);
-        zstd::stream::copy_encode(from, &mut self.zip, compression_level)?;
+        match *OBJECT_ENCODING {
+            ObjectEncoding::Zstd(level) => {
+                zstd::stream::copy_encode(from, &mut self.zip, level)?;
+            }
+            ObjectEncoding::Uncompressed => {
+                self.zip.write_all(&[UNCOMPRESSED_MARKER])?;
+                std::io::copy(from, &mut self.zip)?;
+            }
+        }
         Ok(())
     }
 
@@ -474,5 +545,55 @@ mod tests {
 
         let result = runtime.block_on(cache_read.extract_objects(objects, pool));
         assert!(result.is_ok(), "Extracting to NUL should succeed");
+    }
+
+    /// An uncompressed payload must round-trip, and -- more importantly -- a
+    /// reader must handle both encodings without being told which to expect,
+    /// since one cache can hold entries written by differently configured (or
+    /// older) daemons.
+    #[test]
+    fn test_object_encodings_round_trip_and_interoperate() {
+        fn write_entry(name: &str, body: &[u8], encoding: ObjectEncoding) -> Vec<u8> {
+            let mut w = CacheWrite::new();
+            {
+                let opts = FileOptions::default().compression_method(CompressionMethod::Stored);
+                w.zip.start_file(name, opts).unwrap();
+                match encoding {
+                    ObjectEncoding::Zstd(level) => {
+                        zstd::stream::copy_encode(&mut Cursor::new(body), &mut w.zip, level)
+                            .unwrap();
+                    }
+                    ObjectEncoding::Uncompressed => {
+                        w.zip.write_all(&[UNCOMPRESSED_MARKER]).unwrap();
+                        std::io::copy(&mut Cursor::new(body), &mut w.zip).unwrap();
+                    }
+                }
+            }
+            w.finish().unwrap()
+        }
+
+        // Includes a byte pattern that starts like a zstd magic, to be sure the
+        // marker rather than the payload is what decides.
+        let bodies: [&[u8]; 4] = [
+            b"plain object bytes",
+            &[],
+            &[0x28, 0xB5, 0x2F, 0xFD, 0x01, 0x02],
+            &[0u8; 4096],
+        ];
+
+        for body in bodies {
+            for encoding in [ObjectEncoding::Uncompressed, ObjectEncoding::Zstd(3)] {
+                let bytes = write_entry("obj", body, encoding);
+                let mut read = CacheRead::from(Cursor::new(bytes)).unwrap();
+                let mut out = Vec::new();
+                read.get_object("obj", &mut out).unwrap();
+                assert_eq!(
+                    out,
+                    body,
+                    "round trip failed for {encoding:?} with {} bytes",
+                    body.len()
+                );
+            }
+        }
     }
 }
