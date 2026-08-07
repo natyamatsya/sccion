@@ -217,11 +217,22 @@ fn defender_report() -> DefenderReport {
             serde_json::Value::String(s) => Some(s.clone()),
             other => Some(other.to_string()),
         }),
-        process_exclusions: v.get("excl").and_then(|x| x.as_array()).map(|a| {
-            a.iter()
-                .filter_map(|e| e.as_str().map(str::to_owned))
-                .collect()
-        }),
+        process_exclusions: v
+            .get("excl")
+            .and_then(|x| x.as_array())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|e| e.as_str().map(str::to_owned))
+                    .collect::<Vec<_>>()
+            })
+            // Unelevated, Get-MpPreference does not fail: it succeeds and puts
+            // the refusal *in the value*, as
+            // "N/A: Must be an administrator to view exclusions". Taken at face
+            // value that is a list containing no compilers, which reads as
+            // "nothing is excluded" -- the exact opposite of the truth, and it
+            // would tell someone who had just added exclusions that they had
+            // not. Treat it as the "could not tell" this type already models.
+            .filter(|e: &Vec<String>| !e.iter().any(|p| p.contains("Must be an administrator"))),
     }
 }
 
@@ -315,20 +326,30 @@ pub fn check(config: &Config, cwd: &Path) -> EnvReport {
         );
     }
 
-    match defender_report() {
-        d if d.real_time_protection == Some(true)
-            && d.process_exclusions
-                .as_ref()
-                .map(|e| !e.iter().any(|p| p.to_ascii_lowercase().contains("cl.exe")))
-                .unwrap_or(false) =>
-        {
-            findings.push(
-                Level::Info,
-                "Defender real-time protection is on and cl.exe is not excluded.".to_string(),
-                Some("Add-MpPreference -ExclusionProcess cl.exe, sccache.exe, ninja.exe"),
-            );
+    let defender = defender_report();
+    if defender.real_time_protection == Some(true) {
+        match defender.process_exclusions.as_ref() {
+            Some(e) if !e.iter().any(|p| p.to_ascii_lowercase().contains("cl.exe")) => {
+                findings.push(
+                    Level::Info,
+                    "Defender real-time protection is on and cl.exe is not excluded.".to_string(),
+                    Some("Add-MpPreference -ExclusionProcess cl.exe, sccache.exe, ninja.exe"),
+                );
+            }
+            // Reading the exclusion list needs elevation. Say so, rather than
+            // let silence imply the exclusions are in place -- or, worse,
+            // claim they are missing when they are not.
+            None => {
+                findings.push(
+                    Level::Info,
+                    "Defender real-time protection is on; its process exclusions could not be \
+                     read (needs elevation), so this run cannot say whether cl.exe is excluded."
+                        .to_string(),
+                    Some("Run this from an elevated prompt for a definitive answer."),
+                );
+            }
+            Some(_) => {}
         }
-        _ => {}
     }
 
     let sccache_path = std::env::current_exe()
