@@ -54,7 +54,7 @@ use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::process::{self, Stdio};
 use std::str;
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock, Mutex};
 use std::time::{Duration, Instant};
 use tempfile::TempDir;
 
@@ -95,6 +95,51 @@ where
     fn get_arguments(&self) -> Vec<OsString>;
     fn get_env_vars(&self) -> Vec<(OsString, OsString)>;
     fn get_cwd(&self) -> PathBuf;
+}
+
+/// Append-only log of cache misses, opened once if `SCCACHE_MISS_LOG` is set.
+///
+/// Misses are the interesting event when tuning a cache, and the one event
+/// `--show-stats` counts but cannot explain: it reports 141 misses without
+/// saying which translation units, or why. The existing `debug!` says which,
+/// but only inside a full debug trace of every compilation -- enormous, and
+/// slow enough to change what is being measured.
+static MISS_LOG: LazyLock<Option<Mutex<std::fs::File>>> = LazyLock::new(|| {
+    let path = std::env::var_os("SCCACHE_MISS_LOG")?;
+    match std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+    {
+        Ok(f) => Some(Mutex::new(f)),
+        Err(e) => {
+            warn!("Failed to open SCCACHE_MISS_LOG at {:?}: {}", path, e);
+            None
+        }
+    }
+});
+
+/// Record one miss, if the log is enabled.
+///
+/// `direct` is the discriminator worth having. A direct-mode *hit* yields the
+/// object key straight out of the preprocessor cache entry, so a miss after one
+/// means the object was evicted or never stored -- nothing about the source
+/// changed. A direct-mode *miss* means the inputs were re-preprocessed and
+/// hashed afresh, so the key moved because the content did. Those two want
+/// completely different fixes, and the counters cannot tell them apart.
+fn log_cache_miss(kind: &str, key: &str, out_pretty: &str, preprocessor_cache_hit: Option<bool>) {
+    let Some(file) = MISS_LOG.as_ref() else {
+        return;
+    };
+    let direct = match preprocessor_cache_hit {
+        Some(true) => "direct-hit",
+        Some(false) => "direct-miss",
+        None => "direct-off",
+    };
+    let mut file = file.lock().unwrap_or_else(|e| e.into_inner());
+    // Errors are dropped deliberately: a diagnostic that can fail a compilation
+    // is worse than one that occasionally loses a line.
+    let _ = writeln!(file, "{kind}\t{direct}\t{key}\t{out_pretty}");
 }
 
 #[derive(Debug)]
@@ -558,7 +603,7 @@ where
             out_pretty,
             fmt_duration_as_secs(&start.elapsed())
         );
-        let (key, compilation, weak_toolchain_key) = match result {
+        let (key, compilation, weak_toolchain_key, preprocessor_cache_hit) = match result {
             Err(e) => {
                 return match e.downcast::<ProcessError>() {
                     Ok(ProcessError(output)) => {
@@ -577,7 +622,7 @@ where
                 if let Some(hit) = preprocessor_cache_hit {
                     service.record_preprocessor_cache_lookup(hit).await;
                 }
-                (key, compilation, weak_toolchain_key)
+                (key, compilation, weak_toolchain_key, preprocessor_cache_hit)
             }
         };
         debug!("[{}]: Hash key: {}", out_pretty, key);
@@ -658,6 +703,12 @@ where
                     Err(e) => {
                         if e.downcast_ref::<DecompressionFailure>().is_some() {
                             debug!("[{}]: Failed to decompress object", out_pretty);
+                            log_cache_miss(
+                                "read-error",
+                                &key,
+                                &out_pretty,
+                                preprocessor_cache_hit,
+                            );
                             Ok(CacheLookupResult::Miss(MissType::CacheReadError))
                         } else {
                             Err(e)
@@ -671,6 +722,7 @@ where
                     out_pretty,
                     fmt_duration_as_secs(&duration)
                 );
+                log_cache_miss("normal", &key, &out_pretty, preprocessor_cache_hit);
                 Ok(CacheLookupResult::Miss(MissType::Normal))
             }
             (Ok(Ok(Cache::None)), duration) => {
