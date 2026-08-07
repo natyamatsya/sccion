@@ -35,7 +35,7 @@ mod test;
 pub mod errors;
 
 pub mod blockclone;
-mod cache;
+pub mod cache;
 mod client;
 mod cmdline;
 mod commands;
