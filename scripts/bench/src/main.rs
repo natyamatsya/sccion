@@ -972,17 +972,39 @@ fn client_cost(
     let dir = project_dir.join("client-cost");
     fs::create_dir_all(&dir)?;
     let src = dir.join("t.cpp");
-    // Fat enough that the object is a realistic size; the point is a normal hit,
-    // not a degenerate one.
-    fs::write(
-        &src,
-        b"#include <vector>
-#include <map>
-#include <string>
-#include <sstream>
-          int main(){ std::map<std::string,std::vector<int>> m; std::ostringstream o; o<<1;           m[o.str()].push_back(1); return (int)m.size(); }
+
+    // Emit `functions` distinct small functions. Under /Z7 each contributes code
+    // and debug info, so this scales the object size while leaving the cached
+    // path's other work alone -- on a hit the compiler never runs, so what
+    // remains is spawn, IPC, lookup and the write.
+    let write_source = |functions: usize| -> Result<()> {
+        let mut s = String::from(
+            "#include <cstddef>
 ",
-    )?;
+        );
+        for i in 0..functions {
+            s.push_str(&format!(
+                "int bench_fn_{i}(int x) {{ int a = x * {i} + 1; int b = a ^ {i}; return a + b + {i}; }}
+"
+            ));
+        }
+        s.push_str(
+            "int main() { int t = 0;
+",
+        );
+        for i in 0..functions {
+            s.push_str(&format!(
+                "  t += bench_fn_{i}(t);
+"
+            ));
+        }
+        s.push_str(
+            "  return t; }
+",
+        );
+        fs::write(&src, s)?;
+        Ok(())
+    };
 
     let compile_args = |out: &str| -> Vec<String> {
         vec![
@@ -1010,6 +1032,10 @@ fn client_cost(
         }
         Ok(())
     };
+
+    // A mid-sized object for the decomposition below; the sweep at the end varies
+    // it deliberately.
+    write_source(250)?;
 
     // Populate, so every timed run is a hit.
     run(&compile_args("warm.obj"))?;
@@ -1149,6 +1175,43 @@ per-invocation client cost ({runs} serial runs, object {object_bytes} bytes)"
         "sccache startup above floor",
         version - floor
     );
+
+    // Does hit latency have a slope in object size?
+    //
+    // On a hit the compiler never runs, so a cached invocation is spawn, IPC,
+    // lookup and the write. If the write dominates, time should climb roughly
+    // linearly with object bytes and ms/MiB should settle to a constant. If it
+    // barely moves, the fixed per-invocation costs dominate and no amount of
+    // making the write cheaper -- compression, block cloning -- can help much.
+    eprintln!();
+    eprintln!("  object size sweep ({runs} serial runs each)");
+    eprintln!(
+        "  {:<11} {:>13} {:>14} {:>13}",
+        "functions", "object bytes", "cache hit ms", "ms per MiB"
+    );
+    for functions in [16usize, 250, 1000, 4000] {
+        write_source(functions)?;
+        let warm = format!("warm_{functions}.obj");
+        let out = format!("out_{functions}.obj");
+        run(&compile_args(&warm))?;
+        let object_bytes = fs::metadata(dir.join(&warm)).map(|m| m.len()).unwrap_or(0);
+
+        let args = compile_args(&out);
+        run(&args)?; // populate, then warm
+        let start = std::time::Instant::now();
+        for _ in 0..runs {
+            run(&args)?;
+        }
+        let ms = start.elapsed().as_secs_f64() * 1000.0 / runs as f64;
+        let mib = object_bytes as f64 / (1024.0 * 1024.0);
+        eprintln!(
+            "  {:<11} {:>13} {:>14.2} {:>13.2}",
+            functions,
+            object_bytes,
+            ms,
+            if mib > 0.0 { ms / mib } else { 0.0 }
+        );
+    }
     eprintln!("  {:<28} {:7.2} ms", "spawn + arg parsing", version);
     eprintln!(
         "  {:<28} {:7.2} ms",
