@@ -29,7 +29,7 @@ use crate::dist::pkg;
 use crate::mock_command::CommandCreatorSync;
 use crate::util::{
     Digest, HashToDigest, MetadataCtimeExt, TimeMacroFinder, Timestamp, decode_path, encode_path,
-    hash_all_memoized, strip_basedirs,
+    hash_all_memoized, strip_basedirs, strip_basedirs_in_arg,
 };
 use async_trait::async_trait;
 use fs_err as fs;
@@ -1563,7 +1563,24 @@ impl<'a> HashKeyParams<'a> {
         m.update(CACHE_VERSION);
         m.update(self.language.as_str().as_bytes());
         for arg in self.arguments {
-            arg.hash(&mut HashToDigest { digest: &mut m });
+            if self.basedirs.is_empty() {
+                arg.hash(&mut HashToDigest { digest: &mut m });
+            } else {
+                // Basedirs were only ever applied to the preprocessor output,
+                // which left every path-bearing *flag* pinning the key to an
+                // absolute path: -I, /FI, -Fp, and the trim/prefix-map flags
+                // whose entire purpose is to make the output path-independent.
+                // A tree at a second path therefore missed on every entry, no
+                // matter how thoroughly the source itself was normalised.
+                //
+                // Framed with an explicit length, because the arguments are
+                // otherwise concatenated into one digest and `-Ifoo` `bar`
+                // would hash the same as `-Ifoobar`. `Hash for OsStr` supplies
+                // that framing on the other branch; here it has to be written.
+                let stripped = strip_basedirs_in_arg(arg.as_encoded_bytes(), self.basedirs);
+                m.update(&(stripped.len() as u64).to_le_bytes());
+                m.update(&stripped);
+            }
         }
         for hash in self.extra_hashes {
             m.update(hash.as_bytes());
@@ -1597,6 +1614,47 @@ mod test {
         let h1 = HashKeyParams::new("abcd", Language::C, &args, b"hello world").compute();
         let h2 = HashKeyParams::new("abcd", Language::C, &args, b"hello world").compute();
         assert_eq!(h1, h2);
+    }
+
+    /// Two worktrees of one repo differ only by their root. With that root as a
+    /// basedir they must produce the same key, including through arguments --
+    /// which is the whole point of running several agents against one cache.
+    #[test]
+    fn basedirs_normalize_paths_in_arguments() {
+        let a = ovec!["-I/wt/agent-a/include", "-c", "/wt/agent-a/src/x.c"];
+        let b = ovec!["-I/wt/agent-b/include", "-c", "/wt/agent-b/src/x.c"];
+
+        // Without basedirs the two are genuinely different compilations.
+        let h1 = HashKeyParams::new("abcd", Language::C, &a, b"src").compute();
+        let h2 = HashKeyParams::new("abcd", Language::C, &b, b"src").compute();
+        assert_neq!(h1, h2);
+
+        // With each tree's root declared, they converge.
+        let ba: Vec<Vec<u8>> = vec![b"/wt/agent-a".to_vec()];
+        let bb: Vec<Vec<u8>> = vec![b"/wt/agent-b".to_vec()];
+        let n1 = HashKeyParams::new("abcd", Language::C, &a, b"src")
+            .with_basedirs(&ba)
+            .compute();
+        let n2 = HashKeyParams::new("abcd", Language::C, &b, b"src")
+            .with_basedirs(&bb)
+            .compute();
+        assert_eq!(n1, n2);
+    }
+
+    /// Arguments are concatenated into one digest, so they need framing or
+    /// adjacent arguments can be shuffled across the boundary undetected.
+    #[test]
+    fn basedir_stripped_arguments_stay_distinguishable() {
+        let basedirs: Vec<Vec<u8>> = vec![b"/wt/root".to_vec()];
+        let split = ovec!["-Ifoo", "bar"];
+        let joined = ovec!["-Ifoobar"];
+        let h1 = HashKeyParams::new("abcd", Language::C, &split, b"src")
+            .with_basedirs(&basedirs)
+            .compute();
+        let h2 = HashKeyParams::new("abcd", Language::C, &joined, b"src")
+            .with_basedirs(&basedirs)
+            .compute();
+        assert_neq!(h1, h2);
     }
 
     #[test]

@@ -1173,6 +1173,68 @@ pub fn num_cpus() -> usize {
 ///
 /// Only paths that start with one of the basedirs are modified. The paths are expected to be
 /// in the format found in preprocessor output (e.g., `# 1 "/path/to/file"`).
+/// Strip basedir prefixes from a single command-line argument.
+///
+/// Separate from [`strip_basedirs`] because the two see paths in different
+/// company. In preprocessor output a path follows a quote, an angle bracket or
+/// whitespace, and that boundary check is what stops a basedir being stripped
+/// out of the middle of an identifier. In an argument the path follows the flag
+/// that introduces it -- `-I`, `/Fp`, `/d1trimfile:`, `-ffile-prefix-map=` --
+/// so the same check rejects every occurrence that matters.
+///
+/// Here any occurrence is stripped. Arguments are short and structured, a
+/// basedir appearing in one is a path essentially by construction, and the user
+/// opted in by declaring it.
+pub fn strip_basedirs_in_arg<'a>(arg: &'a [u8], basedirs: &[Vec<u8>]) -> Cow<'a, [u8]> {
+    if basedirs.is_empty() || arg.is_empty() {
+        return Cow::Borrowed(arg);
+    }
+    // Longest first, so a basedir nested inside another does not strip the
+    // shorter prefix and leave the remainder of the longer one behind.
+    let mut sorted: Vec<&[u8]> = basedirs.iter().map(|b| b.as_slice()).collect();
+    sorted.sort_by_key(|b| std::cmp::Reverse(b.len()));
+
+    sorted.retain(|b| !b.is_empty());
+    if sorted.is_empty() {
+        return Cow::Borrowed(arg);
+    }
+
+    // Basedirs are stored normalised -- forward slashes, lowercased, trailing
+    // separator (see `Config`). Arguments are not, so matching has to happen
+    // against a normalised copy. This normalisation is length-preserving, which
+    // is what lets an offset found in the copy index the original directly.
+    #[cfg(target_os = "windows")]
+    let haystack: Vec<u8> = arg
+        .iter()
+        .map(|&b| if b == b'\\' { b'/' } else { b.to_ascii_lowercase() })
+        .collect();
+    #[cfg(target_os = "windows")]
+    let haystack: &[u8] = &haystack;
+    #[cfg(not(target_os = "windows"))]
+    let haystack: &[u8] = arg;
+
+    let mut out = Vec::with_capacity(arg.len());
+    let mut i = 0;
+    let mut matched = false;
+    while i < arg.len() {
+        match sorted.iter().find(|n| haystack[i..].starts_with(n)) {
+            Some(n) => {
+                matched = true;
+                i += n.len();
+            }
+            None => {
+                out.push(arg[i]);
+                i += 1;
+            }
+        }
+    }
+    if matched {
+        Cow::Owned(out)
+    } else {
+        Cow::Borrowed(arg)
+    }
+}
+
 pub fn strip_basedirs<'a>(preprocessor_output: &'a [u8], basedirs: &[Vec<u8>]) -> Cow<'a, [u8]> {
     if basedirs.is_empty() || preprocessor_output.is_empty() {
         return Cow::Borrowed(preprocessor_output);
