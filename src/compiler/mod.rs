@@ -25,6 +25,7 @@ mod cudafe;
 pub mod depfile;
 mod diab;
 mod gcc;
+mod moc;
 mod msvc;
 mod nvcc;
 mod nvhpc;

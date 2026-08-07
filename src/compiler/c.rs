@@ -55,7 +55,7 @@ use super::preprocessor_cache::PreprocessorCacheEntry;
 /// by whatever a project file at or above `cwd` contributes. Returns the
 /// configured set untouched when there is no project file, which is every
 /// project that has not opted in.
-fn effective_basedirs(configured: &[Vec<u8>], cwd: &Path) -> Vec<Vec<u8>> {
+pub fn effective_basedirs_for(configured: &[Vec<u8>], cwd: &Path) -> Vec<Vec<u8>> {
     let discovered = crate::projectconf::discover_basedirs(cwd);
     if discovered.is_empty() {
         return configured.to_vec();
@@ -429,7 +429,7 @@ where
             // checkout. See `involves_pch`.
             Vec::new()
         } else {
-            effective_basedirs(storage.basedirs(), &cwd)
+            effective_basedirs_for(storage.basedirs(), &cwd)
         };
 
         let extra_hashes =

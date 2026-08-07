@@ -28,6 +28,8 @@ use crate::compiler::msvc::Msvc;
 use crate::compiler::nvcc::Nvcc;
 use crate::compiler::nvcc::NvccHostCompiler;
 use crate::compiler::nvhpc::Nvhpc;
+use crate::compiler::moc::{Moc, is_moc};
+use crate::util::Digest as UtilDigest;
 use crate::compiler::ptxas::Ptxas;
 use crate::compiler::rust::{Rust, RustupProxy};
 use crate::compiler::tasking_vx::TaskingVX;
@@ -262,6 +264,8 @@ pub enum CompilerKind {
     C(CCompilerKind),
     /// A Rust compiler.
     Rust,
+    /// Qt's meta-object compiler.
+    Moc,
 }
 
 // Used for tests
@@ -468,6 +472,7 @@ impl CompilerKind {
             CompilerKind::C(CCompilerKind::Ptxas) => textual_lang + " [ptxas]",
             CompilerKind::C(CCompilerKind::Nvhpc) => textual_lang + " [nvhpc]",
             CompilerKind::C(CCompilerKind::TaskingVX) => textual_lang + " [taskingvx]",
+            CompilerKind::Moc => "moc".to_string(),
             CompilerKind::Rust => textual_lang,
         }
     }
@@ -1560,6 +1565,18 @@ where
         )
         .await
         .map(|c| (Box::new(c) as Box<dyn Compiler<T>>, None));
+    } else if is_moc(executable) {
+        debug!("Found moc");
+        // Hashed like any other compiler binary: a moc upgrade changes every
+        // generated file, so it has to change every key.
+        let digest = UtilDigest::file(executable.to_owned(), &pool).await?;
+        return Ok((
+            Box::new(Moc {
+                executable: executable.to_owned(),
+                executable_digest: digest,
+            }) as Box<dyn Compiler<T>>,
+            None,
+        ));
     } else if is_known_c_compiler(executable) {
         let cc = detect_c_compiler(creator, executable, args, env.to_vec(), pool).await;
         return cc.map(|c| (c, None));
