@@ -1,4 +1,5 @@
 // Copyright 2016 Mozilla Foundation
+// SPDX-FileCopyrightText: Copyright natyamatsya and sccache contributors
 // SPDX-License-Identifier: Apache-2.0
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -63,6 +64,8 @@ pub enum Command {
     StopServer,
     /// Zero cache statistics and exit.
     ZeroStats,
+    /// Report the environment sccache will run in, and exit.
+    CheckEnv(StatsFormat),
     /// Show the status of the distributed client.
     DistStatus,
     /// Perform a login to authenticate for distributed compilation.
@@ -145,6 +148,9 @@ fn get_clap_command() -> clap::Command {
             flag_infer_long_and_short("zero-stats")
                 .help("zero statistics counters")
                 .action(ArgAction::SetTrue),
+            flag_infer_long("check-env")
+                .help("report the environment sccache will run in and exit")
+                .action(ArgAction::SetTrue),
             flag_infer_long("dist-auth")
                 .help("authenticate for distributed compilation")
                 .action(ArgAction::SetTrue),
@@ -177,6 +183,7 @@ fn get_clap_command() -> clap::Command {
                     "start-server",
                     "stop-server",
                     "zero-stats",
+                    "check-env",
                     "package-toolchain",
                     "CMD",
                 ])
@@ -278,6 +285,13 @@ pub fn try_parse() -> Result<Command> {
                 Ok(Command::DebugPreprocessorCacheEntries)
             } else if matches.get_flag("stop-server") {
                 Ok(Command::StopServer)
+            } else if matches.get_flag("check-env") {
+                Ok(Command::CheckEnv(
+                    matches
+                        .get_one("stats-format")
+                        .cloned()
+                        .unwrap_or(StatsFormat::Text),
+                ))
             } else if matches.get_flag("zero-stats") {
                 Ok(Command::ZeroStats)
             } else if matches.get_flag("dist-auth") {

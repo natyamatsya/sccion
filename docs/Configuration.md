@@ -339,3 +339,26 @@ The full url appears then as `redis://user:passwd@1.2.3.4:6379/?db=1`.
 * `TENCENTCLOUD_SECRET_ID`
 * `TENCENTCLOUD_SECRET_KEY`
 * `SCCACHE_COS_RW_MODE`
+
+## Checking the environment
+
+`sccache --check-env` reports the environment sccache will run in and exits. It
+runs nothing on the compile path, changes nothing, and never adapts sccache's
+behaviour to what it finds — behaviour that varies with the detected environment
+produces a cache hit on one machine and a miss on another.
+
+It reports where the cache is, whether it shares a volume with the working
+directory, the filesystem and whether it supports block cloning, Dev Drive trust
+state, the storage encoding in effect, preprocessor cache mode and its settings,
+and Defender's real-time protection and process exclusions.
+
+Findings are graded: an **error** means results would be meaningless, a
+**warning** means it works but leaves performance unclaimed, and **info** is worth
+knowing. The exit status is non-zero only for errors, so a CI step can gate on it
+without failing over advice.
+
+Anything it cannot determine is reported as unknown rather than guessed — Dev
+Drive state needs elevation, and reporting an unelevated failure as "not a Dev
+Drive" would silently disable the check.
+
+`--stats-format=json` emits the whole report for tooling.

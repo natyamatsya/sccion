@@ -813,6 +813,22 @@ pub fn run_command(cmd: Command) -> Result<i32> {
             let stats = request_shutdown(server)?;
             stats.print(false);
         }
+        Command::CheckEnv(fmt) => {
+            trace!("Command::CheckEnv");
+            let report = crate::checkenv::check(config, &env::current_dir()?);
+            match fmt {
+                StatsFormat::Text => report.print(),
+                StatsFormat::Json => {
+                    serde_json::to_writer_pretty(&mut io::stdout(), &report)?;
+                    println!();
+                }
+            }
+            // Non-zero on anything that would invalidate a measurement, so a CI
+            // step can gate on it.
+            if report.has_errors() {
+                return Ok(1);
+            }
+        }
         Command::ZeroStats => {
             trace!("Command::ZeroStats");
             let conn = connect_or_start_server(&get_addr(), startup_timeout)?;

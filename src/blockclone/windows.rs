@@ -177,7 +177,15 @@ fn poison(serial: u64) {
 /// Whether files under `path` can be cloned. Best effort; a `false` here is
 /// definitive but a `true` still leaves per-file reasons to fall back.
 pub fn volume_supports_cloning(path: &Path) -> bool {
-    let Ok(file) = File::open(path) else {
+    // FILE_FLAG_BACKUP_SEMANTICS, without which a directory cannot be opened at
+    // all on Windows -- and the thing being asked about is usually a directory.
+    const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
+    let Ok(file) = OpenOptions::new()
+        .read(true)
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+        .open(path)
+    else {
         return false;
     };
     let Ok(serial) = volume_serial(&file) else {
@@ -374,7 +382,7 @@ pub(crate) fn extent_lcns(path: &Path) -> std::io::Result<Vec<(i64, i64)>> {
 
     // SAFETY: the ioctl succeeded, so the buffer holds a RETRIEVAL_POINTERS_BUFFER
     // followed by `ExtentCount` extent records.
-    let header = unsafe { &*(buf.as_ptr() as *const RETRIEVAL_POINTERS_BUFFER) };
+    let header = unsafe { &*buf.as_ptr().cast::<RETRIEVAL_POINTERS_BUFFER>() };
     let count = header.ExtentCount as usize;
     let mut out = Vec::with_capacity(count);
     let extents = header.Extents.as_ptr();
@@ -469,7 +477,7 @@ mod tests {
             return;
         };
         // Sized like a real MSVC /Z7 object.
-        let body: Vec<u8> = (0..(1_458_123u32))
+        let body: Vec<u8> = (0..1_458_123u32)
             .map(|i| (i.wrapping_mul(2654435761) >> 13) as u8)
             .collect();
         let src = dir.join("bench-src.obj");
