@@ -164,6 +164,31 @@ fn unescape(s: &str) -> String {
     out
 }
 
+/// The includes listed by MSVC's `/sourceDependencies`.
+///
+/// MSVC reports in JSON rather than Make format, so it needs its own reader,
+/// but everything downstream is shared. The shape is
+/// `{"Version":"1.2","Data":{"Source":"...","Includes":["...", ...]}}`; only
+/// `Data.Includes` is of interest, since the source is already known.
+///
+/// As with [`parse`], anything less than a clean read yields an empty list, and
+/// callers must treat that as "cannot cache" rather than "no includes".
+pub fn parse_source_dependencies(contents: &str) -> Vec<PathBuf> {
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(contents) else {
+        return Vec::new();
+    };
+    v.get("Data")
+        .and_then(|d| d.get("Includes"))
+        .and_then(|i| i.as_array())
+        .map(|a| {
+            a.iter()
+                .filter_map(|e| e.as_str())
+                .map(PathBuf::from)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -221,6 +246,29 @@ mod tests {
     fn a_line_with_no_rule_is_ignored_rather_than_guessed_at() {
         assert!(parse("this line has no colon\n").is_empty());
         assert!(parse("").is_empty());
+    }
+
+    #[test]
+    fn msvc_source_dependencies_json() {
+        let j = r#"{"Version":"1.2","Data":{"Source":"D:\\src\\a.cpp",
+            "ProvidedModule":"","Includes":["D:\\src\\a.h","C:\\Program Files\\x\\vector"]}}"#;
+        assert_eq!(
+            parse_source_dependencies(j),
+            vec![
+                PathBuf::from("D:\\src\\a.h"),
+                PathBuf::from("C:\\Program Files\\x\\vector")
+            ],
+            "spaces need no escaping in JSON, unlike the Make form"
+        );
+    }
+
+    #[test]
+    fn malformed_source_dependencies_yield_nothing_to_cache_on() {
+        // Same rule as the Make parser: an unreadable answer must reach the
+        // caller as "cannot cache", never as "this compilation had no inputs".
+        for j in ["", "not json", "{}", r#"{"Data":{}}"#, r#"{"Data":{"Includes":42}}"#] {
+            assert!(parse_source_dependencies(j).is_empty(), "{j:?}");
+        }
     }
 
     /// Check the parser against a dep file a real tool actually wrote.

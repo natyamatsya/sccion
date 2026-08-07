@@ -448,7 +448,29 @@ pub async fn includes_from_dep_file(
     ignore_time_macros: bool,
     pool: &tokio::runtime::Handle,
 ) -> Option<Vec<(String, PathBuf)>> {
-    let mut paths: Vec<PathBuf> = super::depfile::parse(dep_file_contents)
+    includes_from_paths(
+        super::depfile::parse(dep_file_contents),
+        cwd,
+        ignore_time_macros,
+        pool,
+    )
+    .await
+}
+
+/// As [`includes_from_dep_file`], for tools that report their inputs in some
+/// format other than Make's.
+///
+/// Kept separate because the formats genuinely differ -- MSVC's
+/// `/sourceDependencies` is JSON, moc's `--output-dep-file` is Make -- while
+/// everything after the parse is identical, and it is the part where the
+/// correctness rules live.
+pub async fn includes_from_paths(
+    paths: impl IntoIterator<Item = PathBuf>,
+    cwd: &Path,
+    ignore_time_macros: bool,
+    pool: &tokio::runtime::Handle,
+) -> Option<Vec<(String, PathBuf)>> {
+    let mut paths: Vec<PathBuf> = paths
         .into_iter()
         .map(|p| if p.is_absolute() { p } else { cwd.join(p) })
         .collect();
