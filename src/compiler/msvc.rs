@@ -278,6 +278,9 @@ ArgData! {
     Clang(OsString), // -clang:...
     ExternalIncludePath(PathBuf),
     DynamicDeopt, // Emits a second object file alongside -Fo.
+    CreatePch(PathBuf), // -Yc: this compilation produces the PCH.
+    UsePch(PathBuf), // -Yu: this compilation consumes it.
+    PchPath(PathBuf), // -Fp: where the PCH lives. Output under -Yc, input under -Yu.
 }
 
 use self::ArgData::*;
@@ -319,7 +322,7 @@ msvc_args!(static ARGS: [ArgInfo<ArgData>; _] = [
     msvc_take_arg!("Fi", PathBuf, Concatenated, TooHardPath),
     msvc_take_arg!("Fm", PathBuf, Concatenated, PassThroughWithPath), // No effect if /c is specified.
     msvc_take_arg!("Fo", PathBuf, Concatenated, Output),
-    msvc_take_arg!("Fp", PathBuf, Concatenated, TooHardPath), // allows users to specify the name for a PCH (when using /Yu or /Yc), PCHs are not supported in sccache.
+    msvc_take_arg!("Fp", PathBuf, Concatenated, PchPath), // Names the PCH for -Yc/-Yu.
     msvc_take_arg!("Fr", PathBuf, Concatenated, TooHardPath),
     msvc_flag!("Fx", TooHardFlag),
     msvc_flag!("GA", PassThrough),
@@ -408,8 +411,9 @@ msvc_args!(static ARGS: [ArgInfo<ArgData>; _] = [
     msvc_flag!("Y-", PassThrough), // Disable another PCH options
     msvc_take_arg!("YI", OsString, Concatenated, PassThroughWithSuffix), // Has no effect without /Yc
     msvc_flag!("YI-", PassThrough), // Has no effect without /Yc
-    msvc_take_arg!("Yc", PathBuf, Concatenated, TooHardPath), // Compile PCH - not yet supported.
+    msvc_take_arg!("Yc", PathBuf, Concatenated, CreatePch), // Create PCH.
     msvc_flag!("Yd", PassThrough),
+    msvc_take_arg!("Yu", PathBuf, Concatenated, UsePch), // Use PCH.
     msvc_flag!("Z7", PassThrough), // Add debug info to .obj files.
     msvc_take_arg!("ZH:", OsString, Concatenated, PassThroughWithSuffix),
     msvc_flag!("ZI", DebugInfo), // Implies /FC, which puts absolute paths in error messages -> TooHardFlag?
@@ -540,6 +544,9 @@ pub fn parse_arguments(
     let mut compilation_flag = OsString::new();
     let mut debug_info = false;
     let mut dynamic_deopt = false;
+    let mut create_pch = None;
+    let mut use_pch = None;
+    let mut pch_path = None;
     let mut pdb = None;
     let mut depfile = None;
     let mut show_includes = false;
@@ -593,6 +600,9 @@ pub fn parse_arguments(
                 return CompilerArguments::NotCompilation;
             }
             Some(DynamicDeopt) => dynamic_deopt = true,
+            Some(CreatePch(p)) => create_pch = Some(p.clone()),
+            Some(UsePch(p)) => use_pch = Some(p.clone()),
+            Some(PchPath(p)) => pch_path = Some(p.clone()),
             Some(XClang(s)) => xclangs.push(s.clone()),
             Some(Clang(s)) => clangs.push(s.clone()),
             None => {
@@ -624,6 +634,12 @@ pub fn parse_arguments(
             Some(ProgramDatabase(_))
             | Some(DebugInfo)
             | Some(DynamicDeopt)
+            // The PCH flags must reach the compiler, and must be hashed: the
+            // same source compiled with and without -Yu is a different
+            // compilation. The -Fp *contents* are accounted for separately.
+            | Some(CreatePch(_))
+            | Some(UsePch(_))
+            | Some(PchPath(_))
             | Some(PassThrough)
             | Some(PassThroughWithPath(_))
             | Some(PassThroughWithSuffix(_)) => common_args.extend(
@@ -852,6 +868,44 @@ pub fn parse_arguments(
             },
         );
     }
+    // Precompiled headers. -Fp names the PCH; whether that is an output or an
+    // input depends on which of -Yc/-Yu is in play.
+    //
+    // Caching the -Yc compilation is not an optimisation here, it is what makes
+    // the -Yu compilations cacheable at all. A .pch is not reproducible -- two
+    // compiles of identical input produce different bytes, and /Brepro does not
+    // change that (measured). So hashing the .pch into a -Yu key only yields a
+    // stable key if the .pch itself came back byte-for-byte from cache. With
+    // -Yc cached, a warm build restores the exact bytes and every -Yu key
+    // reproduces; without it, every -Yu key would be fresh on every build.
+    match (&create_pch, &use_pch) {
+        // Both at once is not a thing cl.exe accepts; bail rather than guess.
+        (Some(_), Some(_)) => cannot_cache!("both -Yc and -Yu"),
+        (Some(_), None) => match &pch_path {
+            Some(p) => {
+                outputs.insert(
+                    "pch",
+                    ArtifactDescriptor {
+                        path: p.clone(),
+                        optional: false,
+                    },
+                );
+            }
+            // Without -Fp the PCH lands at a compiler-chosen default that is
+            // shared across compilations in the directory, which is the same
+            // problem -Zi without -Fd has.
+            None => cannot_cache!("-Yc without -Fp"),
+        },
+        (None, Some(_)) => match &pch_path {
+            // The object depends on the PCH's contents, so it has to be hashed.
+            // `extra_hash_files` is exactly that mechanism.
+            Some(p) => extra_hash_files.push(cwd.join(p)),
+            None => cannot_cache!("-Yu without -Fp"),
+        },
+        // -Fp with neither -Yc nor -Yu has no effect on the compilation.
+        (None, None) => {}
+    }
+
     if dynamic_deopt
         && let Some(obj) = outputs.get("obj")
     {
@@ -2511,15 +2565,82 @@ mod test {
             parse_arguments(ovec!["-c", "foo.c", "-FR", "-Fofoo.obj"])
         );
 
+        // -Yc and -Yu without -Fp put the PCH at a compiler-chosen default that
+        // is shared across the directory -- the same hazard as -Zi without -Fd.
         assert_eq!(
-            CompilerArguments::CannotCache("-Fp", None),
-            parse_arguments(ovec!["-c", "-Fpfoo.h", "foo.c"])
-        );
-
-        assert_eq!(
-            CompilerArguments::CannotCache("-Yc", None),
+            CompilerArguments::CannotCache("-Yc without -Fp", None),
             parse_arguments(ovec!["-c", "-Ycfoo.h", "foo.c"])
         );
+        assert_eq!(
+            CompilerArguments::CannotCache("-Yu without -Fp", None),
+            parse_arguments(ovec!["-c", "-Yufoo.h", "foo.c"])
+        );
+        assert_eq!(
+            CompilerArguments::CannotCache("both -Yc and -Yu", None),
+            parse_arguments(ovec!["-c", "-Ycfoo.h", "-Yufoo.h", "-Fpf.pch", "foo.c"])
+        );
+    }
+
+    #[test]
+    fn parse_pch_creation_captures_the_pch_as_an_output() {
+        // -Yc writes the PCH. Caching that compilation is what makes every -Yu
+        // compilation cacheable: a .pch is not byte-reproducible (measured --
+        // two compiles of identical input differ, and /Brepro does not help),
+        // so a -Yu key built from the .pch contents is only stable when the
+        // .pch itself was restored from cache.
+        let args = ovec!["-c", "pch.cxx", "-Fopch.obj", "-Ycpch.hxx", "-Fpcmake.pch"];
+        let ParsedArguments {
+            outputs,
+            extra_hash_files,
+            common_args,
+            ..
+        } = match parse_arguments(args) {
+            CompilerArguments::Ok(args) => args,
+            o => panic!("Got unexpected parse result: {:?}", o),
+        };
+        assert_eq!(
+            Some(&ArtifactDescriptor {
+                path: PathBuf::from("cmake.pch"),
+                optional: false
+            }),
+            outputs.get("pch")
+        );
+        // Under -Yc the PCH is produced, not consumed, so it must not be hashed
+        // as an input -- it does not exist yet.
+        assert!(extra_hash_files.is_empty());
+        assert!(common_args.contains(&OsString::from("-Ycpch.hxx")));
+        assert!(common_args.contains(&OsString::from("-Fpcmake.pch")));
+    }
+
+    #[test]
+    fn parse_pch_use_hashes_the_pch_as_an_input() {
+        let cwd = std::env::current_dir().unwrap();
+        let args = ovec!["-c", "u.cxx", "-Fou.obj", "-Yupch.hxx", "-Fpcmake.pch"];
+        let ParsedArguments {
+            outputs,
+            extra_hash_files,
+            common_args,
+            ..
+        } = match parse_arguments(args) {
+            CompilerArguments::Ok(args) => args,
+            o => panic!("Got unexpected parse result: {:?}", o),
+        };
+        // The object depends on the PCH's contents, so it is hashed into the key.
+        assert_eq!(vec![cwd.join("cmake.pch")], extra_hash_files);
+        // ...and the PCH is an input here, never an output.
+        assert!(!outputs.contains_key("pch"));
+        assert!(common_args.contains(&OsString::from("-Yupch.hxx")));
+
+        // -Fp alone names a PCH that neither -Yc nor -Yu uses, so it changes
+        // nothing about the compilation and must not make it uncacheable.
+        let args = ovec!["-c", "-Fpfoo.pch", "foo.c"];
+        let ParsedArguments {
+            extra_hash_files, ..
+        } = match parse_arguments(args) {
+            CompilerArguments::Ok(args) => args,
+            o => panic!("Got unexpected parse result: {:?}", o),
+        };
+        assert!(extra_hash_files.is_empty());
     }
 
     #[test]

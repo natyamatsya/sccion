@@ -22,6 +22,8 @@ use object::read::archive::ArchiveFile;
 use object::read::macho::{FatArch, MachOFatFile32, MachOFatFile64};
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
+use std::collections::HashMap;
+use std::sync::{LazyLock, Mutex};
 use std::cell::Cell;
 use std::ffi::{OsStr, OsString};
 use std::hash::Hasher;
@@ -380,6 +382,71 @@ pub async fn hash_all(files: &[PathBuf], pool: &tokio::runtime::Handle) -> Resul
         fmt_duration_as_secs(&start.elapsed())
     );
     Ok(hashes)
+}
+
+/// Digests keyed by path, valid while modification time and length both hold.
+///
+/// Bounded rather than unbounded: the set of files reaching here is tiny (one
+/// or two precompiled headers per build tree), so the cap only ever fires if
+/// something unexpected starts funnelling files through it.
+static DIGEST_MEMO: LazyLock<Mutex<HashMap<PathBuf, (u64, u64, String)>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+const DIGEST_MEMO_MAX: usize = 512;
+
+/// Like [`hash_all`], but reuses a previous digest while a file's modification
+/// time and length are both unchanged.
+///
+/// `extra_hash_files` is re-hashed on *every* compilation, and a precompiled
+/// header is both large and shared by every translation unit in its target. On
+/// one real build that is a 357 MiB file hashed 525 times -- 183 GiB per build,
+/// costing more than caching those compilations saves.
+///
+/// Deliberately not folded into [`hash_all`] itself. Its other callers hash
+/// Rust sources and externs, where content hashing is the conservative default
+/// and worth keeping. What arrives here is auxiliary build inputs, which change
+/// only when something regenerates them -- and regenerating a file moves its
+/// modification time.
+pub async fn hash_all_memoized(
+    files: &[PathBuf],
+    pool: &tokio::runtime::Handle,
+) -> Result<Vec<String>> {
+    let mut out = Vec::with_capacity(files.len());
+    for f in files {
+        let stat = fs::metadata(f).ok().and_then(|m| {
+            let mtime = m
+                .modified()
+                .ok()?
+                .duration_since(std::time::UNIX_EPOCH)
+                .ok()?
+                .as_nanos() as u64;
+            Some((mtime, m.len()))
+        });
+
+        if let Some((mtime, len)) = stat
+            && let Some((m, l, digest)) = DIGEST_MEMO
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .get(f)
+                .cloned()
+            && m == mtime
+            && l == len
+        {
+            out.push(digest);
+            continue;
+        }
+
+        let digest = Digest::file(f, pool).await?;
+        if let Some((mtime, len)) = stat {
+            let mut memo = DIGEST_MEMO.lock().unwrap_or_else(|e| e.into_inner());
+            if memo.len() >= DIGEST_MEMO_MAX {
+                memo.clear();
+            }
+            memo.insert(f.clone(), (mtime, len, digest.clone()));
+        }
+        out.push(digest);
+    }
+    Ok(out)
 }
 
 /// Build a tokio runtime suitable for the (short-lived) sccache client.
