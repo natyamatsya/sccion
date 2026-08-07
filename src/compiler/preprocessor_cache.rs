@@ -425,6 +425,69 @@ async fn digest_files_concurrently(
     out
 }
 
+/// Build a manifest's include list from a dependency file a tool wrote.
+///
+/// The counterpart to scraping `#line` records out of preprocessed output: the
+/// tool is asked what it read instead of being made to preprocess a second time
+/// so the answer can be recovered. Returns pairs shaped for
+/// [`PreprocessorCacheEntry::add_result`].
+///
+/// `None` means **do not cache this compilation**, and every path out of here
+/// that is not a complete, verified list returns it. That asymmetry is
+/// deliberate. A dependency list is used later to decide whether a cached
+/// result is still valid, so a list that is missing an entry cannot cause a
+/// miss -- it causes a *hit* on a stale result, which is the one failure mode
+/// that hands back wrong output rather than merely doing redundant work.
+///
+/// So: an empty list is refused rather than read as "no dependencies", and a
+/// single unreadable file refuses the whole list rather than silently dropping
+/// that file from what will later be checked.
+pub async fn includes_from_dep_file(
+    dep_file_contents: &str,
+    cwd: &Path,
+    ignore_time_macros: bool,
+    pool: &tokio::runtime::Handle,
+) -> Option<Vec<(String, PathBuf)>> {
+    let mut paths: Vec<PathBuf> = super::depfile::parse(dep_file_contents)
+        .into_iter()
+        .map(|p| if p.is_absolute() { p } else { cwd.join(p) })
+        .collect();
+
+    // Sorted and deduplicated so the manifest is a function of the inputs and
+    // not of the order the tool happened to report them in; a dep file lists
+    // the same header repeatedly when several sources pull it in.
+    paths.sort_unstable();
+    paths.dedup();
+    if paths.is_empty() {
+        return None;
+    }
+
+    let digested = digest_files_concurrently(paths.clone(), ignore_time_macros, pool).await;
+
+    let mut out = Vec::with_capacity(paths.len());
+    for (path, contents) in paths.into_iter().zip(digested) {
+        let digest = match contents {
+            Some(FileContents::Plain(d)) => d,
+            Some(FileContents::WithTimeMacros(d, finder)) => {
+                // A dependency that expands __DATE__ or __TIME__ produces
+                // different output every build, so nothing keyed on it can be
+                // reused. Refusing here is what stops a stale result being
+                // served; the alternative is a cache that is confidently wrong
+                // once a day.
+                if finder.found_time_macros() {
+                    debug!("{} contains time macros; not caching", path.display());
+                    return None;
+                }
+                d
+            }
+            // Unreadable now means unverifiable later.
+            None => return None,
+        };
+        out.push((digest, path));
+    }
+    Some(out)
+}
+
 fn digest_one_file(path: &Path, ignore_time_macros: bool) -> Option<FileContents> {
     let file = match std::fs::File::open(path) {
         Ok(file) => file,
@@ -600,6 +663,98 @@ mod test {
     use crate::util::{HASH_BUFFER_SIZE, MAX_TIME_MACRO_HAYSTACK_LEN};
 
     use super::*;
+
+    fn rt() -> tokio::runtime::Runtime {
+        tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+    }
+
+    #[test]
+    fn dep_file_includes_are_digested_and_sorted() {
+        let t = tempfile::tempdir().unwrap();
+        let a = t.path().join("a.h");
+        let b = t.path().join("b.h");
+        std::fs::write(&a, "int a;\n").unwrap();
+        std::fs::write(&b, "int b;\n").unwrap();
+        // Deliberately out of order, and with a repeat: a dep file lists the
+        // same header once per source that pulled it in.
+        let dep = format!("out.o: {} {} {}\n", b.display(), a.display(), b.display());
+
+        let rt = rt();
+        let got = rt
+            .block_on(includes_from_dep_file(&dep, t.path(), true, rt.handle()))
+            .expect("should be cacheable");
+        assert_eq!(got.len(), 2, "duplicates must collapse");
+        assert_eq!(got[0].1, a, "must be ordered by path, not by mention");
+        assert_eq!(got[1].1, b);
+        assert_ne!(got[0].0, got[1].0, "different contents, different digests");
+    }
+
+    #[test]
+    fn an_unreadable_dependency_refuses_the_whole_list() {
+        let t = tempfile::tempdir().unwrap();
+        let a = t.path().join("a.h");
+        std::fs::write(&a, "int a;\n").unwrap();
+        let missing = t.path().join("gone.h");
+        let dep = format!("out.o: {} {}\n", a.display(), missing.display());
+
+        let rt = rt();
+        // Dropping the unreadable one and caching the rest would leave a
+        // dependency nothing later checks, which is how a stale result gets
+        // served.
+        assert!(
+            rt.block_on(includes_from_dep_file(&dep, t.path(), true, rt.handle()))
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn an_empty_dep_file_is_not_read_as_having_no_dependencies() {
+        let t = tempfile::tempdir().unwrap();
+        let rt = rt();
+        for dep in ["", "out.o:\n", "no colon here\n"] {
+            assert!(
+                rt.block_on(includes_from_dep_file(dep, t.path(), true, rt.handle()))
+                    .is_none(),
+                "{dep:?} must be refused, not treated as zero dependencies"
+            );
+        }
+    }
+
+    #[test]
+    fn a_dependency_with_time_macros_refuses_the_list() {
+        let t = tempfile::tempdir().unwrap();
+        let h = t.path().join("stamp.h");
+        std::fs::write(&h, "const char* built = __DATE__ \" \" __TIME__;\n").unwrap();
+        let dep = format!("out.o: {}\n", h.display());
+
+        let rt = rt();
+        // Anything keyed on this changes every second; caching it produces a
+        // result that is confidently wrong rather than merely stale.
+        assert!(
+            rt.block_on(includes_from_dep_file(&dep, t.path(), false, rt.handle()))
+                .is_none()
+        );
+        // ...unless the caller has explicitly accepted that trade.
+        assert!(
+            rt.block_on(includes_from_dep_file(&dep, t.path(), true, rt.handle()))
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn relative_dependencies_resolve_against_the_working_directory() {
+        let t = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(t.path().join("inc")).unwrap();
+        std::fs::write(t.path().join("inc").join("x.h"), "int x;\n").unwrap();
+        let rt = rt();
+        let got = rt
+            .block_on(includes_from_dep_file("out.o: inc/x.h\n", t.path(), true, rt.handle()))
+            .expect("relative path should resolve");
+        assert_eq!(got[0].1, t.path().join("inc/x.h"));
+    }
 
     #[test]
     fn test_find_time_macros_empty_file() {
