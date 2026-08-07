@@ -1530,11 +1530,12 @@ where
 
                             stats.cache_errors.increment(&kind, &lang);
                         }
-                        CompileResult::CacheHit(duration) => {
+                        CompileResult::CacheHit(fetch, materialize) => {
                             debug!("[{}]: compile result: cache hit", out_pretty);
 
                             stats.cache_hits.increment(&kind, &lang);
-                            stats.cache_read_hit_duration += duration;
+                            stats.cache_read_hit_duration += fetch;
+                            stats.cache_materialize_duration += materialize;
                         }
                         CompileResult::CacheMiss(miss_type, dt, duration, future) => {
                             debug!("[{}]: compile result: cache miss", out_pretty);
@@ -1773,7 +1774,14 @@ pub struct ServerStats {
     /// The total time spent writing cache entries.
     pub cache_write_duration: Duration,
     /// The total time spent reading cache hits.
+    ///
+    /// This is the fetch alone -- pulling the compressed entry out of the
+    /// backend. It deliberately excludes writing the outputs, which is counted
+    /// separately below and is usually the larger of the two.
     pub cache_read_hit_duration: Duration,
+    /// The total time spent materializing cache hits: decompressing the entry
+    /// and writing out its object files.
+    pub cache_materialize_duration: Duration,
     /// The number of compilations performed.
     pub compilations: u64,
     /// The total time spent compiling.
@@ -1811,6 +1819,7 @@ impl std::ops::AddAssign for ServerStats {
         self.cache_writes += rhs.cache_writes;
         self.cache_write_duration += rhs.cache_write_duration;
         self.cache_read_hit_duration += rhs.cache_read_hit_duration;
+        self.cache_materialize_duration += rhs.cache_materialize_duration;
         self.compilations += rhs.compilations;
         self.compiler_write_duration += rhs.compiler_write_duration;
         self.compile_fails += rhs.compile_fails;
@@ -1875,6 +1884,7 @@ impl Default for ServerStats {
             cache_writes: u64::default(),
             cache_write_duration: Duration::new(0, 0),
             cache_read_hit_duration: Duration::new(0, 0),
+            cache_materialize_duration: Duration::new(0, 0),
             compilations: u64::default(),
             compiler_write_duration: Duration::new(0, 0),
             compile_fails: u64::default(),
@@ -2021,6 +2031,12 @@ impl ServerStats {
             self.cache_read_hit_duration,
             self.cache_hits.all(),
             "Average cache read hit"
+        );
+        set_duration_stat!(
+            stats_vec,
+            self.cache_materialize_duration,
+            self.cache_hits.all(),
+            "Average cache materialize"
         );
         set_stat!(
             stats_vec,

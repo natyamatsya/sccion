@@ -45,6 +45,10 @@ pub struct RawStats {
     /// a rebuild is bounded by the cache or by everything around it.
     #[serde(default)]
     pub cache_read_hit_duration: Option<SerdeDuration>,
+    /// Decompressing entries and writing their objects. Absent on an sccache
+    /// built before this counter existed.
+    #[serde(default)]
+    pub cache_materialize_duration: Option<SerdeDuration>,
     #[serde(default)]
     pub cache_write_duration: Option<SerdeDuration>,
     #[serde(default)]
@@ -88,6 +92,8 @@ pub struct ScenarioStats {
     /// Compare against the scenario's wall clock to see how much of a rebuild is
     /// actually the cache.
     pub cache_read_hit_seconds: f64,
+    /// Decompress + write. This is the part block cloning would remove.
+    pub cache_materialize_seconds: f64,
     pub cache_write_seconds: f64,
     pub compiler_seconds: f64,
 }
@@ -109,6 +115,11 @@ impl From<&RawInfo> for ScenarioStats {
             cache_read_hit_seconds: info
                 .stats
                 .cache_read_hit_duration
+                .map(SerdeDuration::seconds)
+                .unwrap_or(0.0),
+            cache_materialize_seconds: info
+                .stats
+                .cache_materialize_duration
                 .map(SerdeDuration::seconds)
                 .unwrap_or(0.0),
             cache_write_seconds: info

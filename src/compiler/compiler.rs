@@ -645,9 +645,16 @@ where
                     outputs.clone()
                 };
 
-                let hit = CompileResult::CacheHit(duration);
+                // Timed separately from the fetch above. Fetching an entry reads
+                // the compressed archive; materializing it decompresses that and
+                // writes out every object. Under `/Z7` the second is by far the
+                // larger, and folding them together hid it completely.
+                let materialize_start = Instant::now();
                 match entry.extract_objects(filtered_outputs, &pool).await {
-                    Ok(()) => Ok(CacheLookupResult::Success(hit, output)),
+                    Ok(()) => {
+                        let hit = CompileResult::CacheHit(duration, materialize_start.elapsed());
+                        Ok(CacheLookupResult::Success(hit, output))
+                    }
                     Err(e) => {
                         if e.downcast_ref::<DecompressionFailure>().is_some() {
                             debug!("[{}]: Failed to decompress object", out_pretty);
@@ -1238,7 +1245,12 @@ pub enum CompileResult {
     /// An error made the compilation not possible.
     Error,
     /// Result was found in cache.
-    CacheHit(Duration),
+    /// A cache hit: (time to fetch the entry, time to materialize its outputs).
+    ///
+    /// Kept apart because they answer different questions -- fetching is bounded
+    /// by the cache backend, materializing by decompression and the output
+    /// filesystem, and only the latter is what block cloning would remove.
+    CacheHit(Duration, Duration),
     /// Result was not found in cache.
     ///
     /// The `CacheWriteFuture` will resolve when the result is finished
@@ -1271,7 +1283,10 @@ impl fmt::Debug for CompileResult {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match *self {
             CompileResult::Error => write!(f, "CompileResult::Error"),
-            CompileResult::CacheHit(ref d) => write!(f, "CompileResult::CacheHit({:?})", d),
+            CompileResult::CacheHit(ref fetch, ref materialize) => write!(
+                f,
+                "CompileResult::CacheHit(fetch: {fetch:?}, materialize: {materialize:?})"
+            ),
             CompileResult::CacheMiss(ref m, ref dt, ref d, _) => {
                 write!(f, "CompileResult::CacheMiss({:?}, {:?}, {:?}, _)", d, m, dt)
             }
@@ -1293,7 +1308,7 @@ impl PartialEq<CompileResult> for CompileResult {
     fn eq(&self, other: &CompileResult) -> bool {
         match (self, other) {
             (&CompileResult::Error, &CompileResult::Error) => true,
-            (&CompileResult::CacheHit(_), &CompileResult::CacheHit(_)) => true,
+            (&CompileResult::CacheHit(..), &CompileResult::CacheHit(..)) => true,
             (CompileResult::CacheMiss(m, dt, _, _), CompileResult::CacheMiss(n, dt2, _, _)) => {
                 m == n && dt == dt2
             }
@@ -2678,7 +2693,10 @@ LLVM version: 6.0",
             .unwrap();
         // Ensure that the object file was created.
         assert!(fs::metadata(&obj).map(|m| m.len() > 0).unwrap());
-        assert_eq!(CompileResult::CacheHit(Duration::new(0, 0)), cached);
+        assert_eq!(
+            CompileResult::CacheHit(Duration::new(0, 0), Duration::new(0, 0)),
+            cached
+        );
         assert_eq!(exit_status(0), res.status);
         assert_eq!(COMPILER_STDOUT, res.stdout.as_slice());
         assert_eq!(COMPILER_STDERR, res.stderr.as_slice());
@@ -2808,7 +2826,10 @@ LLVM version: 6.0",
             .unwrap();
         // Ensure that the object file was created.
         assert!(fs::metadata(&obj).map(|m| m.len() > 0).unwrap());
-        assert_eq!(CompileResult::CacheHit(Duration::new(0, 0)), cached);
+        assert_eq!(
+            CompileResult::CacheHit(Duration::new(0, 0), Duration::new(0, 0)),
+            cached
+        );
         assert_eq!(exit_status(0), res.status);
         assert_eq!(COMPILER_STDOUT, res.stdout.as_slice());
         assert_eq!(COMPILER_STDERR, res.stderr.as_slice());
@@ -2982,8 +3003,10 @@ LLVM version: 6.0",
             ))
             .unwrap();
         match cached {
-            CompileResult::CacheHit(duration) => {
-                assert!(duration >= storage_delay);
+            CompileResult::CacheHit(fetch, _materialize) => {
+                // The delay is injected into the storage backend, so it lands in
+                // the fetch half rather than in materialization.
+                assert!(fetch >= storage_delay);
             }
             _ => panic!("Unexpected compile result: {:?}", cached),
         }
