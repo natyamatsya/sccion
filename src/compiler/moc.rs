@@ -94,6 +94,8 @@ pub struct ParsedMoc {
     output: PathBuf,
     /// `--output-json` makes moc write `<output>.json` as well.
     json_output: Option<PathBuf>,
+    /// Where the caller already asked for the dependency report, if it did.
+    dep_file: Option<PathBuf>,
 }
 
 pub fn parse_arguments(arguments: &[OsString]) -> CompilerArguments<ParsedMoc> {
@@ -101,6 +103,8 @@ pub fn parse_arguments(arguments: &[OsString]) -> CompilerArguments<ParsedMoc> {
     let mut input: Option<PathBuf> = None;
     let mut output: Option<PathBuf> = None;
     let mut wants_json = false;
+    let mut wants_dep_file = false;
+    let mut dep_file: Option<PathBuf> = None;
     let mut it = arguments.iter().peekable();
 
     while let Some(arg) = it.next() {
@@ -116,9 +120,12 @@ pub fn parse_arguments(arguments: &[OsString]) -> CompilerArguments<ParsedMoc> {
             continue;
         }
         if s == "--output-dep-file" {
-            // Handled by us; a caller asking for it too would fight over the
-            // path, so refuse rather than silently overwrite theirs.
-            return CompilerArguments::CannotCache("--output-dep-file", None);
+            // The caller wants a dependency file of its own -- CMake's AUTOMOC
+            // always does. Use theirs rather than refusing: the flag being
+            // present is what makes this compilation cacheable, and adding a
+            // second one would only fight over the path.
+            wants_dep_file = true;
+            continue;
         }
 
         // Separated value form: the flag alone, value next.
@@ -126,20 +133,28 @@ pub fn parse_arguments(arguments: &[OsString]) -> CompilerArguments<ParsedMoc> {
             let Some(val) = it.next() else {
                 return CompilerArguments::CannotCache("flag without a value", None);
             };
-            if *flag == "-o" {
-                output = Some(PathBuf::from(val));
-            } else {
-                hashed_args.push(arg.clone());
-                hashed_args.push(val.clone());
+            match *flag {
+                "-o" => output = Some(PathBuf::from(val)),
+                // Where the dependency file goes says nothing about what moc
+                // produces, so it must not split the key.
+                "--dep-file-path" => dep_file = Some(PathBuf::from(val)),
+                "--dep-file-rule-name" => {}
+                _ => {
+                    hashed_args.push(arg.clone());
+                    hashed_args.push(val.clone());
+                }
             }
             continue;
         }
         // Attached value form.
         if let Some(flag) = VALUE_FLAGS.iter().find(|f| s.starts_with(**f) && s.len() > f.len()) {
-            if *flag == "-o" {
-                output = Some(PathBuf::from(&s[2..]));
-            } else {
-                hashed_args.push(arg.clone());
+            match *flag {
+                "-o" => output = Some(PathBuf::from(&s[2..])),
+                "--dep-file-path" => {
+                    dep_file = Some(PathBuf::from(s.trim_start_matches("--dep-file-path").trim_start_matches('=')))
+                }
+                "--dep-file-rule-name" => {}
+                _ => hashed_args.push(arg.clone()),
             }
             continue;
         }
@@ -167,12 +182,22 @@ pub fn parse_arguments(arguments: &[OsString]) -> CompilerArguments<ParsedMoc> {
         PathBuf::from(p)
     });
 
+    // Without --dep-file-path moc writes beside the output, as `<output>.d`.
+    // CMake's AUTOMOC relies on exactly that and passes no path, so refusing
+    // here rejected all 669 invocations of the reference build.
+    if wants_dep_file && dep_file.is_none() {
+        let mut p = output.clone().into_os_string();
+        p.push(".d");
+        dep_file = Some(PathBuf::from(p));
+    }
+
     CompilerArguments::Ok(ParsedMoc {
         hashed_args,
         all_args: arguments.to_vec(),
         input,
         output,
         json_output,
+        dep_file,
     })
 }
 
@@ -302,12 +327,22 @@ impl<T: CommandCreatorSync> CompilerHasher<T> for MocHasher {
         //    the dependency list while it does the work it was going to do
         //    anyway -- the output it produces is kept, so this is not a
         //    throwaway pass like `cl -E` would be.
-        let dep_dir = tempfile::Builder::new().prefix("sccache-moc").tempdir()?;
-        let dep_path = dep_dir.path().join("deps.d");
-        let mut args = self.parsed.all_args.clone();
-        args.push("--output-dep-file".into());
-        args.push("--dep-file-path".into());
-        args.push(dep_path.clone().into_os_string());
+        // Reuse the caller's dependency file when it asked for one -- CMake's
+        // AUTOMOC always does -- and only add our own when it did not. Adding a
+        // second would fight over the path with theirs.
+        let dep_dir;
+        let (dep_path, args) = match &self.parsed.dep_file {
+            Some(p) => (cwd.join(p), self.parsed.all_args.clone()),
+            None => {
+                dep_dir = tempfile::Builder::new().prefix("sccache-moc").tempdir()?;
+                let p = dep_dir.path().join("deps.d");
+                let mut args = self.parsed.all_args.clone();
+                args.push("--output-dep-file".into());
+                args.push("--dep-file-path".into());
+                args.push(p.clone().into_os_string());
+                (p, args)
+            }
+        };
 
         use crate::mock_command::RunCommand;
         let mut cmd = creator.clone().new_command_sync(&self.executable);
@@ -523,6 +558,16 @@ impl<T: CommandCreatorSync> Compilation<T> for MocCompilation {
             path: self.parsed.output.clone(),
             optional: false,
         }];
+        if let Some(dep) = &self.parsed.dep_file {
+            // The build system asked for this and depends on it; restoring the
+            // generated source without it would leave the dependency graph
+            // referring to a file that is not there.
+            v.push(FileObjectSource {
+                key: "moc_dep".to_string(),
+                path: dep.clone(),
+                optional: false,
+            });
+        }
         if let Some(json) = &self.parsed.json_output {
             // --output-json writes a second file beside the source; a hit that
             // restored only the .cpp would leave a stale one next to it.
@@ -612,11 +657,35 @@ mod tests {
     }
 
     #[test]
-    fn a_caller_supplied_dep_file_is_refused_rather_than_overwritten() {
-        assert!(matches!(
-            parse_arguments(&os(&["--output-dep-file", "-o", "out.cpp", "in.h"])),
-            CompilerArguments::CannotCache("--output-dep-file", None)
-        ));
+    fn a_caller_supplied_dep_file_is_used_rather_than_duplicated() {
+        // CMake's AUTOMOC always asks moc for one. Refusing on sight rejected
+        // every one of the 669 invocations in the reference build.
+        let a = os(&[
+            "--output-dep-file",
+            "--dep-file-path",
+            "out.cpp.d",
+            "-o",
+            "out.cpp",
+            "in.h",
+        ]);
+        let p = match parse_arguments(&a) {
+            CompilerArguments::Ok(p) => p,
+            o => panic!("{o:?}"),
+        };
+        assert_eq!(p.dep_file, Some(PathBuf::from("out.cpp.d")));
+        // Where the report is written says nothing about what moc produces.
+        assert!(!p.hashed_args.iter().any(|x| x == "out.cpp.d"));
+    }
+
+    #[test]
+    fn a_dep_file_with_no_path_defaults_beside_the_output() {
+        // Verified against qtmoc: `-o sub/moc_w.cpp --output-dep-file` writes
+        // sub/moc_w.cpp.d. CMake's AUTOMOC relies on this and passes no path.
+        let p = match parse_arguments(&os(&["--output-dep-file", "-o", "out.cpp", "in.h"])) {
+            CompilerArguments::Ok(p) => p,
+            o => panic!("{o:?}"),
+        };
+        assert_eq!(p.dep_file, Some(PathBuf::from("out.cpp.d")));
     }
 
     #[test]
