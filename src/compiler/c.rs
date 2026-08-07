@@ -69,6 +69,26 @@ fn effective_basedirs(configured: &[Vec<u8>], cwd: &Path) -> Vec<Vec<u8>> {
     out
 }
 
+/// Whether this compilation creates or consumes a precompiled header.
+///
+/// A PCH cannot cross checkouts. Restoring one built elsewhere is not rejected
+/// by the compiler -- it is accepted, and then the translation unit fails with
+/// a wall of "type redefinition" errors, because the compiler can no longer
+/// match the force-included header against the one baked into the PCH and
+/// processes it a second time on top. Measured on a 1,898 TU build: the
+/// restored .pch was byte-identical to the one produced in the other checkout,
+/// and every -Yu unit that used it failed to compile.
+///
+/// So these compilations keep their absolute paths in the key, which confines
+/// them to the checkout that produced them. Everything else still shares.
+fn involves_pch(parsed_args: &ParsedArguments) -> bool {
+    parsed_args.outputs.contains_key("pch")
+        || parsed_args.common_args.iter().any(|a| {
+            let a = a.to_string_lossy();
+            a.starts_with("-Yu") || a.starts_with("/Yu")
+        })
+}
+
 /// A generic implementation of the `Compiler` trait for C/C++ compilers.
 #[derive(Clone)]
 pub struct CCompiler<I>
@@ -404,7 +424,13 @@ where
         // at or above this compilation. Discovery is keyed on the compilation's
         // own directory rather than on the daemon's, because one daemon serves
         // every checkout on the machine.
-        let basedirs = effective_basedirs(storage.basedirs(), &cwd);
+        let basedirs = if involves_pch(&self.parsed_args) {
+            // Keep the absolute paths, so this key cannot be reused by another
+            // checkout. See `involves_pch`.
+            Vec::new()
+        } else {
+            effective_basedirs(storage.basedirs(), &cwd)
+        };
 
         let extra_hashes =
             hash_all_memoized(&self.parsed_args.extra_hash_files, &pool.clone()).await?;
