@@ -14,6 +14,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use crate::compiler::c::PreprocessorOutput;
 use crate::{
     compiler::{
         CCompileCommand, Cacheable, ColorMode, CompileCommand, CompilerArguments, Language,
@@ -75,7 +76,7 @@ impl CCompilerImpl for TaskingVX {
         may_dist: bool,
         rewrite_includes_only: bool,
         _preprocessor_cache_mode: bool,
-    ) -> Result<process::Output>
+    ) -> Result<PreprocessorOutput>
     where
         T: CommandCreatorSync,
     {
@@ -89,6 +90,7 @@ impl CCompilerImpl for TaskingVX {
             rewrite_includes_only,
         )
         .await
+        .map(Into::into)
     }
 
     fn generate_compile_commands<T>(
@@ -403,7 +405,8 @@ mod test {
         ARGS, Language, OsString, ParsedArguments, PathBuf, dist, generate_compile_commands,
         parse_arguments,
     };
-    use crate::compiler::c::ArtifactDescriptor;
+    use crate::compiler::c::PreprocessorOutput;
+use crate::compiler::c::ArtifactDescriptor;
     use crate::compiler::*;
     use crate::mock_command::*;
     use crate::server;

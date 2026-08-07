@@ -17,7 +17,7 @@
 #![allow(unused_imports, dead_code, unused_variables)]
 
 use crate::compiler::args::*;
-use crate::compiler::c::{ArtifactDescriptor, CCompilerImpl, CCompilerKind, ParsedArguments};
+use crate::compiler::c::{ArtifactDescriptor, CCompilerImpl, CCompilerKind, ParsedArguments, PreprocessorOutput};
 use crate::compiler::{
     CCompileCommand, Cacheable, ColorMode, CompileCommand, CompilerArguments, Language,
     SingleCompileCommand,
@@ -83,11 +83,11 @@ impl CCompilerImpl for Cicc {
         _may_dist: bool,
         _rewrite_includes_only: bool,
         _preprocessor_cache_mode: bool,
-    ) -> Result<process::Output>
+    ) -> Result<PreprocessorOutput>
     where
         T: CommandCreatorSync,
     {
-        preprocess(cwd, parsed_args).await
+        preprocess(cwd, parsed_args).await.map(Into::into)
     }
     fn generate_compile_commands<T>(
         &self,

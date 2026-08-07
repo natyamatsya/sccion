@@ -89,6 +89,32 @@ fn involves_pch(parsed_args: &ParsedArguments) -> bool {
         })
 }
 
+/// What a preprocessing run produced.
+///
+/// Carries the compiler's report of what it read, when it can make one. sccache
+/// otherwise recovers that list by scraping `#line` records back out of the
+/// preprocessed text, which only works because the text was produced -- and
+/// producing it is the expensive part. A compiler that will simply say what it
+/// opened (`/sourceDependencies`, `--output-dep-file`, `-MD`) makes the scrape,
+/// and eventually the extra preprocessing pass, unnecessary.
+///
+/// `From<process::Output>` exists so compilers with nothing to report stay
+/// one-liners.
+pub struct PreprocessorOutput {
+    pub output: process::Output,
+    /// Inputs the compiler reported reading, if it was asked and could answer.
+    pub reported_inputs: Option<Vec<PathBuf>>,
+}
+
+impl From<process::Output> for PreprocessorOutput {
+    fn from(output: process::Output) -> Self {
+        Self {
+            output,
+            reported_inputs: None,
+        }
+    }
+}
+
 /// A generic implementation of the `Compiler` trait for C/C++ compilers.
 #[derive(Clone)]
 pub struct CCompiler<I>
@@ -238,7 +264,7 @@ pub trait CCompilerImpl: Clone + fmt::Debug + Send + Sync + 'static {
         may_dist: bool,
         rewrite_includes_only: bool,
         preprocessor_cache_mode: bool,
-    ) -> Result<process::Output>
+    ) -> Result<PreprocessorOutput>
     where
         T: CommandCreatorSync;
     /// Generate a command that can be used to invoke the C compiler to perform
@@ -650,16 +676,48 @@ where
             // Remember include files needed in this preprocessing step
             let mut include_files = HashMap::new();
             if preprocessor_key.is_some() {
-                // TODO how to propagate stats and which stats?
-                if !process_preprocessed_file(
-                    &absolute_input_path,
-                    &cwd,
-                    &mut preprocessor_result.stdout,
-                    &mut include_files,
-                    preprocessor_cache_mode_config,
-                    start_of_compilation,
-                    StandardFsAbstraction,
-                )? {
+                // Prefer what the compiler said it read over what can be
+                // recovered from its output. The scrape only works because the
+                // preprocessed text exists, and reading it back is guesswork
+                // about a format nobody promised -- the reason `#line`
+                // detection was silently broken for every compiler until it was
+                // found. A compiler that answers directly is both cheaper and
+                // not a parse of prose.
+                let reported = preprocessor_result.reported_inputs.take();
+                let ok = match reported {
+                    Some(paths) if !paths.is_empty() => {
+                        match crate::compiler::preprocessor_cache::includes_from_paths(
+                            paths,
+                            &cwd,
+                            preprocessor_cache_mode_config.ignore_time_macros,
+                            pool,
+                        )
+                        .await
+                        {
+                            Some(list) => {
+                                include_files
+                                    .extend(list.into_iter().map(|(digest, path)| (path, digest)));
+                                true
+                            }
+                            // The reported list could not be verified, and a
+                            // list that cannot be verified must not be cached
+                            // against -- falling back to the scrape here would
+                            // paper over exactly the case the report exists to
+                            // make explicit.
+                            None => false,
+                        }
+                    }
+                    _ => process_preprocessed_file(
+                        &absolute_input_path,
+                        &cwd,
+                        &mut preprocessor_result.output.stdout,
+                        &mut include_files,
+                        preprocessor_cache_mode_config,
+                        start_of_compilation,
+                        StandardFsAbstraction,
+                    )?,
+                };
+                if !ok {
                     debug!("Disabling preprocessor cache mode");
                     preprocessor_key = None;
                 }
@@ -668,10 +726,10 @@ where
             trace!(
                 "[{}]: Preprocessor output is {} bytes",
                 self.parsed_args.output_pretty(),
-                preprocessor_result.stdout.len()
+                preprocessor_result.output.stdout.len()
             );
 
-            (preprocessor_result.stdout, include_files)
+            (preprocessor_result.output.stdout, include_files)
         } else {
             // No preprocessing is supported - input is already preprocessed
             (

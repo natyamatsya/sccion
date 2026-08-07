@@ -15,7 +15,7 @@
 // limitations under the License.
 
 use crate::compiler::args::*;
-use crate::compiler::c::{ArtifactDescriptor, CCompilerImpl, CCompilerKind, ParsedArguments};
+use crate::compiler::c::{ArtifactDescriptor, CCompilerImpl, CCompilerKind, ParsedArguments, PreprocessorOutput};
 use crate::compiler::{
     CCompileCommand, Cacheable, ColorMode, CompileCommand, CompilerArguments, Language,
     SingleCompileCommand, clang, gcc, write_temp_file,
@@ -77,7 +77,7 @@ impl CCompilerImpl for Msvc {
         may_dist: bool,
         rewrite_includes_only: bool,
         preprocessor_cache_mode: bool,
-    ) -> Result<process::Output>
+    ) -> Result<PreprocessorOutput>
     where
         T: CommandCreatorSync,
     {
@@ -94,6 +94,7 @@ impl CCompilerImpl for Msvc {
             preprocessor_cache_mode,
         )
         .await
+        .map(Into::into)
     }
 
     fn generate_compile_commands<T>(
@@ -1098,7 +1099,7 @@ pub async fn preprocess<T>(
     rewrite_includes_only: bool,
     is_clang: bool,
     preprocessor_cache_mode: bool,
-) -> Result<process::Output>
+) -> Result<PreprocessorOutput>
 where
     T: CommandCreatorSync,
 {
@@ -1114,6 +1115,21 @@ where
         preprocessor_cache_mode,
     );
 
+    // Ask cl.exe what it read, rather than reconstructing it afterwards from
+    // `#line` records in the preprocessed text. The scrape works only because
+    // the text was produced, and reading it back is a parse of a format nobody
+    // promised -- which is why `#line` detection was silently broken for every
+    // compiler until it was found. Only real cl.exe supports this; clang-cl
+    // reports includes through the existing stderr path.
+    let source_deps = (preprocessor_cache_mode && !is_clang)
+        .then(|| tempfile::Builder::new().prefix("sccache-deps").suffix(".json").tempfile().ok())
+        .flatten();
+    if let Some(f) = &source_deps {
+        let mut arg = OsString::from("/sourceDependencies");
+        arg.push(f.path());
+        cmd.arg(&arg);
+    }
+
     if log_enabled!(Debug) {
         debug!("preprocess: {:?}", cmd);
     }
@@ -1124,8 +1140,20 @@ where
 
     let output = run_input_output(cmd, None).await?;
 
+    // Read the report before the temp file is dropped.
+    let reported_inputs = source_deps.and_then(|f| {
+        let text = std::fs::read_to_string(f.path()).ok()?;
+        let deps = crate::compiler::depfile::parse_source_dependencies(&text);
+        // Empty means the report could not be read, which must reach the caller
+        // as "nothing verifiable" rather than "no includes".
+        (!deps.is_empty()).then_some(deps)
+    });
+
     if !is_clang {
-        return Ok(output);
+        return Ok(PreprocessorOutput {
+            output,
+            reported_inputs,
+        });
     }
 
     let parsed_args = &parsed_args;
@@ -1180,9 +1208,10 @@ where
             status,
             stdout,
             stderr: stderr_bytes,
-        })
+        }
+        .into())
     } else {
-        Ok(output)
+        Ok(output.into())
     }
 }
 

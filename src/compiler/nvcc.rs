@@ -17,7 +17,7 @@
 #![allow(unused_imports, dead_code, unused_variables)]
 
 use crate::compiler::args::*;
-use crate::compiler::c::{ArtifactDescriptor, CCompilerImpl, CCompilerKind, ParsedArguments};
+use crate::compiler::c::{ArtifactDescriptor, CCompilerImpl, CCompilerKind, ParsedArguments, PreprocessorOutput};
 use crate::compiler::gcc::ArgData::*;
 use crate::compiler::{
     self, CCompileCommand, Cacheable, CompileCommand, CompileCommandImpl, CompilerArguments,
@@ -178,7 +178,7 @@ impl CCompilerImpl for Nvcc {
         may_dist: bool,
         rewrite_includes_only: bool,
         _preprocessor_cache_mode: bool,
-    ) -> Result<process::Output>
+    ) -> Result<PreprocessorOutput>
     where
         T: CommandCreatorSync,
     {
@@ -287,7 +287,9 @@ impl CCompilerImpl for Nvcc {
             run_input_output(dependencies_command(), None).await?;
         }
 
-        run_input_output(preprocessor_command(), None).await
+        run_input_output(preprocessor_command(), None)
+            .await
+            .map(Into::into)
     }
 
     fn generate_compile_commands<T>(

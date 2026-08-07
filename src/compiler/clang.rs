@@ -16,7 +16,7 @@
 #![allow(unused_imports, dead_code, unused_variables)]
 
 use crate::compiler::args::*;
-use crate::compiler::c::{ArtifactDescriptor, CCompilerImpl, CCompilerKind, ParsedArguments};
+use crate::compiler::c::{ArtifactDescriptor, CCompilerImpl, CCompilerKind, ParsedArguments, PreprocessorOutput};
 use crate::compiler::gcc::ArgData::*;
 use crate::compiler::{
     CCompileCommand, Cacheable, CompileCommand, CompilerArguments, Language, gcc, write_temp_file,
@@ -117,7 +117,7 @@ impl CCompilerImpl for Clang {
         may_dist: bool,
         rewrite_includes_only: bool,
         preprocessor_cache_mode: bool,
-    ) -> Result<process::Output>
+    ) -> Result<PreprocessorOutput>
     where
         T: CommandCreatorSync,
     {
@@ -146,6 +146,7 @@ impl CCompilerImpl for Clang {
             language_to_clang_arg,
         )
         .await
+        .map(Into::into)
     }
 
     fn generate_compile_commands<T>(

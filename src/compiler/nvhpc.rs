@@ -17,7 +17,7 @@
 #![allow(unused_imports, dead_code, unused_variables)]
 
 use crate::compiler::args::*;
-use crate::compiler::c::{ArtifactDescriptor, CCompilerImpl, CCompilerKind, ParsedArguments};
+use crate::compiler::c::{ArtifactDescriptor, CCompilerImpl, CCompilerKind, ParsedArguments, PreprocessorOutput};
 use crate::compiler::gcc::ArgData::*;
 use crate::compiler::{
     CCompileCommand, Cacheable, CompileCommand, CompilerArguments, Language, gcc, write_temp_file,
@@ -82,7 +82,7 @@ impl CCompilerImpl for Nvhpc {
         may_dist: bool,
         rewrite_includes_only: bool,
         _preprocessor_cache_mode: bool,
-    ) -> Result<process::Output>
+    ) -> Result<PreprocessorOutput>
     where
         T: CommandCreatorSync,
     {
@@ -152,9 +152,9 @@ impl CCompilerImpl for Nvhpc {
             // we explicitly wait on the first one before starting the second one?
             // (rather than via which drives these concurrently)
             let (_f, s) = futures::future::try_join(first, second).await?;
-            Ok(s)
+            Ok(s.into())
         } else {
-            run_input_output(cmd, None).await
+            run_input_output(cmd, None).await.map(Into::into)
         }
     }
 
