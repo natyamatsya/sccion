@@ -110,6 +110,71 @@ fn pdb_source_files(pdb_path: &Path) -> Vec<(String, SourceHash)> {
     found
 }
 
+/// Audit a real PDB, pointed at by the environment.
+///
+/// The synthetic test below proves the mechanism. This one is for pointing at
+/// an actual product build before trusting cross-checkout sharing on it:
+///
+/// ```text
+/// SCCACHE_TEST_PDB=D:\...\build\...\RelWithDebInfo\product.pdb
+/// SCCACHE_TEST_PDB_ROOT=D:\src\product
+/// ```
+///
+/// Only files that resolve under the root are checked. A product PDB names the
+/// SDK, the CRT and every vendored dependency, and those legitimately live
+/// elsewhere; the question here is whether *our* sources are addressed in a way
+/// that survives being compiled in a different checkout.
+#[test]
+fn real_pdb_addresses_project_sources_portably() {
+    let (Some(pdb_path), Some(root)) = (
+        std::env::var_os("SCCACHE_TEST_PDB"),
+        std::env::var_os("SCCACHE_TEST_PDB_ROOT"),
+    ) else {
+        eprintln!("skipping: set SCCACHE_TEST_PDB and SCCACHE_TEST_PDB_ROOT to audit a real build");
+        return;
+    };
+    let root = PathBuf::from(root);
+    let files = pdb_source_files(Path::new(&pdb_path));
+    assert!(!files.is_empty(), "PDB named no source files at all");
+
+    let mut checked = 0usize;
+    let mut absolute_into_root = Vec::new();
+    for (name, checksum) in &files {
+        let p = Path::new(name);
+        // An absolute path *inside* the tree is the failure this is looking
+        // for: it pins the object to this checkout.
+        if p.is_absolute() {
+            if p.starts_with(&root) {
+                absolute_into_root.push(name.clone());
+            }
+            continue;
+        }
+        let local = root.join(name);
+        if !local.is_file() {
+            continue; // not ours
+        }
+        checked += 1;
+        assert!(
+            checksum.matches(&fs::read(&local).unwrap()),
+            "{name} on disk does not match what the PDB says was compiled"
+        );
+    }
+
+    assert!(
+        absolute_into_root.is_empty(),
+        "{} source paths are absolute inside the checkout, so objects built here \
+         cannot be reused by another checkout; first few: {:?}",
+        absolute_into_root.len(),
+        absolute_into_root.iter().take(5).collect::<Vec<_>>()
+    );
+    assert!(
+        checked > 0,
+        "no project sources resolved under {}; is SCCACHE_TEST_PDB_ROOT right?",
+        root.display()
+    );
+    eprintln!("verified {checked} project sources in {pdb_path:?}");
+}
+
 #[test]
 fn debug_info_from_another_checkout_still_resolves_locally() {
     let (Some(cl), Some(link)) = (require_msvc("cl.exe"), require_msvc("link.exe")) else {
