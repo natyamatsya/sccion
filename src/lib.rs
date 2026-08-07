@@ -51,6 +51,7 @@ pub mod pipe;
 pub mod lru_disk_cache;
 mod mock_command;
 mod net;
+pub mod projectconf;
 mod protocol;
 pub mod server;
 #[doc(hidden)]

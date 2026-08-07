@@ -796,6 +796,40 @@ pub struct FileConfig {
 
 // If the file doesn't exist or we can't read it, log the issue and proceed. If the
 // config exists but doesn't parse then something is wrong - return an error.
+/// Bring a basedir into the exact form the matcher expects.
+///
+/// Shared by the configured basedirs and by the ones discovered from a project
+/// file, because the two are compared against the same haystacks: a discovered
+/// basedir that differed by a separator or by case would simply never match,
+/// and would do so silently.
+pub fn normalize_basedir(dir: &str) -> Result<Vec<u8>> {
+    let p = Utf8TypedPathBuf::from(dir);
+    if !p.is_absolute() {
+        bail!("Basedir path must be absolute: {:?}", p);
+    }
+    // Normalize basedir:
+    // remove double separators, cur_dirs, parent_dirs, trailing slashes
+    let p_norm = p.normalize();
+    let mut bytes = p_norm.to_string().into_bytes();
+
+    // Always add a trailing `/` to basedirs to ensure we only match complete path
+    // components
+    bytes.push(b'/');
+
+    // normalize windows paths: use slashes and lowercase
+    Ok({
+        #[cfg(target_os = "windows")]
+        {
+            normalize_win_path(&bytes)
+        }
+
+        #[cfg(not(target_os = "windows"))]
+        {
+            bytes
+        }
+    })
+}
+
 pub fn try_read_config_file<T: DeserializeOwned>(path: &Path) -> Result<Option<T>> {
     debug!("Attempting to read config file at {:?}", path);
     let mut file = match File::open(path) {
@@ -1323,31 +1357,7 @@ impl Config {
         // basedirs_raw is Vec<PathBuf>
         let mut basedirs = Vec::with_capacity(basedirs_raw.len());
         for d in basedirs_raw {
-            let p = Utf8TypedPathBuf::from(d);
-            if !p.is_absolute() {
-                bail!("Basedir path must be absolute: {:?}", p);
-            }
-            // Normalize basedir:
-            // remove double separators, cur_dirs, parent_dirs, trailing slashes
-            let p_norm = p.normalize();
-            let mut bytes = p_norm.to_string().into_bytes();
-
-            // Always add a trailing `/` to basedirs to ensure we only match complete path
-            // components
-            bytes.push(b'/');
-
-            // normalize windows paths: use slashes and lowercase
-            let normalized = {
-                #[cfg(target_os = "windows")]
-                {
-                    normalize_win_path(&bytes)
-                }
-
-                #[cfg(not(target_os = "windows"))]
-                {
-                    bytes
-                }
-            };
+            let normalized = normalize_basedir(&d)?;
             // push only if not already present
             if !basedirs.contains(&normalized) {
                 basedirs.push(normalized);

@@ -49,6 +49,26 @@ use crate::errors::*;
 use super::CacheControl;
 use super::preprocessor_cache::PreprocessorCacheEntry;
 
+/// The basedirs in force for a compilation in `cwd`.
+///
+/// Configured basedirs come first so an explicit setting wins any tie, followed
+/// by whatever a project file at or above `cwd` contributes. Returns the
+/// configured set untouched when there is no project file, which is every
+/// project that has not opted in.
+fn effective_basedirs(configured: &[Vec<u8>], cwd: &Path) -> Vec<Vec<u8>> {
+    let discovered = crate::projectconf::discover_basedirs(cwd);
+    if discovered.is_empty() {
+        return configured.to_vec();
+    }
+    let mut out = configured.to_vec();
+    for d in discovered {
+        if !out.contains(&d) {
+            out.push(d);
+        }
+    }
+    out
+}
+
 /// A generic implementation of the `Compiler` trait for C/C++ compilers.
 #[derive(Clone)]
 pub struct CCompiler<I>
@@ -380,6 +400,12 @@ where
     ) -> Result<HashResult<T>> {
         let start_of_compilation = std::time::SystemTime::now();
 
+        // Configured basedirs, plus any contributed by a `.sccache.toml` found
+        // at or above this compilation. Discovery is keyed on the compilation's
+        // own directory rather than on the daemon's, because one daemon serves
+        // every checkout on the machine.
+        let basedirs = effective_basedirs(storage.basedirs(), &cwd);
+
         let extra_hashes =
             hash_all_memoized(&self.parsed_args.extra_hash_files, &pool.clone()).await?;
         // Create an argument vector containing both preprocessor and arch args, to
@@ -456,7 +482,7 @@ where
                 &absolute_input_path,
                 self.compiler.plusplus(),
                 preprocessor_cache_mode_config,
-                storage.basedirs(),
+                &basedirs,
             )?
         } else {
             None
@@ -642,7 +668,7 @@ where
         .with_extra_hashes(&extra_hashes)
         .with_env_vars(&env_vars)
         .with_plusplus(self.compiler.plusplus())
-        .with_basedirs(storage.basedirs())
+        .with_basedirs(&basedirs)
         .compute();
 
         // Cache the preprocessing step
