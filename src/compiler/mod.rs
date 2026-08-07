@@ -22,6 +22,7 @@ mod clang;
 #[allow(clippy::module_inception)]
 mod compiler;
 mod cudafe;
+mod depfile;
 mod diab;
 mod gcc;
 mod msvc;
