@@ -362,3 +362,28 @@ Drive state needs elevation, and reporting an unelevated failure as "not a Dev
 Drive" would silently disable the check.
 
 `--stats-format=json` emits the whole report for tooling.
+
+## Per-invocation cost on Windows
+
+Building with `--no-default-features` drops the cache backends the local-disk case
+never uses (OpenDAL's nine services, reqwest, reqsign, hyper), taking the binary
+from about 19 MiB to 7 MiB.
+
+Measured effect, 150 serial cache-hit invocations against a 1 MiB `/Z7` object:
+
+```
+                              full     slim
+process-creation floor        8.96     9.02 ms   (cmd /c exit 0)
+sccache startup above floor   1.43     0.70 ms
+config + connect + IPC        5.07     5.06 ms
+compile-specific              9.42     9.78 ms
+```
+
+The slim build halves sccache's own startup, but that is 0.7 ms of a ~24 ms
+invocation. The dominant term is the **~9 ms this machine charges to create any
+process at all** — `cmd /c exit 0` costs the same — and nothing inside sccache can
+go below it. Only not spawning a process per translation unit can, which means
+build-system integration rather than a change here.
+
+So build slim for the smaller deployment and the DLL imports it removes, but do
+not expect it to change build times.

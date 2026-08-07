@@ -192,10 +192,8 @@ fn test_server_unsupported_compiler() {
     let mut stdout = Cursor::new(Vec::new());
     let mut stderr = Cursor::new(Vec::new());
     let path = Some(f.paths);
-    let mut runtime = Runtime::new().unwrap();
     let res = do_compile(
-        client_creator,
-        &mut runtime,
+        || Ok((client_creator, Runtime::new().unwrap())),
         conn,
         exe,
         cmdline,
@@ -262,12 +260,10 @@ fn test_server_compile() {
     let mut stdout = Cursor::new(Vec::new());
     let mut stderr = Cursor::new(Vec::new());
     let path = Some(f.paths);
-    let mut runtime = Runtime::new().unwrap();
     assert_eq!(
         0,
         do_compile(
-            client_creator,
-            &mut runtime,
+            || Ok((client_creator, Runtime::new().unwrap())),
             conn,
             exe,
             cmdline,

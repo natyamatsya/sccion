@@ -82,6 +82,13 @@ struct Args {
     #[arg(long, default_value_t = 30)]
     stall: u64,
 
+    /// Instead of the build scenarios, measure per-invocation client cost:
+    /// spawn this many serial cache-hit compiles and report the mean, against
+    /// `--version` and a do-nothing spawn as controls. Serial on purpose --
+    /// parallelism is what hides this cost in a real build.
+    #[arg(long, default_value_t = 0)]
+    client_cost: usize,
+
     /// Run each scenario this many times and report the median with its spread.
     /// Only wall clock needs repeating; the cache counters are deterministic and
     /// are checked for agreement across repetitions instead.
@@ -454,6 +461,16 @@ fn main() -> Result<()> {
 
     if findings.has_errors() && !args.skip_checks {
         bail!("environment checks failed; fix the above or pass --skip-checks");
+    }
+
+    if args.client_cost > 0 {
+        return client_cost(
+            args.client_cost,
+            &sccache,
+            &compiler,
+            &project_dir,
+            &environment,
+        );
     }
 
     // --- scenarios -------------------------------------------------------
@@ -909,4 +926,126 @@ fn print_summary(result: &BenchResult) {
                 .unwrap_or(1)
         );
     }
+}
+
+/// Measure what one client invocation costs, with nothing else in the loop.
+///
+/// Spawned straight from this process rather than through a shell: a shell's own
+/// per-iteration overhead is comparable to the thing being measured, which is how
+/// an earlier attempt at this produced a floor larger than sccache itself.
+fn client_cost(
+    runs: usize,
+    sccache: &Path,
+    compiler: &Path,
+    project_dir: &Path,
+    environment: &HashMap<String, String>,
+) -> Result<()> {
+    use std::process::{Command, Stdio};
+
+    let dir = project_dir.join("client-cost");
+    fs::create_dir_all(&dir)?;
+    let src = dir.join("t.cpp");
+    // Fat enough that the object is a realistic size; the point is a normal hit,
+    // not a degenerate one.
+    fs::write(
+        &src,
+        b"#include <vector>
+#include <map>
+#include <string>
+#include <sstream>
+          int main(){ std::map<std::string,std::vector<int>> m; std::ostringstream o; o<<1;           m[o.str()].push_back(1); return (int)m.size(); }
+",
+    )?;
+
+    let compile_args = |out: &str| -> Vec<String> {
+        vec![
+            compiler.display().to_string(),
+            "/nologo".into(),
+            "/c".into(),
+            "/Z7".into(),
+            "/EHsc".into(),
+            "/std:c++17".into(),
+            "t.cpp".into(),
+            format!("/Fo{out}"),
+        ]
+    };
+
+    let run = |args: &[String]| -> Result<()> {
+        let status = Command::new(sccache)
+            .args(args)
+            .current_dir(&dir)
+            .envs(environment)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()?;
+        if !status.success() {
+            bail!("invocation failed: {sccache:?} {args:?}");
+        }
+        Ok(())
+    };
+
+    // Populate, so every timed run is a hit.
+    run(&compile_args("warm.obj"))?;
+    let object_bytes = fs::metadata(dir.join("warm.obj"))
+        .map(|m| m.len())
+        .unwrap_or(0);
+
+    let time_it = |label: &str, args: &[String]| -> Result<f64> {
+        // One warm-up, so first-touch page faults land outside the measurement.
+        run(args)?;
+        let start = std::time::Instant::now();
+        for _ in 0..runs {
+            run(args)?;
+        }
+        let ms = start.elapsed().as_secs_f64() * 1000.0 / runs as f64;
+        eprintln!("  {label:<28} {ms:7.2} ms");
+        Ok(ms)
+    };
+
+    eprintln!(
+        "
+per-invocation client cost ({runs} serial runs, object {object_bytes} bytes)"
+    );
+    // Decomposed, so the total can be attributed rather than guessed at:
+    //   --version    spawn + image load + argument parsing, nothing else
+    //   --zero-stats the above, plus config load, connect and one IPC round trip
+    //   compile      all of that, plus everything compile-specific
+    let hit = time_it("cache-hit compile", &compile_args("out.obj"))?;
+    let ipc = time_it("sccache --zero-stats", &["--zero-stats".to_string()])?;
+    let version = time_it("sccache --version", &["--version".to_string()])?;
+
+    // The floor: what this machine charges to create any process at all. Nothing
+    // inside sccache can go below it; only not spawning a process per translation
+    // unit can.
+    let floor = {
+        let args = ["/c".to_string(), "exit".to_string(), "0".to_string()];
+        let cmd_exe = PathBuf::from(std::env::var("COMSPEC").unwrap_or_else(|_| "cmd.exe".into()));
+        let start = std::time::Instant::now();
+        for _ in 0..runs {
+            let _ = Command::new(&cmd_exe)
+                .args(&args)
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()?;
+        }
+        let ms = start.elapsed().as_secs_f64() * 1000.0 / runs as f64;
+        eprintln!("  {:<28} {ms:7.2} ms", "cmd /c exit 0 (floor)");
+        ms
+    };
+    eprintln!();
+    eprintln!("  {:<28} {:7.2} ms", "process-creation floor", floor);
+    eprintln!(
+        "  {:<28} {:7.2} ms",
+        "sccache startup above floor",
+        version - floor
+    );
+    eprintln!("  {:<28} {:7.2} ms", "spawn + arg parsing", version);
+    eprintln!(
+        "  {:<28} {:7.2} ms",
+        "config + connect + IPC",
+        ipc - version
+    );
+    eprintln!("  {:<28} {:7.2} ms", "compile-specific", hit - ipc);
+
+    Ok(())
 }

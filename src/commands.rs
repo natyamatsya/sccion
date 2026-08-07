@@ -535,9 +535,8 @@ fn handle_compile_finished(
 /// from `conn`, falling back to local execution if the server disconnects
 /// unexpectedly.  Delegates to `handle_compile_result` for the final dispatch.
 #[allow(clippy::too_many_arguments)]
-fn handle_compile_response<T>(
-    creator: T,
-    runtime: &mut Runtime,
+fn handle_compile_response<T, F>(
+    make_fallback: F,
     conn: &mut ServerConnection,
     response: CompileResponse,
     exe: &Path,
@@ -548,6 +547,7 @@ fn handle_compile_response<T>(
 ) -> Result<i32>
 where
     T: CommandCreatorSync,
+    F: FnOnce() -> Result<(T, Runtime)>,
 {
     let result = match &response {
         CompileResponse::CompileStarted => {
@@ -585,16 +585,22 @@ where
     };
 
     handle_compile_result(
-        creator, runtime, response, result, exe, cmdline, cwd, stdout, stderr,
+        make_fallback,
+        response,
+        result,
+        exe,
+        cmdline,
+        cwd,
+        stdout,
+        stderr,
     )
 }
 
 /// Dispatch the outcome of a compile, whether received from the daemon over IPC
 /// or produced by a local `SccacheService` in client-side mode.
 #[allow(clippy::too_many_arguments)]
-fn handle_compile_result<T>(
-    mut creator: T,
-    runtime: &mut Runtime,
+fn handle_compile_result<T, F>(
+    make_fallback: F,
     response: CompileResponse,
     finished: Option<CompileFinished>,
     exe: &Path,
@@ -605,6 +611,7 @@ fn handle_compile_result<T>(
 ) -> Result<i32>
 where
     T: CommandCreatorSync,
+    F: FnOnce() -> Result<(T, Runtime)>,
 {
     match response {
         CompileResponse::CompileStarted => {
@@ -621,6 +628,12 @@ where
             debug!("Server sent UnhandledCompile");
         }
     }
+
+    // Nothing above this point needs a jobserver or a tokio runtime, and on a
+    // cache hit -- the overwhelmingly common case -- we never get here. Building
+    // them eagerly cost a named semaphore, a helper thread with a runtime of its
+    // own, and an IOCP registration on every single invocation.
+    let (mut creator, runtime) = make_fallback()?;
 
     let mut cmd = creator.new_command_sync(exe);
     cmd.args(&cmdline).current_dir(cwd);
@@ -651,9 +664,8 @@ where
 /// an absolute path.
 /// See `request_compile` and `handle_compile_response`.
 #[allow(clippy::too_many_arguments)]
-pub fn do_compile<T>(
-    creator: T,
-    runtime: &mut Runtime,
+pub fn do_compile<T, F>(
+    make_fallback: F,
     mut conn: ServerConnection,
     exe: &Path,
     cmdline: Vec<OsString>,
@@ -665,12 +677,20 @@ pub fn do_compile<T>(
 ) -> Result<i32>
 where
     T: CommandCreatorSync,
+    F: FnOnce() -> Result<(T, Runtime)>,
 {
     trace!("do_compile");
     let exe_path = which_in(exe, path, cwd)?;
     let res = request_compile(&mut conn, &exe_path, &cmdline, cwd, env_vars)?;
     handle_compile_response(
-        creator, runtime, &mut conn, res, &exe_path, cmdline, cwd, stdout, stderr,
+        make_fallback,
+        &mut conn,
+        res,
+        &exe_path,
+        cmdline,
+        cwd,
+        stdout,
+        stderr,
     )
 }
 
@@ -716,10 +736,10 @@ where
         env_vars,
     };
     let (compile_resp, finished) = runtime.block_on(service.compile_direct(compile))?;
-    let creator = C::new(jobserver);
     let exit_code = handle_compile_result(
-        creator,
-        runtime,
+        // Client-side mode has already built both to run the compile itself, so
+        // there is nothing to defer here.
+        || Ok((C::new(jobserver), new_client_runtime()?)),
         compile_resp,
         finished,
         &exe_path,
@@ -946,7 +966,6 @@ pub fn run_command(cmd: Command) -> Result<i32> {
                     _ => (),
                 });
 
-            let jobserver = Client::new();
             let conn = connect_or_start_server(&get_addr(), startup_timeout)?;
 
             // Client-side mode is a pessimization for MSVC (see `is_msvc_like`), so fall
@@ -972,6 +991,10 @@ pub fn run_command(cmd: Command) -> Result<i32> {
                     .worker_threads(2)
                     .enable_all()
                     .build()?;
+                // Only client-side mode runs the compile in this process, so only it
+                // needs a jobserver -- which on Windows means a named semaphore and a
+                // helper thread carrying its own runtime.
+                let jobserver = Client::new();
                 let res = do_compile_client_side::<ProcessCommandCreator>(
                     &jobserver,
                     &mut runtime,
@@ -986,10 +1009,12 @@ pub fn run_command(cmd: Command) -> Result<i32> {
                 );
                 return res.context("failed to execute compile");
             }
-            let mut runtime = new_client_runtime()?;
             let res = do_compile(
-                ProcessCommandCreator::new(&jobserver),
-                &mut runtime,
+                || {
+                    let jobserver = Client::new();
+                    let creator = ProcessCommandCreator::new(&jobserver);
+                    Ok((creator, new_client_runtime()?))
+                },
                 conn,
                 exe.as_ref(),
                 cmdline,
@@ -1053,7 +1078,7 @@ mod test {
     /// local compilation rather than panic.
     #[test]
     fn test_handle_compile_response_disconnect_falls_back_to_local() {
-        let mut runtime = make_runtime();
+        let runtime = make_runtime();
         let client = Client::new_num(1);
         let creator = Arc::new(Mutex::new(MockCommandCreator::new(&client)));
         // exit_status takes a raw platform value: on Unix the wait(2) encoding
@@ -1076,8 +1101,7 @@ mod test {
         let mut stderr = vec![];
 
         let code = handle_compile_response(
-            creator,
-            &mut runtime,
+            move || Ok((creator, runtime)),
             &mut conn,
             CompileResponse::CompileStarted,
             exe,
