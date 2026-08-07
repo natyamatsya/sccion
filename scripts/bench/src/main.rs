@@ -1032,8 +1032,91 @@ per-invocation client cost ({runs} serial runs, object {object_bytes} bytes)"
         eprintln!("  {:<28} {ms:7.2} ms", "cmd /c exit 0 (floor)");
         ms
     };
+    // What the transport itself costs, with no sccache in the picture: a fresh
+    // loopback TCP connection, one round trip, close -- exactly the shape of a
+    // client invocation. If this is small, the IPC time is daemon-side handling
+    // and changing transport cannot help.
+    let tcp = {
+        use std::io::{Read, Write};
+        use std::net::{TcpListener, TcpStream};
+        let listener = TcpListener::bind("127.0.0.1:0")?;
+        let addr = listener.local_addr()?;
+        let server = std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut s) = stream else { break };
+                let mut buf = [0u8; 256];
+                match s.read(&mut buf) {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => {
+                        if s.write_all(&buf[..n]).is_err() {
+                            break;
+                        }
+                    }
+                }
+            }
+        });
+        let start = std::time::Instant::now();
+        for _ in 0..runs {
+            let mut s = TcpStream::connect(addr)?;
+            s.write_all(b"ping")?;
+            let mut buf = [0u8; 4];
+            s.read_exact(&mut buf)?;
+        }
+        let ms = start.elapsed().as_secs_f64() * 1000.0 / runs as f64;
+        // Unblock the accept loop so the thread can retire.
+        let _ = TcpStream::connect(addr);
+        let _ = server.join();
+        eprintln!("  {:<28} {ms:7.2} ms", "raw loopback TCP round trip");
+        ms
+    };
+
+    // The same thing again, but *cross-process*, against the real daemon. A
+    // loopback connection between two processes traverses filters that an
+    // in-process one does not, so the in-process figure above is a lower bound,
+    // not a substitute.
+    let daemon_connect = {
+        use std::net::TcpStream;
+        let port: u16 = environment
+            .get("SCCACHE_SERVER_PORT")
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(4226);
+        let addr = format!("127.0.0.1:{port}");
+        // Confirm the daemon is actually there; a refused connect measures nothing.
+        match TcpStream::connect(&addr) {
+            Ok(_) => {
+                // A client pays Winsock initialisation once per process and then
+                // exits, so the amortised figure below flatters it. Time the very
+                // first socket separately to see that cost.
+                let first = {
+                    let t = std::time::Instant::now();
+                    let _ = TcpStream::connect(&addr)?;
+                    t.elapsed().as_secs_f64() * 1000.0
+                };
+                eprintln!("  {:<28} {first:7.2} ms", "  (first connect in process)");
+                let start = std::time::Instant::now();
+                for _ in 0..runs {
+                    // Connect and drop: isolates connection setup from any
+                    // request handling.
+                    let _ = TcpStream::connect(&addr)?;
+                }
+                let ms = start.elapsed().as_secs_f64() * 1000.0 / runs as f64;
+                eprintln!("  {:<28} {ms:7.2} ms", "connect to daemon (no req)");
+                ms
+            }
+            Err(e) => {
+                eprintln!("  connect to daemon: unavailable ({e})");
+                f64::NAN
+            }
+        }
+    };
+
     eprintln!();
     eprintln!("  {:<28} {:7.2} ms", "process-creation floor", floor);
+    eprintln!("  {:<28} {:7.2} ms", "TCP roundtrip, in-process", tcp);
+    eprintln!(
+        "  {:<28} {:7.2} ms",
+        "TCP connect, cross-process", daemon_connect
+    );
     eprintln!(
         "  {:<28} {:7.2} ms",
         "sccache startup above floor",

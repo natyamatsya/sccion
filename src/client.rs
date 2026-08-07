@@ -19,30 +19,32 @@ use crate::protocol::{Request, Response};
 use crate::util;
 use backon::BlockingRetryable;
 use byteorder::{BigEndian, ByteOrder};
-use std::io::{self, BufReader, BufWriter, Read};
+use std::io::{self, BufReader, Read};
 
 /// A connection to an sccache server.
+///
+/// One handle, used for both directions. It previously held two, obtained by
+/// duplicating the socket so a reader and a writer could be owned separately --
+/// but the protocol is strictly alternating request/response, so nothing ever
+/// used them concurrently, and on Windows duplicating a socket means
+/// `WSADuplicateSocket`, which measured ~2 ms per invocation against ~0.08 ms for
+/// the connect itself.
 pub struct ServerConnection {
-    /// A reader for the socket connected to the server.
-    reader: BufReader<Box<dyn Connection>>,
-    /// A writer for the socket connected to the server.
-    writer: BufWriter<Box<dyn Connection>>,
+    io: BufReader<Box<dyn Connection>>,
 }
 
 impl ServerConnection {
     /// Create a new connection using `stream`.
-    pub fn new(conn: Box<dyn Connection>) -> io::Result<ServerConnection> {
-        let write_conn = conn.try_clone()?;
-        Ok(ServerConnection {
-            reader: BufReader::new(conn),
-            writer: BufWriter::new(write_conn),
-        })
+    pub fn new(conn: Box<dyn Connection>) -> ServerConnection {
+        ServerConnection {
+            io: BufReader::new(conn),
+        }
     }
 
     /// Send `request` to the server, read and return a `Response`.
     pub fn request(&mut self, request: Request) -> Result<Response> {
         trace!("ServerConnection::request");
-        util::write_length_prefixed_bincode(&mut self.writer, request)?;
+        util::write_length_prefixed_bincode(self.io.get_mut(), request)?;
         trace!("ServerConnection::request: sent request");
         self.read_one_response()
     }
@@ -51,13 +53,13 @@ impl ServerConnection {
     pub fn read_one_response(&mut self) -> Result<Response> {
         trace!("ServerConnection::read_one_response");
         let mut bytes = [0; 4];
-        self.reader
+        self.io
             .read_exact(&mut bytes)
             .context("Failed to read response header")?;
         let len = BigEndian::read_u32(&bytes);
         trace!("Should read {} more bytes", len);
         let mut data = vec![0; len as usize];
-        self.reader.read_exact(&mut data)?;
+        self.io.read_exact(&mut data)?;
         trace!("Done reading");
         Ok(bincode::deserialize(&data)?)
     }
@@ -67,7 +69,7 @@ impl ServerConnection {
 pub fn connect_to_server(addr: &crate::net::SocketAddr) -> io::Result<ServerConnection> {
     trace!("connect_to_server({addr})");
     let conn = crate::net::connect(addr)?;
-    ServerConnection::new(conn)
+    Ok(ServerConnection::new(conn))
 }
 
 /// Attempt to establish a TCP connection to an sccache server listening on `addr`.

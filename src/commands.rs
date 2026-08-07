@@ -1038,7 +1038,7 @@ mod test {
     use crate::mock_command::{
         CommandCreator, ExitStatusValue, MockChild, MockCommandCreator, exit_status,
     };
-    use crate::net::Connection;
+
     use std::sync::{Arc, Mutex};
 
     fn make_runtime() -> Runtime {
@@ -1067,12 +1067,6 @@ mod test {
         }
     }
 
-    impl Connection for DisconnectedConnection {
-        fn try_clone(&self) -> io::Result<Box<dyn Connection>> {
-            Ok(Box::new(DisconnectedConnection))
-        }
-    }
-
     /// A mid-compile server disconnect: the server sends CompileStarted then drops the
     /// connection before CompileFinished.  handle_compile_response must fall back to
     /// local compilation rather than panic.
@@ -1093,7 +1087,7 @@ mod test {
             .unwrap()
             .next_command_spawns(Ok(MockChild::new(exit_status(exit_val), "", "")));
 
-        let mut conn = ServerConnection::new(Box::new(DisconnectedConnection)).unwrap();
+        let mut conn = ServerConnection::new(Box::new(DisconnectedConnection));
         let exe = Path::new("cc");
         let cmdline = vec![OsString::from("foo.c")];
         let cwd = Path::new("/");

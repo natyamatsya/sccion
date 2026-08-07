@@ -492,3 +492,26 @@ mod tests {
         assert!(!report.has_errors());
     }
 }
+
+#[cfg(test)]
+mod cost {
+    use super::*;
+
+    /// Not an assertion: how long does loading the configuration take?
+    ///
+    /// It sits on the client's hot path, and the per-invocation budget it
+    /// competes for is single-digit milliseconds, so "it reads a small file" is
+    /// not good enough an answer.
+    #[test]
+    fn report_config_load_cost() {
+        let runs = 500;
+        // Warm the filesystem cache and any lazily-initialised globals first.
+        let _ = Config::load();
+        let start = std::time::Instant::now();
+        for _ in 0..runs {
+            let _ = Config::load();
+        }
+        let ms = start.elapsed().as_secs_f64() * 1000.0 / runs as f64;
+        eprintln!("CONFIG LOAD: {ms:.3} ms per call ({runs} runs)");
+    }
+}
