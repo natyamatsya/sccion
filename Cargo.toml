@@ -148,6 +148,16 @@ temp-env = "0.3.6"
 test-case = "3.3.1"
 thirtyfour = "0.36"
 
+# Reading PDBs is how the debug-information tests confirm that a cache hit from
+# another checkout still points a debugger at the right sources -- checked by
+# resolving the recorded paths and comparing source checksums, rather than by
+# someone stepping through a debugger by hand.
+[target.'cfg(windows)'.dev-dependencies]
+md-5 = "0.10"
+pdb = "0.8"
+sha1 = "0.10"
+sha2 = "0.10"
+
 [target.'cfg(unix)'.dependencies]
 daemonix = "0.1"
 
