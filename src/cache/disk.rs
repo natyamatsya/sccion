@@ -28,7 +28,6 @@ use std::time::{Duration, Instant};
 use crate::errors::*;
 
 use super::lazy_disk_cache::LazyDiskCache;
-use super::utils::normalize_key;
 use crate::config::PreprocessorCacheModeConfig;
 
 /// A cache that stores entries at local disk paths.
@@ -75,6 +74,29 @@ impl DiskCache {
 /// Make a path to the cache entry with key `key`.
 fn make_key_path(key: &str) -> PathBuf {
     Path::new(&key[0..1]).join(&key[1..2]).join(key)
+}
+
+/// Make a path to the preprocessor cache entry with key `key`.
+///
+/// The same three-level layout `normalize_key` produces, but built as a path
+/// rather than a string, so the separators are the platform's.
+///
+/// That distinction is load-bearing. `LruDiskCache` keys its index on the entry's
+/// path relative to the cache root, and it rebuilds that index at startup by
+/// stripping the root from real filesystem paths -- which on Windows come back
+/// with backslashes. A key inserted as `a/b/c/<key>` therefore never matches the
+/// `a\b\c\<key>` reconstructed on the next run, and every preprocessor cache
+/// lookup misses for the lifetime of that daemon. The object cache was unaffected
+/// only because it already went through `make_key_path`.
+///
+/// `normalize_key` itself is correct for the object-storage backends, whose keys
+/// are forward-slash separated regardless of host, so the fix belongs here.
+/// The on-disk layout is unchanged, so caches written before this still resolve.
+fn make_preprocessor_key_path(key: &str) -> PathBuf {
+    Path::new(&key[0..1])
+        .join(&key[1..2])
+        .join(&key[2..3])
+        .join(key)
 }
 
 #[async_trait]
@@ -238,7 +260,7 @@ impl Storage for DiskCache {
         &self.basedirs
     }
     async fn get_preprocessor_cache_entry(&self, key: &str) -> Result<Option<Box<dyn ReadSeek>>> {
-        let key = normalize_key(key);
+        let key = make_preprocessor_key_path(key);
         Ok(self
             .preprocessor_cache
             .lock()
@@ -256,7 +278,7 @@ impl Storage for DiskCache {
             return Err(anyhow!("Cannot write to a read-only cache"));
         }
 
-        let key = normalize_key(key);
+        let key = make_preprocessor_key_path(key);
         let mut f = self
             .preprocessor_cache
             .lock()
@@ -295,5 +317,62 @@ mod tests {
         );
 
         assert_eq!(disk.cache_type_name(), "disk");
+    }
+
+    /// A preprocessor cache entry must still be findable by a *later* process.
+    ///
+    /// The daemon exits on an idle timeout, so this is the ordinary case, not an
+    /// edge case. Writing and reading through one `DiskCache` passes even when
+    /// the key is wrong, because the LRU still holds the key exactly as
+    /// inserted; only a fresh index rebuilt from the filesystem catches it. So
+    /// the second `DiskCache` over the same directory is the whole test.
+    #[test]
+    fn preprocessor_cache_entry_survives_a_restart() {
+        let tempdir = tempfile::tempdir().unwrap();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        let config = PreprocessorCacheModeConfig {
+            use_preprocessor_cache_mode: true,
+            ..Default::default()
+        };
+        let key = "0123456789abcdef0123456789abcdef";
+
+        let first = DiskCache::new(
+            tempdir.path(),
+            1024 * 1024,
+            runtime.handle(),
+            config,
+            CacheMode::ReadWrite,
+            vec![],
+        );
+        runtime
+            .block_on(first.put_preprocessor_cache_entry(key, PreprocessorCacheEntry::new()))
+            .unwrap();
+        assert!(
+            runtime
+                .block_on(first.get_preprocessor_cache_entry(key))
+                .unwrap()
+                .is_some(),
+            "entry should be readable by the process that wrote it"
+        );
+        drop(first);
+
+        let second = DiskCache::new(
+            tempdir.path(),
+            1024 * 1024,
+            runtime.handle(),
+            config,
+            CacheMode::ReadWrite,
+            vec![],
+        );
+        assert!(
+            runtime
+                .block_on(second.get_preprocessor_cache_entry(key))
+                .unwrap()
+                .is_some(),
+            "entry should survive a daemon restart; a key whose separators do not \
+             match the rebuilt index makes every lookup miss"
+        );
     }
 }
