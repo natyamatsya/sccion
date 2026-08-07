@@ -32,6 +32,10 @@ pub enum SocketAddr {
     Unix(std::path::PathBuf),
     #[cfg(any(target_os = "linux", target_os = "android"))]
     UnixAbstract(Vec<u8>),
+    /// A Windows named pipe, held as its full name, e.g.
+    /// `\.\pipe\sccache-S-1-5-21-...-1`.
+    #[cfg(windows)]
+    Pipe(String),
 }
 
 impl fmt::Display for SocketAddr {
@@ -42,6 +46,10 @@ impl fmt::Display for SocketAddr {
             SocketAddr::Unix(p) => write!(f, "{}", p.display()),
             #[cfg(any(target_os = "linux", target_os = "android"))]
             SocketAddr::UnixAbstract(p) => write!(f, "\\x00{}", p.escape_ascii()),
+            // The `\\.\pipe\` prefix cannot be confused with an `ip:port`, so this
+            // round-trips through `ServerStartup::Ok { addr }` unambiguously.
+            #[cfg(windows)]
+            SocketAddr::Pipe(name) => write!(f, "{name}"),
         }
     }
 }
@@ -57,7 +65,7 @@ impl SocketAddr {
     pub fn as_net(&self) -> Option<&std::net::SocketAddr> {
         match self {
             SocketAddr::Net(addr) => Some(addr),
-            #[cfg(unix)]
+            #[allow(unreachable_patterns)]
             _ => None,
         }
     }
@@ -80,14 +88,36 @@ impl SocketAddr {
         Ok(SocketAddr::Unix(path))
     }
 
-    #[cfg(unix)]
-    pub fn is_unix_path(&self) -> bool {
-        matches!(self, SocketAddr::Unix(_))
+    /// The prefix every Windows named pipe name carries.
+    #[cfg(windows)]
+    pub const PIPE_PREFIX: &'static str = r"\.\pipe\";
+
+    /// Parse a pipe address, accepting either a bare name or a full pipe path.
+    #[cfg(windows)]
+    pub fn parse_pipe(s: &str) -> Self {
+        if s.starts_with(Self::PIPE_PREFIX) {
+            SocketAddr::Pipe(s.to_owned())
+        } else {
+            SocketAddr::Pipe(format!("{}{}", Self::PIPE_PREFIX, s))
+        }
     }
 
-    #[cfg(not(unix))]
-    pub fn is_unix_path(&self) -> bool {
-        false
+    /// Whether a `NotFound` from [`connect`] means "no server is running" rather
+    /// than a genuine failure.
+    ///
+    /// TCP reports `ConnectionRefused` for that, but a Unix socket path and a
+    /// named pipe name simply do not exist until something is listening --
+    /// `CreateFileW` on an absent pipe returns ERROR_FILE_NOT_FOUND.
+    pub fn not_found_means_no_server(&self) -> bool {
+        match self {
+            SocketAddr::Net(_) => false,
+            #[cfg(unix)]
+            SocketAddr::Unix(_) => true,
+            #[cfg(any(target_os = "linux", target_os = "android"))]
+            SocketAddr::UnixAbstract(_) => true,
+            #[cfg(windows)]
+            SocketAddr::Pipe(_) => true,
+        }
     }
 }
 
@@ -135,6 +165,10 @@ pub fn connect(addr: &SocketAddr) -> std::io::Result<Box<dyn Connection>> {
             std::os::unix::net::UnixStream::connect_addr(&sock)
                 .map(|s| Box::new(s) as Box<dyn Connection>)
         }
+        #[cfg(windows)]
+        SocketAddr::Pipe(name) => {
+            crate::pipe::connect_pipe(name).map(|s| Box::new(s) as Box<dyn Connection>)
+        }
     }
 }
 
@@ -165,14 +199,6 @@ mod unix_imp {
             //     return Ok(SocketAddr::UnixAbstract(p.to_vec()));
             // }
             Ok(None)
-        }
-    }
-
-    impl Connection for std::os::unix::net::UnixStream {
-        #[inline]
-        fn try_clone(&self) -> std::io::Result<Box<dyn Connection>> {
-            let stream = std::os::unix::net::UnixStream::try_clone(self)?;
-            Ok(Box::new(stream))
         }
     }
 }

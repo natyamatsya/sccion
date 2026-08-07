@@ -432,6 +432,21 @@ thread_local! {
 ///
 /// Spins an event loop handling client connections until a client
 /// requests a shutdown.
+/// How many named pipe instances to keep armed.
+///
+/// A pipe instance serves one client, and instances are re-armed the moment they
+/// are handed out, so the only window for ERROR_PIPE_BUSY is the microseconds
+/// between accept and re-arm -- and it takes this many simultaneous arrivals
+/// inside that window to hit it. Sized to the machine rather than to `-j`, since
+/// the daemon does not know the latter.
+#[cfg(windows)]
+fn pipe_instances() -> usize {
+    std::env::var("SCCACHE_SERVER_PIPE_INSTANCES")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or_else(|| util::num_cpus().clamp(4, 32))
+}
+
 pub fn start_server(config: &Config, addr: &crate::net::SocketAddr) -> Result<()> {
     info!("start_server: {addr}");
     let panic_hook = std::panic::take_hook();
@@ -537,6 +552,24 @@ pub fn start_server(config: &Config, addr: &crate::net::SocketAddr) -> Result<()
                 Ok((
                     srv.local_addr()
                         .unwrap_or_else(|| crate::net::SocketAddr::UnixAbstract(p.clone())),
+                    Box::new(move |f| srv.run(f)) as Box<dyn FnOnce(_) -> _>,
+                ))
+            }
+            #[cfg(windows)]
+            crate::net::SocketAddr::Pipe(name) => {
+                trace!("binding named pipe {name}");
+                let instances = pipe_instances();
+                let l = {
+                    // `bind` spawns a task per pre-armed instance, so it needs a
+                    // runtime context.
+                    let _guard = runtime.enter();
+                    crate::pipe::NamedPipeListener::bind(name, instances)?
+                };
+                let srv =
+                    SccacheServer::<_>::with_listener(l, runtime, client, dist_client, storage);
+                Ok((
+                    srv.local_addr()
+                        .unwrap_or_else(|| crate::net::SocketAddr::Pipe(name.clone())),
                     Box::new(move |f| srv.run(f)) as Box<dyn FnOnce(_) -> _>,
                 ))
             }

@@ -45,6 +45,9 @@ mod compiler;
 pub mod config;
 pub mod dist;
 mod jobserver;
+#[cfg(windows)]
+pub mod pipe;
+
 pub mod lru_disk_cache;
 mod mock_command;
 mod net;

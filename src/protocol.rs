@@ -5,6 +5,14 @@ use crate::compiler::ColorMode;
 use crate::config::PreprocessorCacheModeConfig;
 use crate::server::{DistInfo, ServerInfo, ServerStats};
 use serde::{Deserialize, Serialize};
+
+/// Bumped whenever the wire types below change shape.
+///
+/// It forms part of the named pipe's name, so a client and a daemon built either
+/// side of a change fail to find each other rather than exchanging bytes one of
+/// them will misread. bincode is not self-describing, so without this the
+/// mismatch is silent misinterpretation rather than a clean error.
+pub const PROTOCOL_VERSION: u32 = 1;
 use std::ffi::OsString;
 
 /// A client request.

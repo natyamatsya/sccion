@@ -166,6 +166,9 @@ features = [
   # ReFS block cloning: DeviceIoControl plus the FSCTL_* codes and structs.
   "Win32_System_IO",
   "Win32_System_Ioctl",
+  # Named pipe transport: SID lookup for the pipe name, and WaitNamedPipeW.
+  "Win32_Security_Authorization",
+  "Win32_System_Pipes",
 ]
 version = "0.52"
 

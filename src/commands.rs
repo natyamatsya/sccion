@@ -320,7 +320,7 @@ fn connect_or_start_server(
         Err(ref e)
             if (e.kind() == io::ErrorKind::ConnectionRefused
                 || e.kind() == io::ErrorKind::TimedOut)
-                || (e.kind() == io::ErrorKind::NotFound && addr.is_unix_path()) =>
+                || (e.kind() == io::ErrorKind::NotFound && addr.not_found_means_no_server()) =>
         {
             // If the connection was refused we probably need to start
             // the server.
