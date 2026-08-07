@@ -277,6 +277,7 @@ ArgData! {
     XClang(OsString), // -Xclang ...
     Clang(OsString), // -clang:...
     ExternalIncludePath(PathBuf),
+    DynamicDeopt, // Emits a second object file alongside -Fo.
 }
 
 use self::ArgData::*;
@@ -444,6 +445,7 @@ msvc_args!(static ARGS: [ArgInfo<ArgData>; _] = [
     msvc_take_arg!("deps", PathBuf, Concatenated, DepFile),
     msvc_take_arg!("diagnostics:", OsString, Concatenated, PassThroughWithSuffix),
     msvc_take_arg!("doc", PathBuf, Concatenated, TooHardPath), // Creates an .xdc file.
+    msvc_flag!("dynamicdeopt", DynamicDeopt), // Dynamic Debugging; emits <obj-stem>.alt.obj too.
     msvc_take_arg!("errorReport:", OsString, Concatenated, PassThroughWithSuffix), // Deprecated.
     msvc_take_arg!("execution-charset:", OsString, Concatenated, PassThroughWithSuffix),
     msvc_flag!("experimental:deterministic", PassThrough),
@@ -537,6 +539,7 @@ pub fn parse_arguments(
     let mut compilation = false;
     let mut compilation_flag = OsString::new();
     let mut debug_info = false;
+    let mut dynamic_deopt = false;
     let mut pdb = None;
     let mut depfile = None;
     let mut show_includes = false;
@@ -589,6 +592,7 @@ pub fn parse_arguments(
             Some(SuppressCompilation) => {
                 return CompilerArguments::NotCompilation;
             }
+            Some(DynamicDeopt) => dynamic_deopt = true,
             Some(XClang(s)) => xclangs.push(s.clone()),
             Some(Clang(s)) => clangs.push(s.clone()),
             None => {
@@ -619,6 +623,7 @@ pub fn parse_arguments(
                 ),
             Some(ProgramDatabase(_))
             | Some(DebugInfo)
+            | Some(DynamicDeopt)
             | Some(PassThrough)
             | Some(PassThroughWithPath(_))
             | Some(PassThroughWithSuffix(_)) => common_args.extend(
@@ -844,6 +849,31 @@ pub fn parse_arguments(
             ArtifactDescriptor {
                 path: tli,
                 optional: true,
+            },
+        );
+    }
+    if dynamic_deopt
+        && let Some(obj) = outputs.get("obj")
+    {
+        // /dynamicdeopt (Dynamic Debugging) compiles the translation unit twice
+        // and writes the deoptimized copy beside the object file, as
+        // `<obj-stem>.alt.obj`. Measured: it is emitted for every translation
+        // unit the flag is passed for, including an empty one, and never
+        // without the flag -- so it is essential rather than optional, like the
+        // -Fd pdb.
+        //
+        // The linker does not consume it; the debugger loads it from disk when
+        // you deoptimize a frame. That is exactly why it has to be cached: a
+        // cache hit that restored only the object file would leave whatever
+        // .alt.obj happened to be on disk next to a freshly restored object,
+        // and the failure shows up as a debugger stepping through the wrong
+        // code -- silently, and only for the person debugging.
+        let alt = obj.path.with_extension("alt.obj");
+        outputs.insert(
+            "alt_obj",
+            ArtifactDescriptor {
+                path: alt,
+                optional: false,
             },
         );
     }
@@ -1763,6 +1793,52 @@ mod test {
         };
         assert_eq!(Some("foo.c"), input.to_str());
         assert_eq!(ovec!["-dynamicdeopt"], common_args);
+    }
+
+    #[test]
+    fn parse_dynamicdeopt_captures_the_alt_object() {
+        // /dynamicdeopt writes a second object beside -Fo. Caching only the
+        // first would restore a hit next to a stale .alt.obj.
+        let args = ovec!["-c", "foo.c", "/Fofoo.obj", "/dynamicdeopt"];
+        let ParsedArguments {
+            outputs,
+            common_args,
+            ..
+        } = match parse_arguments(args) {
+            CompilerArguments::Ok(args) => args,
+            o => panic!("Got unexpected parse result: {:?}", o),
+        };
+        assert_eq!(
+            Some(&ArtifactDescriptor {
+                path: PathBuf::from("foo.alt.obj"),
+                optional: false
+            }),
+            outputs.get("alt_obj")
+        );
+        // The flag still reaches the compiler and is hashed.
+        assert_eq!(ovec!["/dynamicdeopt"], common_args);
+
+        // -Fo naming a directory: the alt object follows the object there.
+        let args = ovec!["-c", "foo.c", "/Foout\\", "/dynamicdeopt"];
+        let ParsedArguments { outputs, .. } = match parse_arguments(args) {
+            CompilerArguments::Ok(args) => args,
+            o => panic!("Got unexpected parse result: {:?}", o),
+        };
+        assert_eq!(
+            Some(&ArtifactDescriptor {
+                path: PathBuf::from("out\\foo.alt.obj"),
+                optional: false
+            }),
+            outputs.get("alt_obj")
+        );
+
+        // Without the flag there is no such artifact.
+        let args = ovec!["-c", "foo.c", "/Fofoo.obj"];
+        let ParsedArguments { outputs, .. } = match parse_arguments(args) {
+            CompilerArguments::Ok(args) => args,
+            o => panic!("Got unexpected parse result: {:?}", o),
+        };
+        assert!(!outputs.contains_key("alt_obj"));
     }
 
     #[test]
