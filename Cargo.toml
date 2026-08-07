@@ -38,6 +38,17 @@ codegen-units = 1
 lto = true
 strip = true
 
+# Release, but resolvable in a profiler.
+#
+# Inherits release rather than standing alone on purpose: `lto` and
+# `codegen-units = 1` change inlining enough that a profile taken without them
+# describes a binary nobody ships. The only differences are that symbols
+# survive, so a sampled stack names functions instead of addresses.
+[profile.profiling]
+inherits = "release"
+debug = 1
+strip = false
+
 [dependencies]
 anyhow = { version = "1.0", features = ["backtrace"] }
 ar = "0.9"
