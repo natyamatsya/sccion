@@ -1,3 +1,4 @@
+// SPDX-FileCopyrightText: Copyright natyamatsya and sccache contributors
 // SPDX-License-Identifier: Apache-2.0
 
 use std::cmp::Ordering;
@@ -572,6 +573,18 @@ impl<T: ArgumentValue> SearchableArgInfo<T> for (&'static [ArgInfo<T>], &'static
     }
 }
 
+/// Whether a `/`-prefixed argument is a switch rather than a source file.
+///
+/// `/` is ambiguous: on Windows it is MSVC's switch prefix, but clang-cl also
+/// runs on unix, where `/usr/src/foo.cpp` is an ordinary absolute path. The
+/// extension settles it -- an argument the compiler would recognise as a source
+/// language is a file, anything else is a switch. Deliberately not a
+/// filesystem probe: argument parsing must not depend on what happens to exist
+/// on disk, or the same command line parses differently on two machines.
+fn looks_like_flag(s: &str) -> bool {
+    s.starts_with('/') && crate::compiler::Language::from_file_name(Path::new(s)).is_none()
+}
+
 /// An `Iterator` for parsed arguments
 pub struct ArgsIter<I, T, S>
 where
@@ -581,6 +594,7 @@ where
     arguments: I,
     arg_info: S,
     seen_double_dashes: Option<bool>,
+    slash_flags: bool,
     phantom: PhantomData<T>,
 }
 
@@ -599,12 +613,28 @@ where
             arguments,
             arg_info,
             seen_double_dashes: None,
+            slash_flags: false,
             phantom: PhantomData,
         }
     }
 
     pub fn with_double_dashes(mut self) -> Self {
         self.seen_double_dashes = Some(false);
+        self
+    }
+
+    /// Also treat `/` as introducing a flag, for compilers that accept the MSVC
+    /// spelling.
+    ///
+    /// Without this an unrecognised `/`-form switch falls into
+    /// [`Argument::Raw`], which every caller reads as "an input file". A single
+    /// unknown switch alongside a real source file therefore reads as two
+    /// inputs, and the compilation is rejected as uncacheable -- silently, and
+    /// for every translation unit that carries the switch. The `-` spelling of
+    /// the same switch is already handled correctly, so this only removes an
+    /// asymmetry between two spellings MSVC treats as identical.
+    pub fn with_slash_flags(mut self) -> Self {
+        self.slash_flags = true;
         self
     }
 }
@@ -631,7 +661,7 @@ where
             let arguments = &mut self.arguments;
             Some(match self.arg_info.search(&s[..]) {
                 Some(i) => i.clone().process(&s[..], || arguments.next()),
-                None => Ok(if s.starts_with('-') {
+                None => Ok(if s.starts_with('-') || (self.slash_flags && looks_like_flag(&s)) {
                     Argument::UnknownFlag(arg.clone())
                 } else {
                     Argument::Raw(arg.clone())

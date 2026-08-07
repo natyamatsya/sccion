@@ -549,7 +549,7 @@ pub fn parse_arguments(
     // Custom iterator to expand `@` arguments which stand for reading a file
     // and interpreting it as a list of more arguments.
     let it = ExpandIncludeFile::new(cwd, arguments);
-    let mut it = ArgsIter::new(it, (&ARGS[..], &SLASH_ARGS[..]));
+    let mut it = ArgsIter::new(it, (&ARGS[..], &SLASH_ARGS[..])).with_slash_flags();
     if is_clang {
         it = it.with_double_dashes();
     }
@@ -1732,6 +1732,56 @@ mod test {
         assert!(preprocessor_args.is_empty());
         assert!(common_args.is_empty());
         assert!(!msvc_show_includes);
+    }
+
+    #[test]
+    fn parse_unknown_slash_flag_is_a_flag_not_an_input() {
+        // An unrecognised `/`-form switch is a switch. Before this was fixed it
+        // fell through to `Argument::Raw`, which reads as an input file, so a
+        // single unknown switch beside a real source file was rejected as
+        // "multiple input files" -- silently uncached, for every affected TU.
+        // `/dynamicdeopt` is the concrete case: CMake puts it in
+        // CMAKE_CXX_FLAGS_RELWITHDEBINFO and it is not in the arg table.
+        let args = ovec!["-c", "foo.c", "/Fofoo.obj", "/dynamicdeopt"];
+        let ParsedArguments {
+            input, common_args, ..
+        } = match parse_arguments(args) {
+            CompilerArguments::Ok(args) => args,
+            o => panic!("Got unexpected parse result: {:?}", o),
+        };
+        assert_eq!(Some("foo.c"), input.to_str());
+        assert_eq!(ovec!["/dynamicdeopt"], common_args);
+
+        // MSVC treats the two spellings as identical; the `-` form already
+        // parsed correctly, so the point of the fix is that they now agree.
+        let args = ovec!["-c", "foo.c", "/Fofoo.obj", "-dynamicdeopt"];
+        let ParsedArguments {
+            input, common_args, ..
+        } = match parse_arguments(args) {
+            CompilerArguments::Ok(args) => args,
+            o => panic!("Got unexpected parse result: {:?}", o),
+        };
+        assert_eq!(Some("foo.c"), input.to_str());
+        assert_eq!(ovec!["-dynamicdeopt"], common_args);
+    }
+
+    #[test]
+    fn parse_slash_prefixed_source_path_is_an_input() {
+        // clang-cl also runs on unix, where a leading `/` is an absolute path.
+        // A recognised source extension keeps such an argument an input file.
+        let args = ovec!["-c", "/tmp/foo.c", "-Fofoo.obj"];
+        let ParsedArguments {
+            input,
+            language,
+            common_args,
+            ..
+        } = match parse_arguments(args) {
+            CompilerArguments::Ok(args) => args,
+            o => panic!("Got unexpected parse result: {:?}", o),
+        };
+        assert_eq!(Some("/tmp/foo.c"), input.to_str());
+        assert_eq!(Language::C, language);
+        assert!(common_args.is_empty());
     }
 
     #[test]
