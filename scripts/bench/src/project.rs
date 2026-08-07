@@ -232,12 +232,30 @@ int main() {{
 }
 
 fn cmake_source(units: &[String]) -> String {
-    let sources = std::iter::once("main".to_string())
-        .chain(units.iter().cloned())
+    let sources = units
+        .iter()
         .map(|u| format!("    src/{u}.cpp"))
         .collect::<Vec<_>>()
-        .join("\n");
+        .join(
+            "
+",
+        );
 
+    // Two targets, because they answer different questions.
+    //
+    // `bench_objects` is an OBJECT library: ninja produces the .obj files and
+    // stops. That is what a benchmark of a *compiler cache* should measure --
+    // building it exercises exactly the compile-and-cache path and nothing else.
+    //
+    // `sccache_bench` links them into an executable, for when whole-build realism
+    // is wanted. It is separate because the link is large, serial, and entirely
+    // uncached: at 61 translation units it accounted for most of a "cached
+    // rebuild", so including it by default measured the linker, not sccache.
+    //
+    // Job pools pin how much of each runs at once. The link pool has depth 1 so
+    // that when the link *is* included it contributes the same way every run
+    // rather than overlapping compiles differently each time.
+    //
     // CMP0141 (CMake 3.25) is what makes CMAKE_MSVC_DEBUG_INFORMATION_FORMAT take
     // effect. Without it CMake bakes /Zi into the flags, MSVC writes a PDB shared
     // across translation units, and sccache refuses to cache at all ("shared pdb").
@@ -249,10 +267,18 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 cmake_policy(SET CMP0141 NEW)
 
-add_executable(sccache_bench
+# Compile concurrency comes from `ninja -j`; the link is pinned to one at a time.
+set_property(GLOBAL PROPERTY JOB_POOLS bench_link=1)
+set(CMAKE_JOB_POOL_LINK bench_link)
+
+add_library(bench_objects OBJECT
 {sources}
 )
+target_include_directories(bench_objects PRIVATE include)
+
+add_executable(sccache_bench src/main.cpp)
 target_include_directories(sccache_bench PRIVATE include)
+target_link_libraries(sccache_bench PRIVATE bench_objects)
 "#
     )
 }

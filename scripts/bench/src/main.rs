@@ -89,6 +89,15 @@ struct Args {
     #[arg(long, default_value_t = 0)]
     client_cost: usize,
 
+    /// Also link the executable, instead of stopping at the object files.
+    ///
+    /// Off by default: the link is large, serial and entirely uncached, and at 61
+    /// translation units it dominated a "cached rebuild" -- so including it
+    /// measured the linker rather than sccache. Turn it on for whole-build
+    /// realism, not for judging a cache change.
+    #[arg(long)]
+    with_link: bool,
+
     /// Run each scenario this many times and report the median with its spread.
     /// Only wall clock needs repeating; the cache counters are deterministic and
     /// are checked for agreement across repetitions instead.
@@ -481,6 +490,15 @@ fn main() -> Result<()> {
         label: label.to_string(),
     };
 
+    // Empty means "ninja's default target", which links. A generated project
+    // offers an object-library target; a user-supplied one may not, so only ask
+    // for it when we generated the project ourselves.
+    let target = if args.with_link || args.project.is_some() {
+        ""
+    } else {
+        "bench_objects"
+    };
+
     let reps = args.repeat.max(1);
     let mut scenarios: Vec<ScenarioResult> = Vec::new();
     let compiler_arg = compiler.display().to_string();
@@ -532,6 +550,7 @@ fn main() -> Result<()> {
             &sccache,
             &ninja,
             &build_dir,
+            target,
             jobs,
             &environment,
             &sv("cold"),
@@ -553,6 +572,7 @@ fn main() -> Result<()> {
             &sccache,
             &ninja,
             &build_dir,
+            target,
             jobs,
             &environment,
             &sv("cached"),
@@ -618,6 +638,7 @@ fn main() -> Result<()> {
                         &sccache,
                         &ninja,
                         &build_dir,
+                        target,
                         jobs,
                         &environment,
                         &sv("touch"),
@@ -815,18 +836,24 @@ fn run_scenario(
     sccache: &Path,
     ninja: &Path,
     build_dir: &Path,
+    target: &str,
     jobs: usize,
     environment: &HashMap<String, String>,
     sv: &Supervision,
 ) -> Result<ScenarioResult> {
     stats::zero(sccache, environment)?;
 
-    let args: Vec<String> = vec![
+    let mut args: Vec<String> = vec![
         "-C".into(),
         build_dir.display().to_string(),
         "-j".into(),
         jobs.to_string(),
     ];
+    // Naming the object-library target stops ninja at the .obj files; the default
+    // target would link as well.
+    if !target.is_empty() {
+        args.push(target.to_string());
+    }
     let out = run_supervised(ninja, &args, None, environment, sv, Capture::Streamed)?;
 
     let mut notes = Vec::new();

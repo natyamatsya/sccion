@@ -45,6 +45,37 @@ copy <new build> target\bench-bin\after\sccache.exe
 
 Use a separate cache directory per binary, or the second run starts warm.
 
+## What gets built, and why the link is excluded
+
+The generated project offers two targets, and by default the harness builds only
+the first:
+
+- `bench_objects`, an OBJECT library — ninja produces the `.obj` files and stops.
+  This exercises exactly the compile-and-cache path, which is what a benchmark of
+  a compiler cache should measure.
+- `sccache_bench`, which links them. Available with `--with-link`.
+
+The link is large, serial and entirely uncached, and it was drowning the signal.
+Same project, 60 translation units, `-j32`, three repetitions:
+
+| | objects only | `--with-link` |
+|---|---|---|
+| cold | 3.50 s | 4.00 s |
+| **cached** | **0.45 s** | **0.91 s** |
+| touch | 3.24 s | 3.81 s |
+
+So more than half of what used to be reported as a "cached rebuild" was the
+linker. Any cache change would have had to move the world to show up against it.
+
+Ninja job pools pin the link to one at a time (`JOB_POOLS bench_link=1`,
+`CMAKE_JOB_POOL_LINK`), so that when it is included it contributes the same way
+every run instead of overlapping compiles differently each time. Compile
+concurrency still comes from `ninja -j`.
+
+Use `--with-link` for whole-build realism; leave it off when judging a change to
+sccache. A `--project` tree always builds its default target, since nothing can be
+assumed about its structure.
+
 ## Scenarios
 
 | | state going in | expectation |
