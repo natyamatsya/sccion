@@ -40,6 +40,28 @@ pub struct RawStats {
     pub compilations: u64,
     #[serde(default)]
     pub forced_recaches: u64,
+    /// Total time the daemon spent reading cache hits. Divided by the hit count
+    /// this is the per-hit materialization cost, which is what tells you whether
+    /// a rebuild is bounded by the cache or by everything around it.
+    #[serde(default)]
+    pub cache_read_hit_duration: Option<SerdeDuration>,
+    #[serde(default)]
+    pub cache_write_duration: Option<SerdeDuration>,
+    #[serde(default)]
+    pub compiler_write_duration: Option<SerdeDuration>,
+}
+
+/// `std::time::Duration` as serde renders it.
+#[derive(Debug, Clone, Copy, Deserialize)]
+pub struct SerdeDuration {
+    pub secs: u64,
+    pub nanos: u32,
+}
+
+impl SerdeDuration {
+    fn seconds(self) -> f64 {
+        self.secs as f64 + self.nanos as f64 / 1e9
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -62,6 +84,12 @@ pub struct ScenarioStats {
     pub compilations: u64,
     pub forced_recaches: u64,
     pub use_preprocessor_cache_mode: bool,
+    /// Seconds the daemon spent inside cache reads, writes and compiler runs.
+    /// Compare against the scenario's wall clock to see how much of a rebuild is
+    /// actually the cache.
+    pub cache_read_hit_seconds: f64,
+    pub cache_write_seconds: f64,
+    pub compiler_seconds: f64,
 }
 
 impl From<&RawInfo> for ScenarioStats {
@@ -78,6 +106,21 @@ impl From<&RawInfo> for ScenarioStats {
             compilations: info.stats.compilations,
             forced_recaches: info.stats.forced_recaches,
             use_preprocessor_cache_mode: info.use_preprocessor_cache_mode,
+            cache_read_hit_seconds: info
+                .stats
+                .cache_read_hit_duration
+                .map(SerdeDuration::seconds)
+                .unwrap_or(0.0),
+            cache_write_seconds: info
+                .stats
+                .cache_write_duration
+                .map(SerdeDuration::seconds)
+                .unwrap_or(0.0),
+            compiler_seconds: info
+                .stats
+                .compiler_write_duration
+                .map(SerdeDuration::seconds)
+                .unwrap_or(0.0),
         }
     }
 }
