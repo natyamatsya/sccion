@@ -34,7 +34,8 @@ mod test;
 #[macro_use]
 pub mod errors;
 
-pub mod cache;
+pub mod blockclone;
+mod cache;
 mod client;
 mod cmdline;
 mod commands;
