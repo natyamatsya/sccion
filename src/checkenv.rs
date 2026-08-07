@@ -81,6 +81,10 @@ pub struct DefenderReport {
     pub real_time_protection: Option<bool>,
     pub performance_mode: Option<String>,
     pub process_exclusions: Option<Vec<String>>,
+    /// Tamper Protection makes Defender discard exclusion writes without
+    /// failing, so this decides whether recommending `Add-MpPreference` is
+    /// useful advice or a wild goose chase.
+    pub tamper_protected: Option<bool>,
 }
 
 struct Findings(Vec<Finding>);
@@ -92,6 +96,21 @@ impl Findings {
             message: message.into(),
             remedy: remedy.map(str::to_owned),
         });
+    }
+}
+
+/// What to actually tell someone whose compiler is not excluded from Defender.
+///
+/// Only `Some(true)` diverts to the policy route. An unknown tamper state must
+/// keep the ordinary advice: guessing that it is on would talk someone out of a
+/// command that would have worked.
+fn exclusion_remedy(tamper_protected: Option<bool>) -> &'static str {
+    if tamper_protected == Some(true) {
+        "Tamper Protection must be turned off in the Windows Security app, or the \
+         exclusions set through Defender policy; Add-MpPreference will not take. \
+         A Dev Drive gets scanning deferred without needing exclusions at all."
+    } else {
+        "Add-MpPreference -ExclusionProcess cl.exe, sccache.exe, ninja.exe"
     }
 }
 
@@ -196,6 +215,7 @@ fn defender_report() -> DefenderReport {
         $s = Get-MpComputerStatus; $p = Get-MpPreference;\
         [pscustomobject]@{ rtp = $s.RealTimeProtectionEnabled;\
         perf = $s.PerformanceModeStatus;\
+        tamper = $s.IsTamperProtected;\
         excl = @($p.ExclusionProcess) } | ConvertTo-Json -Compress";
     let Ok(out) = std::process::Command::new("powershell")
         .args(["-NoProfile", "-NonInteractive", "-Command", script])
@@ -233,6 +253,9 @@ fn defender_report() -> DefenderReport {
             // would tell someone who had just added exclusions that they had
             // not. Treat it as the "could not tell" this type already models.
             .filter(|e: &Vec<String>| !e.iter().any(|p| p.contains("Must be an administrator"))),
+        // Readable without elevation, unlike the exclusion list itself, so this
+        // is worth reporting either way.
+        tamper_protected: v.get("tamper").and_then(|x| x.as_bool()),
     }
 }
 
@@ -328,12 +351,25 @@ pub fn check(config: &Config, cwd: &Path) -> EnvReport {
 
     let defender = defender_report();
     if defender.real_time_protection == Some(true) {
+        // Tamper Protection makes Defender accept an exclusion write and then
+        // discard it -- Add-MpPreference reports no error and the list stays
+        // empty. Recommending it here would send someone chasing a command that
+        // cannot work, so the remedy has to change with it.
+        let tampered = defender.tamper_protected == Some(true);
+        let remedy = exclusion_remedy(defender.tamper_protected);
         match defender.process_exclusions.as_ref() {
             Some(e) if !e.iter().any(|p| p.to_ascii_lowercase().contains("cl.exe")) => {
                 findings.push(
                     Level::Info,
-                    "Defender real-time protection is on and cl.exe is not excluded.".to_string(),
-                    Some("Add-MpPreference -ExclusionProcess cl.exe, sccache.exe, ninja.exe"),
+                    format!(
+                        "Defender real-time protection is on and cl.exe is not excluded{}.",
+                        if tampered {
+                            ", and Tamper Protection is on, so exclusions cannot be added locally"
+                        } else {
+                            ""
+                        }
+                    ),
+                    Some(remedy),
                 );
             }
             // Reading the exclusion list needs elevation. Say so, rather than
@@ -342,9 +378,17 @@ pub fn check(config: &Config, cwd: &Path) -> EnvReport {
             None => {
                 findings.push(
                     Level::Info,
-                    "Defender real-time protection is on; its process exclusions could not be \
-                     read (needs elevation), so this run cannot say whether cl.exe is excluded."
-                        .to_string(),
+                    format!(
+                        "Defender real-time protection is on; its process exclusions could not \
+                         be read (needs elevation), so this run cannot say whether cl.exe is \
+                         excluded.{}",
+                        if tampered {
+                            " Tamper Protection is on, so any exclusions that are missing cannot \
+                             be added locally anyway."
+                        } else {
+                            ""
+                        }
+                    ),
                     Some("Run this from an elevated prompt for a definitive answer."),
                 );
             }
@@ -430,6 +474,9 @@ impl EnvReport {
         if let Some(mode) = &self.defender.performance_mode {
             println!("  defender perf mode      {mode}");
         }
+        if let Some(t) = self.defender.tamper_protected {
+            println!("  defender tamper prot    {t}");
+        }
 
         if self.findings.is_empty() {
             println!("\nNo findings.");
@@ -453,6 +500,30 @@ impl EnvReport {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    /// Advice that cannot be carried out is worse than no advice: it sends
+    /// someone to run a command that reports success and changes nothing.
+    #[test]
+    fn tamper_protection_changes_the_exclusion_remedy() {
+        // Tamper Protection on: Add-MpPreference is accepted and discarded, so
+        // it must not be the advice.
+        let blocked = exclusion_remedy(Some(true));
+        assert!(blocked.contains("Tamper Protection"));
+        assert!(
+            !blocked.contains("Add-MpPreference -ExclusionProcess"),
+            "must not hand out a command that silently does nothing"
+        );
+
+        // Off, or unreadable: the ordinary advice stands. Guessing "on" would
+        // talk someone out of a command that would have worked.
+        for state in [Some(false), None] {
+            assert!(
+                exclusion_remedy(state).starts_with("Add-MpPreference"),
+                "tamper_protected={state:?} should keep the normal remedy"
+            );
+        }
+    }
 
     #[test]
     fn volume_root_handles_the_shapes_paths_actually_take() {
