@@ -64,6 +64,18 @@ if (-not (Get-Command cl.exe -ErrorAction SilentlyContinue)) {
     throw "cl.exe is not on PATH. Run `. .\Init-DevEnv.ps1` in this elevated shell first."
 }
 
+# Measured at roughly 139 MB/s on 32 busy cores, so a multi-minute build wants
+# tens of GB. Refuse up front rather than lose the build to a full disk at the
+# merge, which is where it would otherwise surface.
+$outDrive = (Split-Path -Qualifier (Resolve-Path -LiteralPath (Split-Path $Out -Parent) -ErrorAction SilentlyContinue).Path) -replace ':', ''
+if ($outDrive) {
+    $freeGiB = (Get-PSDrive $outDrive).Free / 1GB
+    Write-Host ("Free space on {0}: {1:N1} GiB" -f $outDrive, $freeGiB)
+    if ($freeGiB -lt 100) {
+        throw "Only $([math]::Round($freeGiB,1)) GiB free on ${outDrive}:; a full build's trace needs well over that."
+    }
+}
+
 # A stray recording from an earlier run would silently merge into this one.
 & wpr -cancel 2>&1 | Out-Null
 
@@ -72,14 +84,17 @@ if ($FileIO) { $profiles += @('-start', 'FileIO') }
 Write-Host ("Starting ETW capture ({0})..." -f $(if ($FileIO) { 'CPU + file I/O' } else { 'CPU sampling' }))
 # -filemode, not the default in-memory ring: a multi-minute build would wrap the
 # buffer and leave only the last few seconds, which is the part nobody needs.
+#
+# Volume is large -- roughly 139 MB/s on 32 busy cores, so tens of GB across a
+# build. Check free space before running rather than discovering it at the merge.
 & wpr @profiles -filemode
 if ($LASTEXITCODE -ne 0) { throw "wpr -start failed ($LASTEXITCODE)" }
 
 # Confirm it is actually recording. `-start` has returned success while leaving
-# nothing to stop, and the failure then surfaces only after the build has been
-# paid for in full.
+# nothing to stop, and that failure surfaces only after the build has been paid
+# for in full.
 $status = (& wpr -status 2>&1) -join ' '
-if ($status -match 'not recording') {
+if ($status -notmatch 'recording is in progress') {
     & wpr -cancel 2>&1 | Out-Null
     throw "wpr reported success but is not recording; refusing to run the build for a trace that will not exist."
 }
@@ -103,6 +118,9 @@ try {
 finally {
     Pop-Location
     Write-Host "Stopping capture and writing $Out (this takes a while)..."
+    # The stop performs a merge, which is what injects the image identification
+    # records. Without those no PDB can be matched at decode time and every
+    # frame comes back as a bare address.
     & wpr -stop $Out
     $stopRc = $LASTEXITCODE
     if ($stopRc -ne 0) {
