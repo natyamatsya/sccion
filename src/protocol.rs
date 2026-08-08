@@ -112,12 +112,10 @@ pub enum Response {
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub struct WorkspaceInfo {
     pub handle: String,
-    /// The checkout root the path resolved to, absolute. `None` when the path
-    /// is not inside a checkout, in which case the handle names the path
-    /// itself.
-    pub root: Option<String>,
-    /// `git`, `jj` or `hg`, when the root came from one.
-    pub vcs: Option<String>,
+    /// The checkout root the path resolved to, absolute.
+    pub root: String,
+    /// `git`, `jj` or `hg`.
+    pub vcs: String,
 }
 
 /// Possible responses from the server for a `Compile` request.

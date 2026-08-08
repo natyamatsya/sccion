@@ -450,6 +450,11 @@ fn test_a_workspace_handle_is_stable_and_scopes_what_it_can_see() {
     let checkout = f.tempdir.path().join("checkout");
     std::fs::create_dir_all(checkout.join("src")).unwrap();
     std::fs::create_dir_all(checkout.join(".git")).unwrap();
+    // A second checkout of the same project, which is the case all of this
+    // exists for.
+    let other_checkout = f.tempdir.path().join("worktree");
+    std::fs::create_dir_all(&other_checkout).unwrap();
+    std::fs::write(other_checkout.join(".git"), "gitdir: ../checkout/.git").unwrap();
     let elsewhere = f.tempdir.path().join("elsewhere");
     std::fs::create_dir_all(&elsewhere).unwrap();
 
@@ -466,11 +471,11 @@ fn test_a_workspace_handle_is_stable_and_scopes_what_it_can_see() {
         other => panic!("unexpected response: {other:?}"),
     };
     assert_eq!(
-        first.root.as_deref(),
+        Some(first.root.as_str()),
         checkout.to_str(),
         "a directory inside a checkout registers the checkout, not itself"
     );
-    assert_eq!(first.vcs.as_deref(), Some("git"));
+    assert_eq!(first.vcs, "git");
     assert!(
         first.handle.len() >= 32,
         "a handle is a capability, so it has to be unguessable: {:?}",
@@ -489,10 +494,10 @@ fn test_a_workspace_handle_is_stable_and_scopes_what_it_can_see() {
     };
     assert_eq!(again.handle, first.handle, "same checkout, same handle");
 
-    // A different place is a different handle.
+    // A different checkout is a different handle.
     let other = match conn
         .request(crate::protocol::Request::RegisterWorkspace {
-            path: elsewhere.into_os_string(),
+            path: other_checkout.into_os_string(),
         })
         .unwrap()
     {
@@ -500,6 +505,20 @@ fn test_a_workspace_handle_is_stable_and_scopes_what_it_can_see() {
         other => panic!("unexpected response: {other:?}"),
     };
     assert_ne!(other.handle, first.handle);
+
+    // A directory outside any checkout is refused rather than given a handle
+    // that no record could ever match -- which would answer every question
+    // with an empty list, reading as "nothing missed" instead of "not a
+    // workspace".
+    match conn
+        .request(crate::protocol::Request::RegisterWorkspace {
+            path: elsewhere.into_os_string(),
+        })
+        .unwrap()
+    {
+        crate::protocol::Response::Workspace(Err(_)) => {}
+        other => panic!("a non-checkout must not register: {other:?}"),
+    }
 
     // And an invented handle is refused rather than answered broadly.
     match conn

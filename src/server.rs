@@ -1299,8 +1299,18 @@ where
     /// each time would let a caller grow this without limit.
     pub fn register_workspace(&self, path: &Path) -> Result<crate::protocol::WorkspaceInfo> {
         let found = crate::projectconf::discover(path);
-        // A directory that is not in a checkout is still a place a build runs.
-        let root = found.vcs_root.clone().unwrap_or_else(|| path.to_path_buf());
+        // A workspace is a checkout, here and in the records, and it has to be
+        // the same definition in both. Falling back to the bare path for a
+        // directory outside any checkout would mint a handle that no record can
+        // ever match -- and the answer to every question asked with it would be
+        // an empty list, which reads as "nothing missed" rather than "that is
+        // not a workspace".
+        let (Some(root), Some(vcs)) = (found.vcs_root.clone(), found.vcs) else {
+            bail!(
+                "{} is not inside a checkout; a workspace is a git, jj or hg checkout",
+                path.display()
+            );
+        };
 
         let mut table = self.workspaces.lock().unwrap_or_else(|e| e.into_inner());
         let handle = match table.iter().find(|(_, r)| **r == root) {
@@ -1320,18 +1330,13 @@ where
 
         Ok(crate::protocol::WorkspaceInfo {
             handle,
-            root: found
-                .vcs_root
-                .as_ref()
-                .map(|r| r.to_string_lossy().into_owned()),
-            vcs: found.vcs.map(|v| {
-                match v {
-                    crate::projectconf::Vcs::Git => "git",
-                    crate::projectconf::Vcs::Jj => "jj",
-                    crate::projectconf::Vcs::Mercurial => "hg",
-                }
-                .to_owned()
-            }),
+            root: root.to_string_lossy().into_owned(),
+            vcs: match vcs {
+                crate::projectconf::Vcs::Git => "git",
+                crate::projectconf::Vcs::Jj => "jj",
+                crate::projectconf::Vcs::Mercurial => "hg",
+            }
+            .to_owned(),
         })
     }
 

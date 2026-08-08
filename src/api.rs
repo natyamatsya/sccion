@@ -32,6 +32,24 @@ pub use crate::protocol::WorkspaceInfo;
 pub use crate::missrecord::{Classification, DirectState, MissRecord};
 pub use crate::server::{AgentStats, DistInfo, ServerInfo, ServerStats};
 
+/// The daemon answered, and said no.
+///
+/// Distinct from failing to reach it at all, because the two want opposite
+/// responses: a refusal means the request was wrong and repeating it will not
+/// help, while an unreachable daemon means try again once one is running.
+/// Collapsing them reports "no daemon answered" for a daemon that answered
+/// perfectly clearly.
+#[derive(Debug)]
+pub struct Refused(pub String);
+
+impl std::fmt::Display for Refused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for Refused {}
+
 /// A local sccache daemon, running or not.
 #[derive(Debug)]
 pub struct Daemon {
@@ -101,7 +119,7 @@ impl Daemon {
             path: path.as_os_str().to_owned(),
         })? {
             Response::Workspace(Ok(info)) => Ok(info),
-            Response::Workspace(Err(e)) => bail!(e),
+            Response::Workspace(Err(e)) => Err(Refused(e).into()),
             _ => bail!("Unexpected server response!"),
         }
     }
@@ -115,7 +133,7 @@ impl Daemon {
             limit,
         })? {
             Response::MissRecords(Ok(records)) => Ok(records),
-            Response::MissRecords(Err(e)) => bail!(e),
+            Response::MissRecords(Err(e)) => Err(Refused(e).into()),
             _ => bail!("Unexpected server response!"),
         }
     }

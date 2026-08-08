@@ -3026,6 +3026,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "sccache-mcp"
+version = "0.17.0"
+dependencies = [
+ "anyhow",
+ "env_logger",
+ "sccache",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "schannel"
 version = "0.1.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
