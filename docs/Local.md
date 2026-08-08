@@ -49,9 +49,11 @@ Configuration options and their default values:
 
 - `hash_working_directory`: `true`. If true, will add the current working directory to the cache key to distinguish two compilations from different directories.
 
-- `use_dependency_keying`: `false`. If true, a compilation whose inputs are not already known is *compiled* and asked what it read, instead of being preprocessed so the same list can be recovered from the preprocessed text. This removes an entire compiler run from every preprocessor cache miss — on a reference MSVC build, 285ms of the 681ms such a miss costs. Only compilers that can report their inputs while compiling do this (currently MSVC, via `/sourceDependencies`); the rest preprocess as before, as do distributed compilations, which need preprocessed source.
+- `use_dependency_keying`: `true`. A compilation whose inputs are not already known is *compiled* and asked what it read, instead of being preprocessed so the same list can be recovered from the preprocessed text. This removes an entire compiler run from every preprocessor cache miss. Only compilers that can report their inputs while compiling do this (currently MSVC, via `/sourceDependencies`); the rest preprocess as before, as do distributed compilations, which need preprocessed source.
 
-  The trade is that a miss now costs a compile rather than a preprocess, so a compilation whose *manifest* is missing but whose *object* is already in the cache pays the difference instead of getting a cheap hit. Measure before enabling it on a build that shares a cache between checkouts.
+  Measured on a 2557-unit MSVC + Qt + CMake build: cold 485.4s → 414.8s, warm 99.5s → 94.8s. The warm side improves because a source file that includes nothing gets a manifest for the first time — sccache does not store one when the include list is empty, so such files re-preprocessed on every build.
+
+  The trade is that a miss now costs a compile rather than a preprocess, so a compilation whose *manifest* is missing but whose *object* is already in the cache pays the difference instead of getting a cheap hit. Set it to `false` if that describes your build.
 
   Whether it pays off is a property of the project rather than of the machine, so it can also be set in a committed `.sccache.toml` (see [Project configuration](#project-configuration)). It is asked for in order of how specific the answer is: the environment variable `SCCACHE_DEPEND` (`true`/`on`/`1` or `false`/`off`/`0`) for this invocation, then the project file, then this setting.
 

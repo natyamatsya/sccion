@@ -267,17 +267,20 @@ pub struct PreprocessorCacheModeConfig {
     /// If true (default), will add the current working directory in the hash to
     /// distinguish two compilations from different directories.
     pub hash_working_directory: bool,
-    /// If true, learn a compilation's inputs by running the compilation and
-    /// asking the compiler what it read, instead of preprocessing first and
-    /// recovering them from the output. Only compilers that can report do this;
-    /// the rest preprocess as before.
+    /// If true (default), learn a compilation's inputs by running the
+    /// compilation and asking the compiler what it read, instead of
+    /// preprocessing first and recovering them from the output. Only compilers
+    /// that can report do this; the rest preprocess as before.
     ///
     /// This removes a whole preprocessor run from every direct-mode miss. The
     /// trade is that a miss now costs a compile rather than a preprocess, so a
     /// compilation whose manifest is missing but whose *object* is in the cache
     /// -- the same tree checked out twice, a manifest evicted while its object
-    /// survived -- pays the difference. Off by default until measured against
-    /// the workload in question.
+    /// survived -- pays the difference.
+    ///
+    /// Measured on a 2557-unit MSVC + Qt build: cold 485.4s -> 414.8s, warm
+    /// 99.5s -> 94.8s. The warm side improves because a source that includes
+    /// nothing gets a manifest for the first time.
     pub use_dependency_keying: bool,
 }
 
@@ -290,7 +293,7 @@ impl Default for PreprocessorCacheModeConfig {
             ignore_time_macros: false,
             skip_system_headers: false,
             hash_working_directory: true,
-            use_dependency_keying: false,
+            use_dependency_keying: true,
         }
     }
 }

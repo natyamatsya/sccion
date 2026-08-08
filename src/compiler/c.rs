@@ -2935,9 +2935,51 @@ mod dependency_keying_test {
         run_with(cwd, arguments, report, status, Some(true))
     }
 
+    /// Nothing asks for dependency keying: not the invocation, not the project.
+    /// It is on because that is the default.
+    #[test]
+    fn it_is_on_by_default() {
+        let (_f, cwd, hdr) = fixture();
+        let args = ovec!["-c", "foo.c", "-Fofoo.obj"];
+
+        let r = run_full(&cwd, &args, Some(vec![hdr]), 0, None, true);
+
+        assert!(
+            !r.command_line.iter().any(|a| a == "-E" || a == "-EP"),
+            "the default should have kept the preprocessor out of it: {:?}",
+            r.command_line
+        );
+        assert_eq!(r.manifests.len(), 1);
+        assert_eq!(r.cacheable, Cacheable::Yes);
+    }
+
+    /// And a project that wants the old behaviour can still say so.
+    #[test]
+    fn a_project_can_decline_the_default() {
+        let (_f, cwd, hdr) = fixture();
+        std::fs::write(
+            cwd.join(crate::projectconf::PROJECT_CONF_NAME),
+            "use_dependency_keying = false\n",
+        )
+        .unwrap();
+        let args = ovec!["-c", "foo.c", "-Fofoo.obj"];
+
+        let r = run_full(&cwd, &args, Some(vec![hdr]), 0, None, true);
+
+        assert!(
+            r.command_line.iter().any(|a| a == "-E" || a == "-EP"),
+            "the project declined, so the preprocessor should be in charge: {:?}",
+            r.command_line
+        );
+    }
+
     /// As [`run`], with the `SCCACHE_DEPEND` this invocation carries -- `None`
     /// for one that says nothing, leaving the decision to the project file and
     /// then to the machine-wide setting.
+    ///
+    /// The machine-wide setting is pinned *off*, so that a test asking whether
+    /// something else turned keying on is answering that question and not the
+    /// default's.
     fn run_with(
         cwd: &Path,
         arguments: &[OsString],
@@ -2945,11 +2987,23 @@ mod dependency_keying_test {
         status: u32,
         depend: Option<bool>,
     ) -> Run {
+        run_full(cwd, arguments, report, status, depend, false)
+    }
+
+    /// As [`run_with`], also pinning the machine-wide setting.
+    fn run_full(
+        cwd: &Path,
+        arguments: &[OsString],
+        report: Option<Vec<PathBuf>>,
+        status: u32,
+        depend: Option<bool>,
+        machine: bool,
+    ) -> Run {
         let runtime = single_threaded_runtime();
         let creator = new_creator();
         let seen = Arc::new(Mutex::new(Vec::new()));
         next_command_calls(&creator, mock_compiler(seen.clone(), report, status));
-        let storage = Arc::new(MockStorage::new(None, true));
+        let storage = Arc::new(MockStorage::new(None, true).with_dependency_keying(machine));
         let env_vars: Vec<(OsString, OsString)> = depend
             .map(|d| {
                 vec![(

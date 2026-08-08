@@ -33,6 +33,10 @@ pub struct MockStorage {
     /// Manifests written, so a test can tell whether a compilation recorded
     /// what it read for the next one to find.
     manifests: Arc<std::sync::Mutex<Vec<(String, PreprocessorCacheEntry)>>>,
+    /// The machine-wide dependency keying setting, so a test can tell a
+    /// compilation that was keyed because the default says so from one that was
+    /// keyed because the project asked.
+    dependency_keying: bool,
 }
 
 impl MockStorage {
@@ -45,7 +49,14 @@ impl MockStorage {
             delay,
             preprocessor_cache_mode,
             manifests: Default::default(),
+            dependency_keying: PreprocessorCacheModeConfig::default().use_dependency_keying,
         }
+    }
+
+    /// Pin the machine-wide dependency keying setting.
+    pub(crate) fn with_dependency_keying(mut self, on: bool) -> Self {
+        self.dependency_keying = on;
+        self
     }
 
     /// Queue up `res` to be returned as the next result from `Storage::get`.
@@ -89,6 +100,7 @@ impl Storage for MockStorage {
     fn preprocessor_cache_mode_config(&self) -> PreprocessorCacheModeConfig {
         PreprocessorCacheModeConfig {
             use_preprocessor_cache_mode: self.preprocessor_cache_mode,
+            use_dependency_keying: self.dependency_keying,
             ..Default::default()
         }
     }
