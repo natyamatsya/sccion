@@ -20,6 +20,13 @@
 //! a checkout into a way to redirect another user's build. That is the same
 //! reason `.clang-format` cannot run a command.
 //!
+//! The walk answers a second question on the way, and it would be wasteful not
+//! to keep it: **which checkout is this compilation in**. Finding the project
+//! file means passing the VCS root, so the root is free, and it is what names a
+//! workspace for anything that has to distinguish one concurrent build from
+//! another. It is reported whether or not there is a project file, because most
+//! repositories have never heard of sccache and still belong to a checkout.
+//!
 //! The test a key has to pass is that the worst a hostile repository can do
 //! with it is make its own builds slower. `basedirs` passes: it can only make
 //! cache keys less specific to a path. `use_dependency_keying` passes: it
@@ -41,11 +48,32 @@ use crate::config::normalize_basedir;
 /// The file name looked for at each level.
 pub const PROJECT_CONF_NAME: &str = ".sccache.toml";
 
-/// Markers that end the upward walk.
+/// The version control system a checkout belongs to.
 ///
-/// `.git` is a directory in a clone and a *file* in a worktree, so both are
-/// accepted; a worktree is precisely the case this feature is for.
-const VCS_MARKERS: [&str; 3] = [".git", ".jj", ".hg"];
+/// Which one it is matters beyond ending the walk: a git worktree and a jj
+/// workspace are the two ways a checkout appears at a path nobody enumerated in
+/// advance, and they identify themselves differently.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Vcs {
+    Git,
+    Jj,
+    Mercurial,
+}
+
+impl Vcs {
+    /// Whether `dir` is the top of a checkout, and of what kind.
+    ///
+    /// `.git` is a directory in a clone and a *file* in a worktree, so both are
+    /// accepted; a worktree is precisely the case this exists for.
+    fn at(dir: &Path) -> Option<Vcs> {
+        for (marker, vcs) in [(".git", Vcs::Git), (".jj", Vcs::Jj), (".hg", Vcs::Mercurial)] {
+            if dir.join(marker).exists() {
+                return Some(vcs);
+            }
+        }
+        None
+    }
+}
 
 /// The subset of the file that is honoured. Everything else is ignored on
 /// purpose -- see the module comment.
@@ -91,6 +119,12 @@ pub struct Discovered {
     pub custom_cache_buster: Option<String>,
     /// Absolute, already resolved against the file's directory.
     pub extra_hash_files: Vec<PathBuf>,
+    /// The top of the checkout the compilation is in, and which VCS put it
+    /// there. Found whether or not there is a project file -- the walk passes
+    /// the root either way, and a compilation in a repository that has never
+    /// heard of sccache still belongs to a workspace worth naming.
+    pub vcs_root: Option<PathBuf>,
+    pub vcs: Option<Vcs>,
 }
 
 /// Enough of a file to notice that it has been edited.
@@ -156,22 +190,42 @@ pub fn discover_basedirs(start: &Path) -> Vec<Vec<u8>> {
 
 /// The settings in force at `start`, and the file they came from.
 fn walk(start: &Path) -> (Discovered, Option<PathBuf>) {
+    let mut conf: Option<(Discovered, PathBuf)> = None;
     let mut dir = Some(start);
     while let Some(d) = dir {
-        let candidate = d.join(PROJECT_CONF_NAME);
-        if candidate.is_file() {
-            let found = read_conf(&candidate, d);
-            return (found, Some(candidate));
+        // The first file wins; the walk carries on only to find the root.
+        if conf.is_none() {
+            let candidate = d.join(PROJECT_CONF_NAME);
+            if candidate.is_file() {
+                conf = Some((read_conf(&candidate, d), candidate));
+            }
         }
         // Stop *after* looking in the VCS root: the config belongs at the top of
         // the checkout, and continuing past it would let a file outside the
         // repository silently govern builds inside it.
-        if VCS_MARKERS.iter().any(|m| d.join(m).exists()) {
-            return (Discovered::default(), None);
+        if let Some(vcs) = Vcs::at(d) {
+            return finish(conf, Some((d.to_path_buf(), vcs)));
         }
         dir = d.parent();
     }
-    (Discovered::default(), None)
+    finish(conf, None)
+}
+
+/// Fold the two independent findings -- the project file and the checkout root
+/// -- into one answer. Either may be absent without the other.
+fn finish(
+    conf: Option<(Discovered, PathBuf)>,
+    root: Option<(PathBuf, Vcs)>,
+) -> (Discovered, Option<PathBuf>) {
+    let (mut found, source) = match conf {
+        Some((found, path)) => (found, Some(path)),
+        None => (Discovered::default(), None),
+    };
+    if let Some((root, vcs)) = root {
+        found.vcs_root = Some(root);
+        found.vcs = Some(vcs);
+    }
+    (found, source)
 }
 
 fn read_conf(path: &Path, dir: &Path) -> Discovered {
@@ -249,6 +303,10 @@ fn read_conf(path: &Path, dir: &Path) -> Discovered {
         use_preprocessor_cache_mode: conf.use_preprocessor_cache_mode,
         custom_cache_buster: conf.custom_cache_buster,
         extra_hash_files,
+        // Filled in by `finish`: the file has been found but the walk has not
+        // reached the root yet.
+        vcs_root: None,
+        vcs: None,
     }
 }
 
@@ -309,6 +367,61 @@ mod tests {
         std::fs::write(root.join(".git"), "gitdir: ../repo/.git/worktrees/wt").unwrap();
 
         assert!(found(&root).basedirs.is_empty());
+    }
+
+    /// The walk already passed the checkout root on its way up and used to
+    /// throw it away. It is worth more than the config file it was looking for:
+    /// it is what says which workspace a compilation belongs to, and most
+    /// repositories have no `.sccache.toml` at all.
+    #[test]
+    fn the_checkout_root_is_found_without_any_project_file() {
+        let t = tempfile::tempdir().unwrap();
+        let root = t.path().join("repo");
+        let deep = root.join("src").join("nested");
+        std::fs::create_dir_all(&deep).unwrap();
+        std::fs::create_dir_all(root.join(".git")).unwrap();
+
+        let found = found(&deep);
+        assert_eq!(found.vcs_root.as_deref(), Some(root.as_path()));
+        assert_eq!(found.vcs, Some(Vcs::Git));
+        assert!(found.basedirs.is_empty(), "and it opts into nothing");
+    }
+
+    /// A worktree is the case this all exists for: it appears at a path nobody
+    /// enumerated, and its root is itself, not the clone it was made from.
+    #[test]
+    fn a_worktree_resolves_to_its_own_root() {
+        let t = tempfile::tempdir().unwrap();
+        let main = t.path().join("repo");
+        std::fs::create_dir_all(main.join(".git")).unwrap();
+        let wt = main.join("worktrees").join("agent-7");
+        std::fs::create_dir_all(&wt).unwrap();
+        // In a worktree `.git` is a file, not a directory.
+        std::fs::write(wt.join(".git"), "gitdir: ../../.git/worktrees/agent-7").unwrap();
+
+        let found = found(&wt);
+        assert_eq!(
+            found.vcs_root.as_deref(),
+            Some(wt.as_path()),
+            "the worktree is its own root, not the clone above it"
+        );
+    }
+
+    /// The file usually sits at the root, but nothing requires it to. Finding
+    /// one part-way up must not stop the root being found.
+    #[test]
+    fn a_project_file_below_the_root_does_not_hide_the_root() {
+        let t = tempfile::tempdir().unwrap();
+        let root = t.path().join("repo");
+        let sub = root.join("component");
+        std::fs::create_dir_all(&sub).unwrap();
+        std::fs::create_dir_all(root.join(".jj")).unwrap();
+        write(&sub, PROJECT_CONF_NAME, "custom_cache_buster = \"v1\"\n");
+
+        let found = found(&sub);
+        assert_eq!(found.custom_cache_buster.as_deref(), Some("v1"));
+        assert_eq!(found.vcs_root.as_deref(), Some(root.as_path()));
+        assert_eq!(found.vcs, Some(Vcs::Jj));
     }
 
     #[test]
