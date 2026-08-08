@@ -603,15 +603,32 @@ where
         // report it left behind describes a run that did not finish.
         let includes = if produced.output.status.success() {
             match fs::read_to_string(&report_path) {
-                Ok(text) => {
-                    crate::compiler::preprocessor_cache::includes_from_paths(
-                        format.parse(&text),
-                        cwd,
-                        config.ignore_time_macros,
-                        pool,
-                    )
-                    .await
-                }
+                Ok(text) => match format.read(&text) {
+                    // The compiler opened nothing besides the source, whose
+                    // path and content are already in the manifest key. That
+                    // leaves nothing to verify later, which is a complete
+                    // answer and not a missing one -- generated resource and
+                    // table files are like this by construction, and reading it
+                    // as "unverifiable" made every one of them uncacheable.
+                    Some(paths) if paths.is_empty() => Some(Vec::new()),
+                    Some(paths) => {
+                        crate::compiler::preprocessor_cache::includes_from_paths(
+                            paths,
+                            cwd,
+                            config.ignore_time_macros,
+                            pool,
+                        )
+                        .await
+                    }
+                    None => {
+                        debug!(
+                            "[{}]: dependency report at {} could not be read; not caching",
+                            self.parsed_args.output_pretty(),
+                            report_path.display()
+                        );
+                        None
+                    }
+                },
                 Err(e) => {
                     debug!(
                         "[{}]: no dependency report at {} ({e}); not caching",
@@ -3048,6 +3065,28 @@ mod dependency_keying_test {
         // And it is theirs that was written, where they asked for it.
         assert!(cwd.join("foo.obj.json").exists());
         assert_eq!(r.cacheable, Cacheable::Yes);
+    }
+
+    /// A compilation that opens nothing is still cacheable. Qt's generated
+    /// `qrc_*.cpp` is a byte array with no `#include` in it, and reading the
+    /// compiler's "I opened nothing" as "I could not answer" made every
+    /// resource file in a Qt build uncacheable -- measured on the reference
+    /// build as 59 translation units recompiled on every warm build.
+    #[test]
+    fn a_compilation_that_reads_nothing_is_still_cacheable() {
+        let (_f, cwd, _hdr) = fixture();
+        std::fs::write(cwd.join("foo.c"), "int f(void){return 0;}\n").unwrap();
+        let args = ovec!["-c", "foo.c", "-Fofoo.obj"];
+
+        // The compiler reports an empty include list, which is the truth.
+        let r = run(&cwd, &args, Some(Vec::new()), 0);
+
+        assert_eq!(r.cacheable, Cacheable::Yes);
+        assert_eq!(
+            r.manifests.len(),
+            1,
+            "with nothing to verify, the manifest still identifies the compilation"
+        );
     }
 
     /// A report that cannot be read must stop the result being cached. Anything

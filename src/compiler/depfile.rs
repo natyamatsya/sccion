@@ -174,19 +174,27 @@ fn unescape(s: &str) -> String {
 /// As with [`parse`], anything less than a clean read yields an empty list, and
 /// callers must treat that as "cannot cache" rather than "no includes".
 pub fn parse_source_dependencies(contents: &str) -> Vec<PathBuf> {
-    let Ok(v) = serde_json::from_str::<serde_json::Value>(contents) else {
-        return Vec::new();
-    };
-    v.get("Data")
-        .and_then(|d| d.get("Includes"))
-        .and_then(|i| i.as_array())
-        .map(|a| {
-            a.iter()
-                .filter_map(|e| e.as_str())
-                .map(PathBuf::from)
-                .collect()
-        })
-        .unwrap_or_default()
+    read_source_dependencies(contents).unwrap_or_default()
+}
+
+/// As [`parse_source_dependencies`], separating a report that could not be read
+/// from one that says the compilation opened nothing.
+///
+/// `None` is "cannot cache". An empty `Some` is a complete answer: a source
+/// file that includes nothing has nothing to verify later, and generated
+/// resource and lookup-table files are like that by construction -- Qt's
+/// `qrc_*.cpp` is a byte array with no `#include` in it at all.
+///
+/// A non-string entry fails the whole read rather than being skipped, for the
+/// usual reason: a list that is quietly short causes a stale *hit*.
+pub fn read_source_dependencies(contents: &str) -> Option<Vec<PathBuf>> {
+    let v = serde_json::from_str::<serde_json::Value>(contents).ok()?;
+    let entries = v.get("Data")?.get("Includes")?.as_array()?;
+    let mut out = Vec::with_capacity(entries.len());
+    for entry in entries {
+        out.push(PathBuf::from(entry.as_str()?));
+    }
+    Some(out)
 }
 
 /// The shape a tool reports its inputs in.
@@ -202,12 +210,22 @@ pub enum DepFileFormat {
 }
 
 impl DepFileFormat {
-    /// Read a report in this format. As with the parsers themselves, an empty
-    /// result means "cannot cache", never "no dependencies".
-    pub fn parse(self, contents: &str) -> Vec<PathBuf> {
+    /// Read a report in this format.
+    ///
+    /// `None` means the report could not be read, and the compilation must not
+    /// be cached. An empty `Some` means the tool said it opened nothing, which
+    /// is an answer rather than a missing one -- see
+    /// [`read_source_dependencies`].
+    pub fn read(self, contents: &str) -> Option<Vec<PathBuf>> {
         match self {
-            Self::Make => parse(contents),
-            Self::MsvcJson => parse_source_dependencies(contents),
+            // Make cannot tell the two apart: a rule with no prerequisites and
+            // a file that failed to parse both arrive as an empty list. So this
+            // format keeps the conservative reading.
+            Self::Make => {
+                let deps = parse(contents);
+                (!deps.is_empty()).then_some(deps)
+            }
+            Self::MsvcJson => read_source_dependencies(contents),
         }
     }
 }
@@ -215,6 +233,47 @@ impl DepFileFormat {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A source file that includes nothing is perfectly cacheable, and Qt's
+    /// generated `qrc_*.cpp` -- a byte array with no `#include` in it -- is
+    /// exactly that. Reading "opened nothing" as "could not be read" made every
+    /// resource file in a Qt build uncacheable, and recompiled on every build.
+    #[test]
+    fn a_report_of_no_includes_is_an_answer_not_a_failure() {
+        let empty = r#"{"Version":"1.2","Data":{"Source":"qrc_x.cpp","Includes":[]}}"#;
+        assert_eq!(
+            DepFileFormat::MsvcJson.read(empty),
+            Some(Vec::new()),
+            "an explicit empty list is a complete answer"
+        );
+
+        for unusable in ["", "not json", "{}", r#"{"Data":{}}"#] {
+            assert_eq!(
+                DepFileFormat::MsvcJson.read(unusable),
+                None,
+                "{unusable:?} cannot be read and must refuse the cache"
+            );
+        }
+    }
+
+    /// A non-string entry means the list cannot be trusted, and a list that is
+    /// quietly short causes a stale hit rather than a miss.
+    #[test]
+    fn a_report_that_is_not_all_paths_is_refused_whole() {
+        let mixed = r#"{"Data":{"Includes":["a.h", 42, "b.h"]}}"#;
+        assert_eq!(DepFileFormat::MsvcJson.read(mixed), None);
+    }
+
+    /// Make cannot distinguish the two cases, so it keeps refusing an empty
+    /// list -- moc's dependency files come through here.
+    #[test]
+    fn make_keeps_the_conservative_reading() {
+        assert_eq!(DepFileFormat::Make.read("out.o:\n"), None);
+        assert_eq!(
+            DepFileFormat::Make.read("out.o: a.h\n"),
+            Some(vec![PathBuf::from("a.h")])
+        );
+    }
 
     #[test]
     fn windows_drive_letter_is_not_the_rule_separator() {

@@ -449,7 +449,9 @@ pub async fn includes_from_dep_file(
     pool: &tokio::runtime::Handle,
 ) -> Option<Vec<(String, PathBuf)>> {
     includes_from_paths(
-        super::depfile::DepFileFormat::Make.parse(dep_file_contents),
+        super::depfile::DepFileFormat::Make
+            .read(dep_file_contents)
+            .unwrap_or_default(),
         cwd,
         ignore_time_macros,
         pool,
