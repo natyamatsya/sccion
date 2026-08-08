@@ -138,6 +138,7 @@ impl CCompilerImpl for Nvcc {
             (&gcc::ARGS[..], &ARGS[..]),
             false,
             self.kind(),
+            env_vars,
         );
 
         match parsed_args {

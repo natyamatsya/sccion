@@ -60,7 +60,7 @@ impl CCompilerImpl for Nvhpc {
         &self,
         arguments: &[OsString],
         cwd: &Path,
-        _env_vars: &[(OsString, OsString)],
+        env_vars: &[(OsString, OsString)],
     ) -> CompilerArguments<ParsedArguments> {
         gcc::parse_arguments(
             arguments,
@@ -68,6 +68,7 @@ impl CCompilerImpl for Nvhpc {
             (&gcc::ARGS[..], &ARGS[..]),
             self.nvcplusplus,
             self.kind(),
+            env_vars,
         )
     }
 

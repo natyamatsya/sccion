@@ -27,7 +27,6 @@ use fs::File;
 use fs_err as fs;
 use log::Level::Trace;
 use std::collections::HashMap;
-use std::env;
 use std::ffi::{OsStr, OsString};
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -57,9 +56,16 @@ impl CCompilerImpl for Gcc {
         &self,
         arguments: &[OsString],
         cwd: &Path,
-        _env_vars: &[(OsString, OsString)],
+        env_vars: &[(OsString, OsString)],
     ) -> CompilerArguments<ParsedArguments> {
-        parse_arguments(arguments, cwd, &ARGS[..], self.gplusplus, self.kind())
+        parse_arguments(
+            arguments,
+            cwd,
+            &ARGS[..],
+            self.gplusplus,
+            self.kind(),
+            env_vars,
+        )
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -286,6 +292,7 @@ pub fn parse_arguments<S>(
     arg_info: S,
     plusplus: bool,
     kind: CCompilerKind,
+    env_vars: &[(OsString, OsString)],
 ) -> CompilerArguments<ParsedArguments>
 where
     S: SearchableArgInfo<ArgData>,
@@ -325,7 +332,14 @@ where
     let mut color_mode = ColorMode::Auto;
     let mut seen_arch = None;
     let mut serialize_diagnostics = None;
-    let dont_cache_multiarch = env::var("SCCACHE_CACHE_MULTIARCH").is_err();
+    // The compilation's environment, not the daemon's. sccache runs as a
+    // server started by whichever build got there first, so reading the
+    // process environment here answered a question about that build rather
+    // than about this one -- setting the variable in a build shell did nothing
+    // unless it happened to be the shell that started the server.
+    let dont_cache_multiarch = !env_vars
+        .iter()
+        .any(|(k, _)| k.as_os_str() == OsStr::new("SCCACHE_CACHE_MULTIARCH"));
 
     // Custom iterator to expand `@` arguments which stand for reading a file
     // and interpreting it as a list of more arguments.
@@ -1211,14 +1225,34 @@ mod test {
     use crate::test::mock_storage::MockStorage;
     use crate::test::utils::*;
 
-    use temp_env::{with_var, with_var_unset};
+    /// The environment a compilation carries when the caller asked for
+    /// multi-arch objects to be cached.
+    fn multiarch() -> Vec<(OsString, OsString)> {
+        vec![("SCCACHE_CACHE_MULTIARCH".into(), "1".into())]
+    }
 
     fn parse_arguments_(
         arguments: Vec<String>,
         plusplus: bool,
     ) -> CompilerArguments<ParsedArguments> {
+        parse_arguments_env(arguments, plusplus, &[])
+    }
+
+    /// As [`parse_arguments_`], with the environment the compilation carries.
+    fn parse_arguments_env(
+        arguments: Vec<String>,
+        plusplus: bool,
+        env_vars: &[(OsString, OsString)],
+    ) -> CompilerArguments<ParsedArguments> {
         let args = arguments.iter().map(OsString::from).collect::<Vec<_>>();
-        parse_arguments(&args, ".".as_ref(), &ARGS[..], plusplus, CCompilerKind::Gcc)
+        parse_arguments(
+            &args,
+            ".".as_ref(),
+            &ARGS[..],
+            plusplus,
+            CCompilerKind::Gcc,
+            env_vars,
+        )
     }
 
     fn parse_arguments_clang(
@@ -1232,6 +1266,7 @@ mod test {
             &ARGS[..],
             plusplus,
             CCompilerKind::Clang,
+            &[],
         )
     }
 
@@ -1999,9 +2034,9 @@ mod test {
 
     #[test]
     fn test_preprocess_cmd_rewrites_archs() {
-        with_var("SCCACHE_CACHE_MULTIARCH", Some("1"), || {
+        {
             let args = stringvec!["-arch", "arm64", "-arch", "i386", "-c", "foo.cc"];
-            let parsed_args = match parse_arguments_(args, false) {
+            let parsed_args = match parse_arguments_env(args, false, &multiarch()) {
                 CompilerArguments::Ok(args) => args,
                 o => panic!("Got unexpected parse result: {:?}", o),
             };
@@ -2031,7 +2066,7 @@ mod test {
                 "foo.cc"
             ];
             assert_eq!(cmd.args, expected_args);
-        });
+        }
     }
 
     #[test]
@@ -2374,20 +2409,18 @@ mod test {
 
     #[test]
     fn test_parse_arguments_multiarch_cache_disabled() {
-        with_var_unset("SCCACHE_CACHE_MULTIARCH", || {
-            assert_eq!(
-                CompilerArguments::CannotCache(
-                    "multiple different -arch, and SCCACHE_CACHE_MULTIARCH not set",
-                    None
-                ),
-                parse_arguments_(
-                    stringvec![
-                        "-fPIC", "-arch", "arm64", "-arch", "i386", "-o", "foo.o", "-c", "foo.cpp"
-                    ],
-                    false
-                )
-            );
-        });
+        assert_eq!(
+            CompilerArguments::CannotCache(
+                "multiple different -arch, and SCCACHE_CACHE_MULTIARCH not set",
+                None
+            ),
+            parse_arguments_(
+                stringvec![
+                    "-fPIC", "-arch", "arm64", "-arch", "i386", "-o", "foo.o", "-c", "foo.cpp"
+                ],
+                false
+            )
+        );
     }
 
     #[test]
@@ -2400,12 +2433,13 @@ mod test {
             o => panic!("Got unexpected parse result: {:?}", o),
         }
 
-        with_var("SCCACHE_CACHE_MULTIARCH", Some("1"), || {
-            match parse_arguments_(
+        {
+            match parse_arguments_env(
                 stringvec![
                     "-arch", "arm64", "-arch", "arm64", "-o", "foo.o", "-c", "foo.cpp"
                 ],
                 false,
+                &multiarch(),
             ) {
                 CompilerArguments::Ok(_) => {}
                 o => panic!("Got unexpected parse result: {:?}", o),
@@ -2424,7 +2458,7 @@ mod test {
                 common_args,
                 arch_args,
                 ..
-            } = match parse_arguments_(args, false) {
+            } = match parse_arguments_env(args, false, &multiarch()) {
                 CompilerArguments::Ok(args) => args,
                 o => panic!("Got unexpected parse result: {:?}", o),
             };
@@ -2445,7 +2479,7 @@ mod test {
             assert_eq!(ovec!["-fPIC"], common_args);
             assert_eq!(ovec!["-arch", "arm64", "-arch", "i386"], arch_args);
             assert!(!msvc_show_includes);
-        });
+        }
     }
 
     #[test]

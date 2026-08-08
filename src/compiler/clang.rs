@@ -95,7 +95,7 @@ impl CCompilerImpl for Clang {
         &self,
         arguments: &[OsString],
         cwd: &Path,
-        _env_vars: &[(OsString, OsString)],
+        env_vars: &[(OsString, OsString)],
     ) -> CompilerArguments<ParsedArguments> {
         gcc::parse_arguments(
             arguments,
@@ -103,6 +103,7 @@ impl CCompilerImpl for Clang {
             (&gcc::ARGS[..], &ARGS[..]),
             self.clangplusplus,
             self.kind(),
+            env_vars,
         )
     }
 

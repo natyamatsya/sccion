@@ -28,8 +28,8 @@ file (-E with gcc/clang). For compilations that specify multiple `-arch` flags,
 these flags are rewritten to their corresponding preprocessor defines to allow
 pre-processing the file (e.g `-arch x86_64` is rewritten to `-D__X86_64__=1`),
 this can be enabled by setting the environment variable
-`SCCACHE_CACHE_MULTIARCH` but is disabled by default as it may not work in all
-cases.
+`SCCACHE_CACHE_MULTIARCH` in the environment the compilation runs in, but is
+disabled by default as it may not work in all cases.
 
 We also take into account in the hash:
 * Hash of the compiler binary
