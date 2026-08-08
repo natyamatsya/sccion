@@ -21,7 +21,7 @@ use crate::compiler::c::{ArtifactDescriptor, CCompilerImpl, CCompilerKind, Parse
 use crate::compiler::gcc::ArgData::*;
 use crate::compiler::{
     self, CCompileCommand, Cacheable, CompileCommand, CompileCommandImpl, CompilerArguments,
-    Language, cicc, gcc, get_compiler_info, write_temp_file,
+    Language, NotCacheable, cicc, gcc, get_compiler_info, write_temp_file,
 };
 use crate::mock_command::{
     CommandChild, CommandCreator, CommandCreatorSync, ExitStatusValue, RunCommand, exit_status,
@@ -496,7 +496,7 @@ pub fn generate_compile_commands(
         //
         // Specifically, `nvcc -E` always defines __CUDA_ARCH__, which means changes to host-only
         // code guarded by an `#ifndef __CUDA_ARCH__` will _not_ be captured in `nvcc -E` output.
-        Cacheable::No,
+        Cacheable::No(NotCacheable::Tool("nvcc_outer_call")),
     ))
 }
 
@@ -760,7 +760,7 @@ where
             // fatbinary and nvlink are not cacheable
             Some("fatbinary") | Some("nvlink") => (
                 env_vars.clone(),
-                Cacheable::No,
+                Cacheable::No(NotCacheable::Tool("nvcc_final_assembly")),
                 Some(&mut final_assembly_group),
             ),
             // cicc and ptxas are cacheable
@@ -859,13 +859,13 @@ where
                         device_compile_groups.insert(out_file.clone(), new_device_compile_group);
                         (
                             env_vars.clone(),
-                            Cacheable::No,
+                            Cacheable::No(NotCacheable::Tool("nvcc_preprocessor_step")),
                             device_compile_groups.get_mut(&out_file),
                         )
                     } else {
                         (
                             env_vars.clone(),
-                            Cacheable::No,
+                            Cacheable::No(NotCacheable::Tool("nvcc_preprocessor_step")),
                             Some(&mut cuda_front_end_group),
                         )
                     }
@@ -1279,7 +1279,7 @@ where
         let resolved_exe = resolve_compiler_avoiding_wrapper(exe, env_vars);
 
         let out = match cacheable {
-            Cacheable::No => {
+            Cacheable::No(_) => {
                 let mut cmd = creator.clone().new_command_sync(&resolved_exe);
 
                 cmd.args(args)

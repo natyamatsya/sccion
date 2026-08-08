@@ -21,6 +21,7 @@ use crate::compiler::c::{
 use crate::compiler::depfile::DepFileFormat;
 use crate::compiler::{
     CCompileCommand, Cacheable, ColorMode, CompileCommand, CompilerArguments, Language,
+    NotCacheable,
     SingleCompileCommand, clang, gcc, write_temp_file,
 };
 use crate::mock_command::{CommandCreatorSync, RunCommand};
@@ -1275,7 +1276,7 @@ fn generate_compile_commands(
             // If the PDB exists, we don't know if it's shared with another
             // compilation. If it is, we can't cache.
             if Path::new(&cwd).join(pdb.path.clone()).exists() {
-                Cacheable::No
+                Cacheable::No(NotCacheable::SharedPdb)
             } else {
                 Cacheable::Yes
             }
@@ -3398,7 +3399,7 @@ mod test {
         #[cfg(not(feature = "dist-client"))]
         assert!(dist_command.is_none());
         let _ = command.execute(&service, &creator).wait();
-        assert_eq!(Cacheable::No, cacheable);
+        assert_eq!(Cacheable::No(NotCacheable::SharedPdb), cacheable);
         // Ensure that we ran all processes.
         assert_eq!(0, creator.lock().unwrap().children.len());
     }

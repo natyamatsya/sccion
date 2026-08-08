@@ -18,7 +18,8 @@ use crate::cache::{FileObjectSource, Storage};
 use crate::compiler::preprocessor_cache::preprocessor_cache_entry_hash_key;
 use crate::compiler::{
     AlreadyProduced, CCompileCommand, Cacheable, ColorMode, Compilation, CompileCommand, Compiler,
-    CompilerArguments, CompilerHasher, CompilerKind, HashResult, Language, SingleCompileCommand,
+    CompilerArguments, CompilerHasher, CompilerKind, HashResult, Language, NotCacheable,
+    SingleCompileCommand,
 };
 #[cfg(feature = "dist-client")]
 use crate::compiler::{DistPackagers, NoopOutputsRewriter};
@@ -610,7 +611,7 @@ where
                     // answer and not a missing one -- generated resource and
                     // table files are like this by construction, and reading it
                     // as "unverifiable" made every one of them uncacheable.
-                    Some(paths) if paths.is_empty() => Some(Vec::new()),
+                    Some(paths) if paths.is_empty() => Ok(Vec::new()),
                     Some(paths) => {
                         crate::compiler::preprocessor_cache::includes_from_paths(
                             paths,
@@ -626,7 +627,7 @@ where
                             self.parsed_args.output_pretty(),
                             report_path.display()
                         );
-                        None
+                        Err(NotCacheable::DependencyReportUnreadable)
                     }
                 },
                 Err(e) => {
@@ -635,25 +636,25 @@ where
                         self.parsed_args.output_pretty(),
                         report_path.display()
                     );
-                    None
+                    Err(NotCacheable::DependencyReportMissing)
                 }
             }
         } else {
-            None
+            Err(NotCacheable::CompilationFailed)
         };
 
         let (key, cacheable) = match &includes {
-            Some(includes) => (
+            Ok(includes) => (
                 dependency_result_key(manifest_key, includes, basedirs),
                 cacheable,
             ),
-            None => (uncacheable_key(manifest_key), Cacheable::No),
+            Err(why) => (uncacheable_key(manifest_key), Cacheable::No(*why)),
         };
 
         // Record what was read against the key it produced, so the next
         // compilation of this source with these files unchanged needs neither a
         // preprocessor nor a compiler.
-        if let (Some(includes), Cacheable::Yes) = (includes, cacheable) {
+        if let (Ok(includes), Cacheable::Yes) = (includes, cacheable) {
             let mut entry = PreprocessorCacheEntry::new();
             entry.add_result(start_of_compilation, &key, includes, basedirs);
             if let Err(e) = storage
@@ -1057,7 +1058,7 @@ where
                         )
                         .await
                         {
-                            Some(list) => {
+                            Ok(list) => {
                                 include_files
                                     .extend(list.into_iter().map(|(digest, path)| (path, digest)));
                                 true
@@ -1067,7 +1068,13 @@ where
                             // against -- falling back to the scrape here would
                             // paper over exactly the case the report exists to
                             // make explicit.
-                            None => false,
+                            Err(why) => {
+                                debug!(
+                                    "[{}]: reported inputs unusable ({why})",
+                                    self.parsed_args.output_pretty()
+                                );
+                                false
+                            }
                         }
                     }
                     _ => process_preprocessed_file(
@@ -2989,9 +2996,31 @@ mod dependency_keying_test {
         report: Option<Vec<PathBuf>>,
         status: u32,
     ) -> impl Fn(&[OsString]) -> Result<MockChild> + Send + 'static {
+        let body = report.map(|includes| {
+            let includes: Vec<_> = includes
+                .iter()
+                .map(|p| p.to_string_lossy().into_owned())
+                .collect();
+            serde_json::to_string(&serde_json::json!({
+                "Version": "1.2",
+                "Data": {"Source": "foo.c", "Includes": includes},
+            }))
+            .unwrap()
+        });
+        mock_compiler_raw(seen, body, status)
+    }
+
+    /// As [`mock_compiler`], writing `report` to the reported-inputs path
+    /// verbatim. Writing nothing and writing something unreadable are different
+    /// failures and this is what lets a test tell them apart.
+    fn mock_compiler_raw(
+        seen: Arc<Mutex<Vec<OsString>>>,
+        report: Option<String>,
+        status: u32,
+    ) -> impl Fn(&[OsString]) -> Result<MockChild> + Send + 'static {
         move |args: &[OsString]| {
             *seen.lock().unwrap() = args.to_vec();
-            if let Some(includes) = &report {
+            if let Some(body) = &report {
                 // `/sourceDependencies` takes its path joined or separated, and
                 // a caller's own flag arrives in whichever form they wrote it.
                 let path = args
@@ -3007,15 +3036,7 @@ mod dependency_keying_test {
                         }
                     })
                     .expect("the compilation was never asked to report its inputs");
-                let includes: Vec<_> = includes
-                    .iter()
-                    .map(|p| p.to_string_lossy().into_owned())
-                    .collect();
-                let json = serde_json::json!({
-                    "Version": "1.2",
-                    "Data": {"Source": "foo.c", "Includes": includes},
-                });
-                std::fs::write(&path, serde_json::to_string(&json).unwrap()).unwrap();
+                std::fs::write(&path, body).unwrap();
             }
             Ok(MockChild::new(exit_status(status), "compiling foo.c", ""))
         }
@@ -3146,10 +3167,33 @@ mod dependency_keying_test {
         depend: Option<bool>,
         machine: bool,
     ) -> Run {
-        let runtime = single_threaded_runtime();
-        let creator = new_creator();
         let seen = Arc::new(Mutex::new(Vec::new()));
+        let creator = new_creator();
         next_command_calls(&creator, mock_compiler(seen.clone(), report, status));
+        hash_one(cwd, arguments, creator, seen, depend, machine)
+    }
+
+    /// As [`run`], with a compiler whose report is written verbatim.
+    fn run_raw(cwd: &Path, arguments: &[OsString], report: Option<&str>, status: u32) -> Run {
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let creator = new_creator();
+        next_command_calls(
+            &creator,
+            mock_compiler_raw(seen.clone(), report.map(str::to_owned), status),
+        );
+        hash_one(cwd, arguments, creator, seen, Some(true), false)
+    }
+
+    /// Hash one compilation against an already-prepared compiler.
+    fn hash_one(
+        cwd: &Path,
+        arguments: &[OsString],
+        creator: Arc<Mutex<MockCommandCreator>>,
+        seen: Arc<Mutex<Vec<OsString>>>,
+        depend: Option<bool>,
+        machine: bool,
+    ) -> Run {
+        let runtime = single_threaded_runtime();
         let storage = Arc::new(MockStorage::new(None, true).with_dependency_keying(machine));
         let env_vars: Vec<(OsString, OsString)> = depend
             .map(|d| {
@@ -3290,21 +3334,42 @@ mod dependency_keying_test {
         );
     }
 
-    /// A report that cannot be read must stop the result being cached. Anything
+    /// A report that never arrived must stop the result being cached. Anything
     /// else records a dependency list that is quietly short, which causes a
     /// later *hit* on a stale result rather than a miss.
     #[test]
-    fn an_unreadable_report_refuses_the_cache() {
+    fn a_missing_report_refuses_the_cache() {
         let (_f, cwd, _hdr) = fixture();
         let args = ovec!["-c", "foo.c", "-Fofoo.obj"];
 
         let r = run(&cwd, &args, None, 0);
 
-        assert_eq!(r.cacheable, Cacheable::No);
+        assert_eq!(
+            r.cacheable,
+            Cacheable::No(NotCacheable::DependencyReportMissing)
+        );
         assert!(
             r.manifests.is_empty(),
             "nothing verifiable was read, so nothing may be recorded to verify against"
         );
+    }
+
+    /// "The report could not be parsed" and "the report said nothing was read"
+    /// arrive as the same absence of a dependency list, and conflating them is
+    /// what made every Qt `qrc_*.cpp` uncacheable. So the two must not reduce to
+    /// one verdict: this refuses the cache, and the empty report above does not.
+    #[test]
+    fn an_unparseable_report_is_distinct_from_an_empty_one() {
+        let (_f, cwd, _hdr) = fixture();
+        let args = ovec!["-c", "foo.c", "-Fofoo.obj"];
+
+        let r = run_raw(&cwd, &args, Some("not the JSON you are looking for"), 0);
+
+        assert_eq!(
+            r.cacheable,
+            Cacheable::No(NotCacheable::DependencyReportUnreadable)
+        );
+        assert!(r.manifests.is_empty());
     }
 
     /// Whether this pays off depends on how the project is built, so a
@@ -3429,7 +3494,7 @@ mod dependency_keying_test {
 
         let r = run(&cwd, &args, Some(vec![hdr]), 1);
 
-        assert_eq!(r.cacheable, Cacheable::No);
+        assert_eq!(r.cacheable, Cacheable::No(NotCacheable::CompilationFailed));
         assert!(r.manifests.is_empty());
     }
 }

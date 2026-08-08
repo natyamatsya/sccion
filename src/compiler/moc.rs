@@ -31,7 +31,8 @@ use crate::compiler::c::dependency_result_key;
 use crate::compiler::preprocessor_cache::{PreprocessorCacheEntry, includes_from_dep_file};
 use crate::compiler::{
     AlreadyProduced, CacheControl, Cacheable, ColorMode, Compilation, CompileCommand, Compiler,
-    CompilerArguments, CompilerHasher, CompilerKind, HashResult, SingleCompileCommand,
+    CompilerArguments, CompilerHasher, CompilerKind, HashResult, NotCacheable,
+    SingleCompileCommand,
 };
 use crate::dist;
 use crate::mock_command::CommandCreatorSync;
@@ -349,33 +350,43 @@ impl<T: CommandCreatorSync> CompilerHasher<T> for MocHasher {
             }
             Err(e) => {
                 debug!("moc: no dependency file ({e}); not caching");
-                None
+                Err(NotCacheable::DependencyReportMissing)
             }
         };
 
-        let Some(includes) = includes else {
+        let includes = match includes {
+            Ok(includes) => includes,
             // Nothing verifiable, so nothing cacheable. The key is made unique
             // so it cannot collide with a real entry, and the compilation is
             // marked uncacheable so nothing is stored under it.
-            let mut m = Digest::new();
-            m.update(manifest_key.as_bytes());
-            m.update(&std::time::SystemTime::now().elapsed().unwrap_or_default().as_nanos().to_le_bytes());
-            m.update(&std::process::id().to_le_bytes());
-            return Ok(HashResult {
-                key: m.finish(),
-                compilation: Box::new(MocCompilation {
-                    executable: self.executable.clone(),
-                    parsed: self.parsed.clone(),
-                    env_vars,
-                    cwd,
-                    already_produced: true,
-                    stdout: output.stdout,
-                    stderr: output.stderr,
-                    cacheable: Cacheable::No,
-                }),
-                weak_toolchain_key: self.executable_digest.clone(),
-                preprocessor_cache_hit: Some(false),
-            });
+            Err(why) => {
+                debug!("moc: not caching ({why})");
+                let mut m = Digest::new();
+                m.update(manifest_key.as_bytes());
+                m.update(
+                    &std::time::SystemTime::now()
+                        .elapsed()
+                        .unwrap_or_default()
+                        .as_nanos()
+                        .to_le_bytes(),
+                );
+                m.update(&std::process::id().to_le_bytes());
+                return Ok(HashResult {
+                    key: m.finish(),
+                    compilation: Box::new(MocCompilation {
+                        executable: self.executable.clone(),
+                        parsed: self.parsed.clone(),
+                        env_vars,
+                        cwd,
+                        already_produced: true,
+                        stdout: output.stdout,
+                        stderr: output.stderr,
+                        cacheable: Cacheable::No(why),
+                    }),
+                    weak_toolchain_key: self.executable_digest.clone(),
+                    preprocessor_cache_hit: Some(false),
+                });
+            }
         };
 
         let key = dependency_result_key(&manifest_key, &includes, &basedirs);

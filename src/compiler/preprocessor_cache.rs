@@ -42,7 +42,7 @@ use crate::{
     },
 };
 
-use super::Language;
+use super::{Language, NotCacheable};
 
 /// The current format is 1 header byte for the version + bincode encoding
 /// of the [`PreprocessorCacheEntry`] struct.
@@ -495,8 +495,8 @@ async fn digest_files_concurrently(
 /// so the answer can be recovered. Returns pairs shaped for
 /// [`PreprocessorCacheEntry::add_result`].
 ///
-/// `None` means **do not cache this compilation**, and every path out of here
-/// that is not a complete, verified list returns it. That asymmetry is
+/// An `Err` means **do not cache this compilation**, and every path out of here
+/// that is not a complete, verified list returns one. That asymmetry is
 /// deliberate. A dependency list is used later to decide whether a cached
 /// result is still valid, so a list that is missing an entry cannot cause a
 /// miss -- it causes a *hit* on a stale result, which is the one failure mode
@@ -504,13 +504,14 @@ async fn digest_files_concurrently(
 ///
 /// So: an empty list is refused rather than read as "no dependencies", and a
 /// single unreadable file refuses the whole list rather than silently dropping
-/// that file from what will later be checked.
+/// that file from what will later be checked. The [`NotCacheable`] the refusal
+/// carries is the only way a caller can tell those apart afterwards.
 pub async fn includes_from_dep_file(
     dep_file_contents: &str,
     cwd: &Path,
     ignore_time_macros: bool,
     pool: &tokio::runtime::Handle,
-) -> Option<Vec<(String, PathBuf)>> {
+) -> Result<Vec<(String, PathBuf)>, NotCacheable> {
     includes_from_paths(
         super::depfile::DepFileFormat::Make
             .read(dep_file_contents)
@@ -534,7 +535,7 @@ pub async fn includes_from_paths(
     cwd: &Path,
     ignore_time_macros: bool,
     pool: &tokio::runtime::Handle,
-) -> Option<Vec<(String, PathBuf)>> {
+) -> Result<Vec<(String, PathBuf)>, NotCacheable> {
     let mut paths: Vec<PathBuf> = paths
         .into_iter()
         .map(|p| if p.is_absolute() { p } else { cwd.join(p) })
@@ -546,7 +547,7 @@ pub async fn includes_from_paths(
     paths.sort_unstable();
     paths.dedup();
     if paths.is_empty() {
-        return None;
+        return Err(NotCacheable::NothingReported);
     }
 
     let digested = digest_files_concurrently(paths.clone(), ignore_time_macros, pool).await;
@@ -563,16 +564,16 @@ pub async fn includes_from_paths(
                 // once a day.
                 if finder.found_time_macros() {
                     debug!("{} contains time macros; not caching", path.display());
-                    return None;
+                    return Err(NotCacheable::TimeMacros);
                 }
                 d
             }
             // Unreadable now means unverifiable later.
-            None => return None,
+            None => return Err(NotCacheable::DependencyUnreadable),
         };
         out.push((digest, path));
     }
-    Some(out)
+    Ok(out)
 }
 
 fn digest_one_file(path: &Path, ignore_time_macros: bool) -> Option<FileContents> {
@@ -816,9 +817,9 @@ mod test {
         // Dropping the unreadable one and caching the rest would leave a
         // dependency nothing later checks, which is how a stale result gets
         // served.
-        assert!(
-            rt.block_on(includes_from_dep_file(&dep, t.path(), true, rt.handle()))
-                .is_none()
+        assert_eq!(
+            rt.block_on(includes_from_dep_file(&dep, t.path(), true, rt.handle())),
+            Err(NotCacheable::DependencyUnreadable)
         );
     }
 
@@ -827,9 +828,9 @@ mod test {
         let t = tempfile::tempdir().unwrap();
         let rt = rt();
         for dep in ["", "out.o:\n", "no colon here\n"] {
-            assert!(
-                rt.block_on(includes_from_dep_file(dep, t.path(), true, rt.handle()))
-                    .is_none(),
+            assert_eq!(
+                rt.block_on(includes_from_dep_file(dep, t.path(), true, rt.handle())),
+                Err(NotCacheable::NothingReported),
                 "{dep:?} must be refused, not treated as zero dependencies"
             );
         }
@@ -844,15 +845,16 @@ mod test {
 
         let rt = rt();
         // Anything keyed on this changes every second; caching it produces a
-        // result that is confidently wrong rather than merely stale.
-        assert!(
-            rt.block_on(includes_from_dep_file(&dep, t.path(), false, rt.handle()))
-                .is_none()
+        // result that is confidently wrong rather than merely stale. Naming the
+        // reason is what lets a caller stop retrying and report the line.
+        assert_eq!(
+            rt.block_on(includes_from_dep_file(&dep, t.path(), false, rt.handle())),
+            Err(NotCacheable::TimeMacros)
         );
         // ...unless the caller has explicitly accepted that trade.
         assert!(
             rt.block_on(includes_from_dep_file(&dep, t.path(), true, rt.handle()))
-                .is_some()
+                .is_ok()
         );
     }
 

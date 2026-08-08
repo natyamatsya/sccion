@@ -888,12 +888,13 @@ where
                         compiler_result,
                     ));
                 }
-                if cacheable != Cacheable::Yes {
+                if let Cacheable::No(why) = cacheable {
                     // Not cacheable
                     debug!(
-                        "[{}]: Compiled in {}, but not cacheable",
+                        "[{}]: Compiled in {}, but not cacheable ({})",
                         out_pretty,
-                        fmt_duration_as_secs(&duration_compilation)
+                        fmt_duration_as_secs(&duration_compilation),
+                        why
                     );
                     return Ok((
                         CompileResult::NotCacheable(dist_type, duration_compilation),
@@ -1441,7 +1442,62 @@ impl PartialEq<CompileResult> for CompileResult {
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum Cacheable {
     Yes,
-    No,
+    No(NotCacheable),
+}
+
+/// Why a compilation's result must not be stored.
+///
+/// `Cacheable::No` used to carry no reason at all, so the only thing that could
+/// be said about an uncacheable compilation was that there had been one. That
+/// is the wrong granularity for anything acting on the answer: a caller told
+/// only "not cached" retries and gets the same verdict forever, while one told
+/// `time_macros` can stop and name the line. Every variant here is a permanent
+/// property of the compilation as invoked -- rerunning it unchanged reaches the
+/// same conclusion -- which is exactly what distinguishes these from an ordinary
+/// cache miss.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum NotCacheable {
+    /// The tool wrote a dependency report that could not be parsed.
+    DependencyReportUnreadable,
+    /// The tool was asked for a dependency report and wrote none.
+    DependencyReportMissing,
+    /// A reported input could not be read, so it could not be verified later.
+    DependencyUnreadable,
+    /// The tool reported reading nothing, in a format that cannot tell that
+    /// apart from having failed to answer. Kept distinct from a format that
+    /// *can*, where reading nothing is a complete answer and is cacheable.
+    NothingReported,
+    /// An input expands `__DATE__`, `__TIME__` or `__TIMESTAMP__`, so what it
+    /// produces differs every build and nothing keyed on it can be reused.
+    TimeMacros,
+    /// The compilation failed. There is no output worth keying.
+    CompilationFailed,
+    /// MSVC writing into a PDB that may be shared with another compilation.
+    SharedPdb,
+    /// The tool is not cacheable as invoked, for a reason particular to it.
+    Tool(&'static str),
+}
+
+impl NotCacheable {
+    /// A stable token, for logs and for machine-readable records.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            NotCacheable::DependencyReportUnreadable => "dependency_report_unreadable",
+            NotCacheable::DependencyReportMissing => "dependency_report_missing",
+            NotCacheable::DependencyUnreadable => "dependency_unreadable",
+            NotCacheable::NothingReported => "nothing_reported",
+            NotCacheable::TimeMacros => "time_macros",
+            NotCacheable::CompilationFailed => "compilation_failed",
+            NotCacheable::SharedPdb => "shared_pdb",
+            NotCacheable::Tool(what) => what,
+        }
+    }
+}
+
+impl fmt::Display for NotCacheable {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
 }
 
 /// Control of caching behavior.
