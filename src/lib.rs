@@ -35,6 +35,7 @@ mod test;
 #[macro_use]
 pub mod errors;
 
+pub mod agent;
 pub mod blockclone;
 pub mod cache;
 mod checkenv;

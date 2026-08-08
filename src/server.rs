@@ -1300,11 +1300,8 @@ where
                 output: exe.file_name().unwrap_or(exe.as_os_str()).to_string_lossy().into_owned(),
                 input: None,
                 language: None,
-                workspace: crate::projectconf::discover(cwd)
-                    .vcs_root
-                    .as_deref()
-                    .map(|r| missrecord::relative_to_basedirs(r, &basedirs)),
-                agent: None,
+                workspace: crate::agent::workspace(cwd),
+                agent: crate::agent::identity(env_vars, cwd),
                 command_digest: Some(missrecord::command_digest(cmd, &basedirs)),
             },
             env_vars,
@@ -1537,9 +1534,17 @@ where
                             &cwd,
                             &env_vars,
                         );
+                        let agent = crate::agent::identity(&env_vars, &cwd);
                         let mut stats = self.stats.lock().await;
                         stats.requests_not_cacheable += 1;
                         *stats.not_cached.entry(why.to_string()).or_insert(0) += 1;
+                        // Counted per caller too: this is the class of work that
+                        // will not get faster however warm the cache gets, and
+                        // "which of these builds is paying it" is the question.
+                        if let Some(entry) = stats.agent_entry(agent.as_deref()) {
+                            entry.requests += 1;
+                            entry.uncacheable += 1;
+                        }
                     }
                     CompilerArguments::NotCompilation => {
                         debug!("parse_arguments: NotCompilation: {:?}", cmd);
@@ -1564,7 +1569,17 @@ where
         cwd: PathBuf,
         env_vars: Vec<(OsString, OsString)>,
     ) -> Result<CompileFinished> {
-        self.stats.lock().await.requests_executed += 1;
+        // Resolved here, from the environment the client sent and the directory
+        // the compilation runs in -- neither of which the spawned task below
+        // still owns by the time the result comes back.
+        let agent = crate::agent::identity(&env_vars, &cwd);
+        {
+            let mut stats = self.stats.lock().await;
+            stats.requests_executed += 1;
+            if let Some(entry) = stats.agent_entry(agent.as_deref()) {
+                entry.requests += 1;
+            }
+        }
 
         let force_recache = env_vars.iter().any(|(k, _v)| k == "SCCACHE_RECACHE");
         let force_no_cache = env_vars.iter().any(|(k, _v)| k == "SCCACHE_NO_CACHE");
@@ -1656,6 +1671,9 @@ where
                             stats.cache_hits.increment(&kind, &lang);
                             stats.cache_read_hit_duration += fetch;
                             stats.cache_materialize_duration += materialize;
+                            if let Some(entry) = stats.agent_entry(agent.as_deref()) {
+                                entry.cache_hits += 1;
+                            }
                         }
                         CompileResult::CacheMiss(miss_type, dt, duration, future) => {
                             debug!("[{}]: compile result: cache miss", out_pretty);
@@ -1677,6 +1695,10 @@ where
                             stats.compilations += 1;
                             stats.cache_misses.increment(&kind, &lang);
                             stats.compiler_write_duration += duration;
+                            if let Some(entry) = stats.agent_entry(agent.as_deref()) {
+                                entry.cache_misses += 1;
+                                entry.compile_duration += duration;
+                            }
                             debug!("stats after compile result: {stats:?}");
                             cache_write = Some(future);
                         }
@@ -1692,6 +1714,10 @@ where
                             stats.compilations += 1;
                             stats.compiler_write_duration += duration;
                             stats.non_cacheable_compilations += 1;
+                            if let Some(entry) = stats.agent_entry(agent.as_deref()) {
+                                entry.uncacheable += 1;
+                                entry.compile_duration += duration;
+                            }
                         }
                         CompileResult::CompileFailed(dt, duration) => {
                             debug!("[{}]: compile result: compile failed", out_pretty);
@@ -1917,6 +1943,67 @@ pub struct ServerStats {
     pub dist_errors: u64,
     /// Multi-level cache statistics (if multi-level caching is enabled)
     pub multi_level: Option<crate::cache::multilevel::MultiLevelStats>,
+    /// The same story again, told per caller. See [`crate::agent`].
+    ///
+    /// Empty unless more than nothing is known about who is asking, which is
+    /// why a single-developer `--show-stats` looks exactly as it always did.
+    #[serde(default)]
+    pub per_agent: HashMap<String, AgentStats>,
+}
+
+/// How many callers are tracked separately before the rest share a bucket.
+///
+/// The key comes from a caller-supplied environment variable, so the map has to
+/// be bounded: an unbounded one keyed on hostile input is a memory leak with a
+/// build system attached. Anything past the limit lands in [`OTHER_AGENTS`],
+/// which keeps the totals correct even when the detail is lost.
+const MAX_TRACKED_AGENTS: usize = 64;
+
+/// Where callers past [`MAX_TRACKED_AGENTS`] are counted.
+pub const OTHER_AGENTS: &str = "<other>";
+
+/// What is worth knowing per caller.
+///
+/// Deliberately much smaller than [`ServerStats`]. It is carried in every
+/// client-side-mode `RecordStats` and merged on arrival, so a nested copy of
+/// the full statistics would multiply the wire cost by the number of callers to
+/// answer a question nobody asks per caller.
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq, Eq)]
+pub struct AgentStats {
+    /// Compilations this caller asked for, whatever became of them.
+    pub requests: u64,
+    pub cache_hits: u64,
+    pub cache_misses: u64,
+    /// Compilations that can never be cached, so this caller's own share of
+    /// the work that will not get faster however warm the cache gets.
+    pub uncacheable: u64,
+    /// Time this caller spent running compilers.
+    pub compile_duration: Duration,
+}
+
+impl std::ops::AddAssign for AgentStats {
+    fn add_assign(&mut self, rhs: Self) {
+        self.requests += rhs.requests;
+        self.cache_hits += rhs.cache_hits;
+        self.cache_misses += rhs.cache_misses;
+        self.uncacheable += rhs.uncacheable;
+        self.compile_duration += rhs.compile_duration;
+    }
+}
+
+impl ServerStats {
+    /// The counters for `agent`, creating them if there is room.
+    ///
+    /// `None` when nothing identifies the caller, in which case only the
+    /// machine-wide totals move -- and the two still agree, because the
+    /// per-caller numbers are a breakdown rather than a second accounting.
+    fn agent_entry(&mut self, agent: Option<&str>) -> Option<&mut AgentStats> {
+        let agent = agent?;
+        if !self.per_agent.contains_key(agent) && self.per_agent.len() >= MAX_TRACKED_AGENTS {
+            return Some(self.per_agent.entry(OTHER_AGENTS.to_string()).or_default());
+        }
+        Some(self.per_agent.entry(agent.to_string()).or_default())
+    }
 }
 
 impl std::ops::AddAssign for ServerStats {
@@ -1950,6 +2037,9 @@ impl std::ops::AddAssign for ServerStats {
             *self.dist_compiles.entry(k).or_default() += v;
         }
         self.dist_errors += rhs.dist_errors;
+        for (k, v) in rhs.per_agent {
+            *self.per_agent.entry(k).or_default() += v;
+        }
         self.multi_level = match (self.multi_level.take(), rhs.multi_level) {
             (Some(mut a), Some(b)) => {
                 a += b;
@@ -2012,6 +2102,7 @@ impl Default for ServerStats {
             dist_compiles: HashMap::new(),
             dist_errors: u64::default(),
             multi_level: None,
+            per_agent: HashMap::new(),
         }
     }
 }
@@ -2214,6 +2305,27 @@ impl ServerStats {
                     "{:<name_width$} {:>stat_width$}",
                     reason,
                     count,
+                    name_width = name_width,
+                    stat_width = stat_width,
+                ));
+            }
+            writer.write("");
+        }
+        // Only when something is actually known about who asked, so a single
+        // developer's output is exactly what it always was.
+        if !self.per_agent.is_empty() {
+            writer.write("\nPer caller (hits / misses / uncacheable):");
+            let mut agents: Vec<_> = self.per_agent.iter().collect();
+            // Busiest first, and by name within a tie, so the order is stable
+            // between two runs of the same build.
+            agents.sort_by(|(k1, a), (k2, b)| {
+                b.requests.cmp(&a.requests).then_with(|| k1.cmp(k2))
+            });
+            for (agent, s) in agents {
+                writer.write(&format!(
+                    "{:<name_width$} {:>stat_width$}",
+                    agent,
+                    format!("{} / {} / {}", s.cache_hits, s.cache_misses, s.uncacheable),
                     name_width = name_width,
                     stat_width = stat_width,
                 ));

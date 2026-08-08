@@ -212,6 +212,18 @@ Note that some env variables may need sccache server restart to take effect.
   - This option will only applied to newly compressed cache and don't affect existing cache.
   - If you want to be apply to all cache, you should reset cache and make new cache.
 * `SCCACHE_LOG_MILLIS` when set (to any value), enables millisecond precision timestamps in log output instead of the default second precision.
+* `SCCACHE_AGENT_ID` names the caller, so `--show-stats` can break its numbers
+  down per caller instead of reporting one sum with no addends. One daemon
+  serves every build on the machine, and "2557 hits" does not say whether one
+  build got all of them and another none.
+
+  Read from each compilation's environment, so it takes effect in the shell that
+  sets it without restarting the daemon. When unset, the checkout root stands
+  in — concurrent builds are usually concurrent checkouts, so the breakdown is
+  correct without the callers having to set anything. The per-caller section is
+  printed only when there is more than nothing to say. At most 64 callers are
+  tracked separately; the rest share an `<other>` bucket, so the totals stay
+  right even when the detail is lost.
 * `SCCACHE_MISS_LOG` path to a file every cache miss is appended to, one
   tab-separated record per line. `--show-stats` counts misses but cannot say
   which translation units or why, and `SCCACHE_LOG=debug` can say but only

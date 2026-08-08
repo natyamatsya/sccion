@@ -114,6 +114,7 @@ struct MissContext<'a> {
     language: Language,
     cwd: &'a Path,
     arguments: &'a [OsString],
+    env_vars: &'a [(OsString, OsString)],
     storage: &'a dyn Storage,
     direct: DirectState,
 }
@@ -137,11 +138,11 @@ impl MissContext<'_> {
                 .as_ref()
                 .map(|i| relative(Path::new(i.as_ref() as &str))),
             language: Some(self.language.as_str().to_owned()),
-            workspace: crate::projectconf::discover(self.cwd)
-                .vcs_root
-                .as_deref()
-                .map(relative),
-            agent: None,
+            // Absolute, unlike everything above it: `input` is stripped so two
+            // checkouts produce comparable records, while these two exist to
+            // tell those checkouts apart and stripping would collapse them.
+            workspace: crate::agent::workspace(self.cwd),
+            agent: crate::agent::identity(self.env_vars, self.cwd),
             command_digest: Some(missrecord::command_digest(self.arguments, &basedirs)),
         }
     }
@@ -729,6 +730,7 @@ where
             language: self.language(),
             cwd: &cwd,
             arguments: &arguments,
+            env_vars: &env_vars,
             storage: storage.as_ref(),
             direct: preprocessor_cache_hit.into(),
         };

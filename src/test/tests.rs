@@ -362,6 +362,81 @@ fn test_miss_log_comes_from_the_compilation_environment() {
     );
 }
 
+/// Two callers, two buckets, and the buckets add up to the machine totals.
+///
+/// One daemon serves every build on the machine, so its numbers are a sum with
+/// no addends: "2557 hits" does not say whether one caller got all of them and
+/// another none. The per-caller breakdown has to be a breakdown -- a second,
+/// independent accounting that disagreed with the totals would be worse than
+/// none.
+#[test]
+fn test_stats_break_down_per_caller() {
+    let _ = env_logger::try_init();
+    let f = TestFixture::new();
+    let gcc = f.mk_bin("gcc").unwrap();
+    let (addr, sender, server_creator, child) = run_server_thread(f.tempdir.path(), None);
+    std::fs::write(f.tempdir.path().join("file.c"), "whatever").unwrap();
+
+    for (i, agent) in ["agent-a", "agent-b"].iter().enumerate() {
+        {
+            let mut c = server_creator.lock().unwrap();
+            if i == 0 {
+                // The compiler is probed once, for the first request.
+                c.next_command_spawns(Ok(MockChild::new(exit_status(0), "compiler_id=gcc", "")));
+            }
+            c.next_command_spawns(Ok(MockChild::new(exit_status(0), "preprocessed", "")));
+            let obj = f.tempdir.path().join(format!("file{i}.o"));
+            c.next_command_calls(move |_| {
+                let mut f = File::create(&obj)?;
+                f.write_all(b"file contents")?;
+                Ok(MockChild::new(exit_status(0), "", ""))
+            });
+        }
+        let conn = connect_to_server(&addr).unwrap();
+        let cmdline = vec![
+            "-c".into(),
+            "file.c".into(),
+            "-o".into(),
+            format!("file{i}.o").into(),
+        ];
+        let mut stdout = Cursor::new(Vec::new());
+        let mut stderr = Cursor::new(Vec::new());
+        assert_eq!(
+            0,
+            do_compile(
+                || Ok((new_creator(), Runtime::new().unwrap())),
+                conn,
+                &gcc,
+                cmdline,
+                f.tempdir.path(),
+                Some(f.paths.clone()),
+                vec![("SCCACHE_AGENT_ID".into(), (*agent).into())],
+                &mut stdout,
+                &mut stderr
+            )
+            .unwrap()
+        );
+    }
+
+    let stats = request_stats(connect_to_server(&addr).unwrap())
+        .unwrap()
+        .stats;
+    sender.send(ServerMessage::Shutdown).ok().unwrap();
+    child.join().unwrap();
+
+    let a = stats.per_agent.get("agent-a").expect("agent-a");
+    let b = stats.per_agent.get("agent-b").expect("agent-b");
+    assert_eq!(stats.per_agent.len(), 2, "one bucket each, not a shared one");
+    assert_eq!(a.requests, 1);
+    assert_eq!(b.requests, 1);
+    assert_eq!(
+        a.cache_misses + b.cache_misses,
+        stats.cache_misses.all(),
+        "the breakdown has to add up to the total it breaks down"
+    );
+    assert_eq!(a.cache_hits + b.cache_hits, stats.cache_hits.all());
+}
+
 /// A compilation sccache refuses before parsing used to produce no record at
 /// all. It is the most important kind to record: nothing about it will ever be
 /// cached, so a caller that treats it as an ordinary miss retries forever.
