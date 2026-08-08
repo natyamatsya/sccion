@@ -53,7 +53,9 @@ Configuration options and their default values:
 
   Measured on a 2557-unit MSVC + Qt + CMake build: cold 485.4s → 414.8s, warm 99.5s → 94.8s. The warm side improves because a source file that includes nothing gets a manifest for the first time — sccache does not store one when the include list is empty, so such files re-preprocessed on every build.
 
-  The trade is that a miss now costs a compile rather than a preprocess, so a compilation whose *manifest* is missing but whose *object* is already in the cache pays the difference instead of getting a cheap hit. Set it to `false` if that describes your build.
+  The trade is that a miss now costs a compile rather than a preprocess, so a compilation whose *manifest* is missing but whose *object* is already in the cache pays the difference instead of getting a cheap hit. That is not hypothetical: on the same build, a *second checkout's first build* against a cache the first one filled took 359s with this on and 306s with it off, because a manifest that does not match still leaves the object findable by preprocessing.
+
+  So: leave it on if you build one checkout repeatedly, and set it to `false` — in the config, or in a `.sccache.toml` committed to a project that does otherwise — if you routinely build fresh checkouts or worktrees against a shared cache.
 
   Whether it pays off is a property of the project rather than of the machine, so it can also be set in a committed `.sccache.toml` (see [Project configuration](#project-configuration)). It is asked for in order of how specific the answer is: the environment variable `SCCACHE_DEPEND` (`true`/`on`/`1` or `false`/`off`/`0`) for this invocation, then the project file, then this setting.
 
