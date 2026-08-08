@@ -33,30 +33,35 @@ const TTL_ENVIRONMENT: u64 = 300_000;
 const TOOLS: &[(&str, &str)] = &[
     (
         "check_environment",
-        "Report the environment sccache is running in: cache location and size, \
-         filesystem, preprocessor cache settings, and any findings that would \
-         invalidate a measurement. Reports only; changes nothing.",
+        "Report the environment sccache is running in: cache location and size,          filesystem, preprocessor cache settings, and any findings that would          invalidate a measurement. Reports only; changes nothing.",
+    ),
+    (
+        "compare_keys",
+        "Given one input compiled in two workspaces, say which part of the cache          key differs: compiler, arguments, extra files, environment, working          directory, or the inputs themselves. This is the question to ask when          two checkouts of one project are not sharing entries. Both builds must          have run with SCCACHE_TRACE_COMPONENTS=1.",
+    ),
+    (
+        "explain_key",
+        "Break one compilation's cache key into the parts it was computed from.          Needs SCCACHE_TRACE_COMPONENTS=1 on the build being asked about.",
     ),
     (
         "explain_miss",
-        "Explain why recent compilations were not served from cache, for one \
-         workspace. Says whether each miss was cold or permanently uncacheable, \
-         which is the difference between retrying and giving up.",
+        "Explain why recent compilations were not served from cache, for one          workspace. Says whether each miss was cold or permanently uncacheable,          which is the difference between retrying and giving up.",
     ),
     (
         "get_cache_health",
-        "Cache size against its limit, and how much of the cache the daemon has \
-         served, for one workspace.",
+        "Cache size against its limit, and how much of the cache the daemon has          served, for one workspace.",
     ),
     (
         "get_stats",
-        "Cache hit and miss counts, either machine-wide or broken down per \
-         caller.",
+        "Cache hit and miss counts, either machine-wide or broken down per          caller.",
     ),
     (
         "register_workspace",
-        "Resolve a directory to the checkout it is in and return a handle naming \
-         it. Every other tool takes that handle.",
+        "Resolve a directory to the checkout it is in and return a handle naming          it. Every other tool takes that handle.",
+    ),
+    (
+        "uncacheable_summary",
+        "Every compilation in this workspace that can never be cached, grouped          by reason with counts and examples. These are the ones where retrying          is pointless and the fix is in the build or in sccache.",
     ),
 ];
 
@@ -174,10 +179,27 @@ fn input_schema(name: &str) -> Value {
             },
             "required": ["handle"],
         }),
-        "get_cache_health" => json!({
+        "get_cache_health" | "uncacheable_summary" => json!({
             "type": "object",
             "properties": {"handle": handle},
             "required": ["handle"],
+        }),
+        "explain_key" => json!({
+            "type": "object",
+            "properties": {
+                "handle": handle,
+                "input": {"type": "string", "description": "Source path, as the records name it."},
+            },
+            "required": ["handle", "input"],
+        }),
+        "compare_keys" => json!({
+            "type": "object",
+            "properties": {
+                "handle": handle,
+                "other_handle": {"type": "string", "description": "The workspace to compare against."},
+                "input": {"type": "string", "description": "The input compiled in both."},
+            },
+            "required": ["handle", "other_handle", "input"],
         }),
         _ => json!({"type": "object", "properties": {}}),
     }
@@ -322,6 +344,108 @@ fn tools_call(params: &Value, backend: &dyn Backend) -> Result<Value, (i64, Stri
                 TTL_STATS,
             ))
         }
+        "uncacheable_summary" => {
+            let records = backend
+                .miss_records(Some(&handle()?), 4096)
+                .map_err(handle_error)?;
+            // Grouped rather than listed: "141 permanent misses" is a fact
+            // about a build, and reading it out of 141 separate records is
+            // work the caller should not have to do.
+            let mut by_reason: std::collections::BTreeMap<String, Vec<String>> = Default::default();
+            for r in &records {
+                if let sccache::api::Classification::Uncacheable(why) = &r.classification {
+                    by_reason
+                        .entry(why.clone())
+                        .or_default()
+                        .push(r.input.clone().unwrap_or_else(|| r.output.clone()));
+                }
+            }
+            let reasons: Vec<Value> = by_reason
+                .into_iter()
+                .map(|(why, inputs)| {
+                    json!({
+                        "reason": why,
+                        "count": inputs.len(),
+                        "examples": inputs.iter().take(5).collect::<Vec<_>>(),
+                    })
+                })
+                .collect();
+            Ok(envelope::tool_result(
+                json!({
+                    "reasons": reasons,
+                    "note": "These will not start hitting as the cache warms. Each is a \
+                             property of the compilation as invoked -- the fix is in the \
+                             build, or in sccache.",
+                }),
+                CacheScope::Private,
+                TTL_STATS,
+            ))
+        }
+        "explain_key" => {
+            let handle = handle()?;
+            let input = arg_str(&args, "input")?;
+            let records = backend
+                .miss_records(Some(&handle), 4096)
+                .map_err(handle_error)?;
+            let found = latest_for_input(&records, &input).ok_or_else(|| not_traced(&input))?;
+            let components = found
+                .components
+                .as_ref()
+                .ok_or_else(|| (ERR_NOT_FOUND, needs_tracing(found)))?;
+            Ok(envelope::tool_result(
+                json!({
+                    "input": found.input,
+                    "key": found.key,
+                    "classification": found.classification,
+                    "components": components,
+                }),
+                CacheScope::Private,
+                TTL_STATS,
+            ))
+        }
+        "compare_keys" => {
+            let handle = handle()?;
+            let other = arg_str(&args, "other_handle")?;
+            let input = arg_str(&args, "input")?;
+
+            let mine = backend
+                .miss_records(Some(&handle), 4096)
+                .map_err(handle_error)?;
+            let theirs = backend
+                .miss_records(Some(&other), 4096)
+                .map_err(handle_error)?;
+            let a = latest_for_input(&mine, &input).ok_or_else(|| not_traced(&input))?;
+            let b = latest_for_input(&theirs, &input).ok_or_else(|| not_traced(&input))?;
+
+            let same_key = a.key.is_some() && a.key == b.key;
+            let body = match (&a.components, &b.components) {
+                (Some(ca), Some(cb)) => {
+                    let differing = ca.differences(cb);
+                    json!({
+                        "input": input,
+                        "sameKey": same_key,
+                        // The whole point. An empty list with different keys
+                        // means the difference is in something not broken out
+                        // as a component, which is itself worth knowing.
+                        "differingComponents": differing,
+                        // `seq` is here because records are history, not state.
+                        // Only misses are recorded by default, so a workspace
+                        // whose last build *hit* offers its previous record and
+                        // the comparison silently spans two moments. Far-apart
+                        // sequence numbers mean the answer is about the past;
+                        // SCCACHE_TRACE_ALL=1 records hits too and removes the
+                        // ambiguity.
+                        "left": {"workspace": a.workspace, "key": a.key, "seq": a.seq,
+                                 "classification": a.classification, "components": ca},
+                        "right": {"workspace": b.workspace, "key": b.key, "seq": b.seq,
+                                  "classification": b.classification, "components": cb},
+                    })
+                }
+                (None, _) => return Err((ERR_NOT_FOUND, needs_tracing(a))),
+                (_, None) => return Err((ERR_NOT_FOUND, needs_tracing(b))),
+            };
+            Ok(envelope::tool_result(body, CacheScope::Private, TTL_STATS))
+        }
         "check_environment" => {
             let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
             let report = serde_json::to_value(backend.environment(&cwd)).unwrap_or_default();
@@ -334,6 +458,64 @@ fn tools_call(params: &Value, backend: &dyn Backend) -> Result<Value, (i64, Stri
             ))
         }
         _ => Err((ERR_NOT_FOUND, format!("no such tool: {name}"))),
+    }
+}
+
+fn arg_str(args: &Value, name: &str) -> Result<String, (i64, String)> {
+    args.get(name)
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+        .ok_or((ERR_INVALID_PARAMS, format!("missing argument: {name}")))
+}
+
+/// The most recent record for an input, matched on the tail of the path.
+///
+/// Records store the input basedir-relative, so a caller holding an absolute
+/// path, or only a file name, should still find it rather than be told it does
+/// not exist.
+fn latest_for_input<'a>(
+    records: &'a [sccache::api::MissRecord],
+    input: &str,
+) -> Option<&'a sccache::api::MissRecord> {
+    let needle = input.replace('\\', "/").to_lowercase();
+    records.iter().rev().find(|r| {
+        r.input
+            .as_deref()
+            .map(|i| {
+                let i = i.replace('\\', "/").to_lowercase();
+                i == needle || i.ends_with(&needle) || needle.ends_with(&i)
+            })
+            .unwrap_or(false)
+    })
+}
+
+fn not_traced(input: &str) -> (i64, String) {
+    (
+        ERR_NOT_FOUND,
+        format!("no record for {input:?} in this workspace's recent history"),
+    )
+}
+
+/// The one failure worth spelling out, because the fix is a build away.
+fn needs_tracing(record: &sccache::api::MissRecord) -> String {
+    let input = record.input.as_deref().unwrap_or(&record.output);
+    // Two quite different reasons, and telling a caller to set a variable it
+    // has already set is worse than saying nothing. A key that came out of a
+    // preprocessor cache entry was never computed from parts at all, so there
+    // is nothing to break down however much tracing is on.
+    if record.direct == sccache::api::DirectState::Hit {
+        format!(
+            "{input:?} was served from a preprocessor cache entry, so its key came \
+             from that entry rather than being computed from parts -- there is \
+             nothing to break down. Ask about a compilation that missed direct \
+             mode, or rerun that build with SCCACHE_DIRECT=false."
+        )
+    } else {
+        format!(
+            "the record for {input:?} carries no key components; rebuild with \
+             SCCACHE_TRACE_COMPONENTS=1 in the build's environment (both builds, \
+             for compare_keys) and ask again"
+        )
     }
 }
 
@@ -419,6 +601,14 @@ mod tests {
                 workspace: Some("D:/wt".into()),
                 agent: Some("agent-7".into()),
                 command_digest: Some("abc".into()),
+                components: Some(sccache::api::KeyComponents {
+                    compiler: "c0".into(),
+                    arguments: "a0".into(),
+                    extra_files: "x0".into(),
+                    env: "e0".into(),
+                    working_directory: "w0".into(),
+                    inputs: "i0".into(),
+                }),
             }])
         }
         fn environment(&self, _cwd: &Path) -> sccache::api::EnvReport {
@@ -608,6 +798,84 @@ mod tests {
     fn a_notification_is_not_answered() {
         let request = json!({"jsonrpc": "2.0", "method": "notifications/initialized"});
         assert!(handle(&request, &Fake).is_none());
+    }
+
+    /// The question this tool exists for, and the one that cost an afternoon of
+    /// shell on 2026-08-09: two workspaces compile the same input and get
+    /// different keys — *which part* differs?
+    #[test]
+    fn compare_keys_names_the_component_that_differs() {
+        let r = call(
+            "tools/call",
+            json!({
+                "name": "compare_keys",
+                "arguments": {"handle": "a", "other_handle": "b", "input": "src/foo.c"},
+                "_meta": meta(PROTOCOL_VERSION),
+            }),
+        );
+        let body = &r["result"]["structuredContent"];
+        // The fake gives both workspaces the same components, so nothing
+        // differs. What matters is the shape of the answer and that it is a
+        // list rather than a yes/no.
+        assert!(body["differingComponents"].is_array());
+        assert!(body["left"]["components"]["arguments"].is_string());
+        assert!(body["right"]["components"]["inputs"].is_string());
+    }
+
+    /// A record without components must say what to do about it, not just fail.
+    /// The fix is one environment variable and a rebuild away, and an agent
+    /// that is told so can act; one told "not found" cannot.
+    #[test]
+    fn a_record_without_components_says_how_to_get_them() {
+        struct Untraced;
+        impl Backend for Untraced {
+            fn register_workspace(&self, _: &Path) -> anyhow::Result<WorkspaceInfo> {
+                unimplemented!()
+            }
+            fn stats(&self) -> anyhow::Result<ServerInfo> {
+                unimplemented!()
+            }
+            fn miss_records(&self, _: Option<&str>, _: usize) -> anyhow::Result<Vec<MissRecord>> {
+                let mut r = Fake.miss_records(Some("ok"), 1).unwrap();
+                r[0].components = None;
+                Ok(r)
+            }
+            fn environment(&self, _: &Path) -> sccache::api::EnvReport {
+                unimplemented!()
+            }
+        }
+        let request = json!({
+            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": {
+                "name": "explain_key",
+                "arguments": {"handle": "a", "input": "src/foo.c"},
+                "_meta": meta(PROTOCOL_VERSION),
+            },
+        });
+        let r = handle(&request, &Untraced).unwrap();
+        let msg = r["error"]["message"].as_str().unwrap();
+        assert!(
+            msg.contains("SCCACHE_TRACE_COMPONENTS"),
+            "the error has to name the way out: {msg}"
+        );
+    }
+
+    /// "141 permanent misses" is a fact about a build. Reading it out of 141
+    /// separate records is work the caller should not have to do.
+    #[test]
+    fn uncacheable_summary_groups_by_reason() {
+        let r = call(
+            "tools/call",
+            json!({
+                "name": "uncacheable_summary",
+                "arguments": {"handle": "a"},
+                "_meta": meta(PROTOCOL_VERSION),
+            }),
+        );
+        let reasons = &r["result"]["structuredContent"]["reasons"];
+        assert_eq!(reasons[0]["reason"], "time_macros");
+        assert_eq!(reasons[0]["count"], 1);
+        assert_eq!(reasons[0]["examples"][0], "src/foo.c");
     }
 
     /// The classification is the payload: an agent told `uncacheable` should

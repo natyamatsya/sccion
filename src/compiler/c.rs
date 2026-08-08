@@ -24,6 +24,7 @@ use crate::compiler::{
 #[cfg(feature = "dist-client")]
 use crate::compiler::{DistPackagers, NoopOutputsRewriter};
 use crate::config::PreprocessorCacheModeConfig;
+use crate::missrecord::KeyComponents;
 use crate::dist;
 #[cfg(feature = "dist-client")]
 use crate::dist::pkg;
@@ -689,6 +690,7 @@ where
             }),
             weak_toolchain_key,
             preprocessor_cache_hit: Some(false),
+            key_components: None,
         })
     }
 }
@@ -941,6 +943,7 @@ where
                             }),
                             weak_toolchain_key,
                             preprocessor_cache_hit: Some(true),
+                            key_components: None,
                         });
                     } else {
                         debug!("Preprocessor cache miss: {preprocessor_key}");
@@ -1113,7 +1116,7 @@ where
         let mut common_and_arch_args = self.parsed_args.common_args.clone();
         common_and_arch_args.extend(self.parsed_args.arch_args.clone());
 
-        let key = HashKeyParams::new(
+        let key_params = HashKeyParams::new(
             &self.executable_digest,
             self.parsed_args.language,
             &common_and_arch_args,
@@ -1127,8 +1130,12 @@ where
             preprocessor_cache_mode_config
                 .hash_working_directory
                 .then_some(cwd.as_path()),
-        )
-        .compute();
+        );
+        let key = key_params.compute();
+        // A second pass over everything the key was made of, only when this
+        // compilation asked for it.
+        let key_components =
+            crate::missrecord::trace_components(&env_vars).then(|| key_params.components());
 
         // Cache the preprocessing step
         if let Some(preprocessor_key) = preprocessor_key
@@ -1173,6 +1180,7 @@ where
             }),
             weak_toolchain_key,
             preprocessor_cache_hit,
+            key_components,
         })
     }
 
@@ -2122,6 +2130,82 @@ impl<'a> HashKeyParams<'a> {
 
         m.update(&preprocessor_output_to_hash);
         m.finish()
+    }
+
+    /// The same inputs, digested section by section.
+    ///
+    /// A deliberate second pass rather than a rearrangement of [`compute`]:
+    /// deriving the key from these would be tidier and would move every cache
+    /// key in existence. What has to hold is only that a component changes when
+    /// its section of the input changes, and hashing the same bytes again gives
+    /// that.
+    ///
+    /// Only called when a compilation asks for it -- this walks the preprocessed
+    /// text a second time, which is not free.
+    ///
+    /// [`compute`]: HashKeyParams::compute
+    pub fn components(&self) -> KeyComponents {
+        let compiler = {
+            let mut m = Digest::new();
+            m.update(self.compiler_digest.as_bytes());
+            m.update(&[self.plusplus as u8]);
+            m.update(CACHE_VERSION);
+            m.update(self.language.as_str().as_bytes());
+            m.finish()
+        };
+        let arguments = {
+            let mut m = Digest::new();
+            for arg in self.arguments {
+                if self.basedirs.is_empty() {
+                    arg.hash(&mut HashToDigest { digest: &mut m });
+                } else {
+                    let stripped = strip_basedirs_in_arg(arg.as_encoded_bytes(), self.basedirs);
+                    m.update(&(stripped.len() as u64).to_le_bytes());
+                    m.update(&stripped);
+                }
+            }
+            m.finish()
+        };
+        let extra_files = {
+            let mut m = Digest::new();
+            for hash in self.extra_hashes {
+                m.update(hash.as_bytes());
+            }
+            m.finish()
+        };
+        let env = {
+            let mut m = Digest::new();
+            for (var, val) in self.env_vars.iter() {
+                if CACHED_ENV_VARS.contains(var.as_os_str()) {
+                    var.hash(&mut HashToDigest { digest: &mut m });
+                    m.update(&b"="[..]);
+                    val.hash(&mut HashToDigest { digest: &mut m });
+                }
+            }
+            m.finish()
+        };
+        let working_directory = {
+            let mut m = Digest::new();
+            if let Some(cwd) = self.working_directory {
+                let stripped = strip_basedirs_in_dir(cwd, self.basedirs);
+                m.update(&(stripped.len() as u64).to_le_bytes());
+                m.update(&stripped);
+            }
+            m.finish()
+        };
+        let inputs = {
+            let mut m = Digest::new();
+            m.update(&strip_basedirs(self.preprocessor_output, self.basedirs));
+            m.finish()
+        };
+        KeyComponents {
+            compiler,
+            arguments,
+            extra_files,
+            env,
+            working_directory,
+            inputs,
+        }
     }
 }
 

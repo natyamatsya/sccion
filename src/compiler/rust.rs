@@ -1744,6 +1744,7 @@ where
             // Preprocessor cache mode is a C-family concept; rustc has no separate
             // preprocessing step to skip.
             preprocessor_cache_hit: None,
+            key_components: None,
         })
     }
 

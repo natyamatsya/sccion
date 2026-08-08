@@ -242,6 +242,28 @@ Note that some env variables may need sccache server restart to take effect.
   printed only when there is more than nothing to say. At most 64 callers are
   tracked separately; the rest share an `<other>` bucket, so the totals stay
   right even when the detail is lost.
+* `SCCACHE_TRACE_COMPONENTS` set to `1` records what each cache key was computed
+  *from* — compiler, arguments, extra files, environment, working directory and
+  the inputs — each as its own digest. A key is one opaque string, so two keys
+  either match or do not; these say *which part* differs, which is the question
+  when two checkouts of one project stop sharing entries.
+
+  Off by default because it walks everything that goes into a key a second time,
+  including the preprocessed text. Read per compilation, so one build can be
+  traced without slowing others sharing the machine. Query it with the
+  [`explain_key` and `compare_keys` tools](MCP.md).
+
+  A key taken from a preprocessor cache entry was never computed from parts, so
+  it has no components however much tracing is on; `SCCACHE_DIRECT=false` forces
+  one to be computed.
+* `SCCACHE_TRACE_ALL` set to `1` records cache *hits* as well as misses. Off by
+  default: a warm build hits thousands of times and would push everything
+  explanatory out of the daemon's bounded ring.
+
+  On, the records are a full `(input, key, outcome)` trace of a build, which is
+  the whole of a key-stability check — capture one, change sccache, capture
+  another, and diff the keys. Any key that moved is either the point of the
+  change or a bug in it.
 * `SCCACHE_MISS_LOG` path to a file every cache miss is appended to, one
   tab-separated record per line. `--show-stats` counts misses but cannot say
   which translation units or why, and `SCCACHE_LOG=debug` can say but only
@@ -259,7 +281,7 @@ Note that some env variables may need sccache server restart to take effect.
 
   | # | Column | Notes |
   |---|---|---|
-  | 1 | classification | `cold`, `read_error`, `timed_out`, `forced_recache`, `forced_no_cache`, or `uncacheable:<reason>` |
+  | 1 | classification | `cold`, `read_error`, `timed_out`, `forced_recache`, `forced_no_cache`, `uncacheable:<reason>`, or `hit` under `SCCACHE_TRACE_ALL` |
   | 2 | preprocessor cache mode | `direct-hit`, `direct-miss`, `direct-off` |
   | 3 | cache key | `-` when the compilation was refused before one could be computed |
   | 4 | output | usually a basename; the compiler's own name when the arguments were never parsed |

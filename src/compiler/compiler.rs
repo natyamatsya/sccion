@@ -117,6 +117,7 @@ struct MissContext<'a> {
     env_vars: &'a [(OsString, OsString)],
     storage: &'a dyn Storage,
     direct: DirectState,
+    components: Option<&'a crate::missrecord::KeyComponents>,
 }
 
 impl MissContext<'_> {
@@ -144,6 +145,7 @@ impl MissContext<'_> {
             workspace: crate::agent::workspace(self.cwd),
             agent: crate::agent::identity(self.env_vars, self.cwd),
             command_digest: Some(missrecord::command_digest(self.arguments, &basedirs)),
+            components: self.components.cloned(),
         }
     }
 }
@@ -670,7 +672,8 @@ where
             out_pretty,
             fmt_duration_as_secs(&start.elapsed())
         );
-        let (key, compilation, weak_toolchain_key, preprocessor_cache_hit) = match result {
+        let (key, compilation, weak_toolchain_key, preprocessor_cache_hit, key_components) =
+            match result {
             Err(e) => {
                 return match e.downcast::<ProcessError>() {
                     Ok(ProcessError(output)) => {
@@ -685,11 +688,18 @@ where
                 compilation,
                 weak_toolchain_key,
                 preprocessor_cache_hit,
+                key_components,
             }) => {
                 if let Some(hit) = preprocessor_cache_hit {
                     service.record_preprocessor_cache_lookup(hit).await;
                 }
-                (key, compilation, weak_toolchain_key, preprocessor_cache_hit)
+                (
+                    key,
+                    compilation,
+                    weak_toolchain_key,
+                    preprocessor_cache_hit,
+                    key_components,
+                )
             }
         };
         debug!("[{}]: Hash key: {}", out_pretty, key);
@@ -733,6 +743,7 @@ where
             env_vars: &env_vars,
             storage: storage.as_ref(),
             direct: preprocessor_cache_hit.into(),
+            components: key_components.as_ref(),
         };
 
         // Built here, recorded after the compile. One compilation must produce
@@ -784,6 +795,14 @@ where
                 let materialize_start = Instant::now();
                 match entry.extract_objects(filtered_outputs, &pool).await {
                     Ok(()) => {
+                        // A hit is normally not worth a record -- a warm build
+                        // would fill the ring with 2,557 of them and push out
+                        // everything that explains anything. Under trace-all it
+                        // is exactly what is wanted: the key this input
+                        // resolved to, so two traces can be diffed.
+                        if missrecord::trace_all(&env_vars) {
+                            service.record_miss(miss.record(Classification::Hit), &env_vars);
+                        }
                         let hit = CompileResult::CacheHit(duration, materialize_start.elapsed());
                         Ok(CacheLookupResult::Success(hit, output))
                     }
@@ -1343,6 +1362,11 @@ where
     /// applicable to the language. `Some(true)` means the preprocessor was skipped
     /// entirely, which is the whole point of the mode.
     pub preprocessor_cache_hit: Option<bool>,
+    /// What the key was made of, when the compilation asked to be traced.
+    ///
+    /// `None` is the normal case: filling it walks everything that went into
+    /// the key a second time, including the preprocessed text.
+    pub key_components: Option<crate::missrecord::KeyComponents>,
 }
 
 /// Possible results of parsing compiler arguments.

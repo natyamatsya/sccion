@@ -53,9 +53,58 @@ const RING_CAPACITY: usize = 4096;
 /// The variable naming a file every record is also appended to.
 pub const MISS_LOG_VAR: &str = "SCCACHE_MISS_LOG";
 
-/// Why the compilation was not served from cache.
+/// Ask for [`KeyComponents`] on every record.
+pub const TRACE_COMPONENTS_VAR: &str = "SCCACHE_TRACE_COMPONENTS";
+
+/// Record cache *hits* as well as misses.
+pub const TRACE_ALL_VAR: &str = "SCCACHE_TRACE_ALL";
+
+/// Whether hits are recorded too.
+///
+/// Off by default because the interesting event is a miss, and a warm build
+/// that hits 2,557 times would push everything worth keeping out of the ring.
+///
+/// On, the records become a full `(input, key, outcome)` trace of a build --
+/// which is the whole of a key-stability check. Capture one, change sccache,
+/// capture another, and diff the keys: any key that moved is either the point
+/// of the change or a bug in it. That check is otherwise a person remembering
+/// what two counters said an hour ago.
+pub fn trace_all(env_vars: &[(OsString, OsString)]) -> bool {
+    flag(env_vars, TRACE_ALL_VAR)
+}
+
+fn flag(env_vars: &[(OsString, OsString)], name: &str) -> bool {
+    env_vars
+        .iter()
+        .find(|(k, _)| k == OsStr::new(name))
+        .map(|(_, v)| {
+            let v = v.to_string_lossy().to_lowercase();
+            matches!(v.as_str(), "1" | "true" | "on")
+        })
+        .unwrap_or(false)
+}
+
+/// Whether to break every key into its components.
+///
+/// Off unless asked for, and asked for per compilation rather than per daemon,
+/// so that one build can be traced without slowing every other build sharing
+/// the machine. It is a second pass over everything that goes into a key --
+/// including the preprocessed text, which can be megabytes -- and that is a real
+/// cost on the hit path, which otherwise does no hashing at all.
+///
+/// The workflow it exists for: two checkouts are not sharing, so trace both,
+/// compare, and turn it off again.
+pub fn trace_components(env_vars: &[(OsString, OsString)]) -> bool {
+    flag(env_vars, TRACE_COMPONENTS_VAR)
+}
+
+/// What became of one compilation's cache lookup.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Classification {
+    /// Served from cache. Only recorded under `SCCACHE_TRACE_ALL`, since a
+    /// build that hits everything would otherwise fill the ring with the
+    /// uninteresting case.
+    Hit,
     /// The key simply was not there.
     Cold,
     /// The entry was there and could not be read back.
@@ -76,6 +125,7 @@ impl Classification {
     /// A stable token for the log file.
     pub fn as_token(&self) -> String {
         match self {
+            Classification::Hit => "hit".into(),
             Classification::Cold => "cold".into(),
             Classification::ReadError => "read_error".into(),
             Classification::TimedOut => "timed_out".into(),
@@ -123,6 +173,70 @@ impl From<Option<bool>> for DirectState {
     }
 }
 
+/// The pieces a cache key is made of, each digested on its own.
+///
+/// A key is one opaque string, so two keys either match or do not and there is
+/// nothing in between. That is exactly the wrong shape for the question asked
+/// most often when something is wrong with the cache: *why* do these two
+/// differ. Answering it for two worktrees of one project took, on 2026-08-09,
+/// dumping two logs, comparing key sets by hand and correlating the result
+/// against `compile_commands.json`. With these it is a field-by-field
+/// comparison.
+///
+/// Digests rather than values, deliberately. Localising a difference to "the
+/// arguments differ" or "the inputs differ" is most of the answer and costs
+/// about two hundred bytes; carrying the arguments themselves, or a
+/// preprocessed translation unit, costs megabytes and is only occasionally what
+/// anyone wants.
+///
+/// **Computed separately from the key, never woven into it.** Deriving the key
+/// from these would be tidier and would move every cache key in existence. The
+/// property that matters is only that a component differs when its section of
+/// the input differs, which an independent pass over the same bytes gives.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct KeyComponents {
+    /// Compiler identity: its digest, the language, and the cache format.
+    pub compiler: String,
+    /// The arguments as hashed -- basedir-stripped, so two checkouts agree.
+    pub arguments: String,
+    /// `extra_hash_files`, and anything else folded in wholesale.
+    pub extra_files: String,
+    /// The environment variables sccache considers part of a compilation.
+    pub env: String,
+    /// The working directory, when it is in the key at all.
+    pub working_directory: String,
+    /// What was compiled: preprocessed text, or the reported input list.
+    pub inputs: String,
+}
+
+impl KeyComponents {
+    /// The names of the components that differ between two keys.
+    ///
+    /// Empty when they agree everywhere, which for two different keys means the
+    /// difference is in something not broken out here -- worth knowing, and the
+    /// reason this returns a list rather than an `Option`.
+    pub fn differences(&self, other: &KeyComponents) -> Vec<&'static str> {
+        let mut out = Vec::new();
+        for (name, a, b) in [
+            ("compiler", &self.compiler, &other.compiler),
+            ("arguments", &self.arguments, &other.arguments),
+            ("extra_files", &self.extra_files, &other.extra_files),
+            ("env", &self.env, &other.env),
+            (
+                "working_directory",
+                &self.working_directory,
+                &other.working_directory,
+            ),
+            ("inputs", &self.inputs, &other.inputs),
+        ] {
+            if a != b {
+                out.push(name);
+            }
+        }
+        out
+    }
+}
+
 /// One compilation that was not served from cache.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MissRecord {
@@ -152,6 +266,13 @@ pub struct MissRecord {
     /// records can be compared for "was this even the same command" without
     /// carrying the whole command line.
     pub command_digest: Option<String>,
+    /// What the key was made of, when component tracing was on.
+    ///
+    /// Off by default: filling it means a second pass over everything that goes
+    /// into a key, including the preprocessed text, which is real work on a path
+    /// that otherwise does none. See `SCCACHE_TRACE_COMPONENTS`.
+    #[serde(default)]
+    pub components: Option<KeyComponents>,
 }
 
 impl MissRecord {
@@ -312,6 +433,7 @@ mod tests {
             workspace: None,
             agent: None,
             command_digest: None,
+            components: None,
         }
     }
 

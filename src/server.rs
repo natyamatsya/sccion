@@ -1424,6 +1424,9 @@ where
                 workspace: crate::agent::workspace(cwd),
                 agent: crate::agent::identity(env_vars, cwd),
                 command_digest: Some(missrecord::command_digest(cmd, &basedirs)),
+                // Nothing was parsed, so no key was computed and there are no
+                // components to break down.
+                components: None,
             },
             env_vars,
         );

@@ -92,6 +92,9 @@ Every tool but `register_workspace` and `check_environment` takes a
 | `get_stats` | Hits, misses, and the breakdown per caller |
 | `get_cache_health` | Cache size against its limit |
 | `check_environment` | Is this machine set up to cache at all |
+| `explain_key` | What this compilation's cache key was computed from |
+| `compare_keys` | Which part of the key differs between two workspaces |
+| `uncacheable_summary` | Everything here that can never be cached, by reason |
 
 Resources: `sccache://environment` and `sccache://stats/{handle}`.
 
@@ -127,6 +130,36 @@ The `classification` on each record is the payload:
 Records also carry the *input* path, not just the output basename. Three
 concurrent `mocs_compilation.cpp.obj` compilations cannot be told apart by their
 output; they can by their input.
+
+### Maintaining the cache itself
+
+The tools above answer "why did *my build* miss". These answer "why is the
+*cache* behaving like that", which is a different job and mostly a different
+person — someone changing sccache rather than someone using it.
+
+`compare_keys` is the one to reach for first. Two checkouts of a project that
+should share entries and do not is the commonest correctness question there is,
+and a key is one opaque string, so comparing two of them says only that they
+differ. This says *which part* differs:
+
+```
+compare_keys(handle_a, handle_b, "src/foo.c")
+  -> sameKey: false, differingComponents: ["inputs"]
+```
+
+Both builds must have run with `SCCACHE_TRACE_COMPONENTS=1`. The answer is a
+list rather than a single name because an empty list with two different keys is
+itself informative: the difference is in something not broken out as a
+component.
+
+Records are history, not state, so the reply carries each side's sequence number
+and classification. Only misses are recorded by default, so a workspace whose
+last build *hit* offers its previous record and the comparison quietly spans two
+moments; `SCCACHE_TRACE_ALL=1` records hits too and removes the ambiguity.
+
+`uncacheable_summary` groups the permanent failures by reason with counts and
+examples. "141 permanent misses" is a fact about a build, and reading it out of
+141 separate records is work a caller should not have to do.
 
 ## Protocol revision
 
