@@ -48,25 +48,53 @@ pub enum ObjectEncoding {
     Uncompressed,
 }
 
+/// What the config file asked for, if the server was told before it served
+/// anything. See [`set_configured_encoding`].
+static CONFIGURED_ENCODING: std::sync::OnceLock<ObjectEncoding> = std::sync::OnceLock::new();
+
+/// Record what the config file asked for.
+///
+/// Must be called before the first cache entry is read or written, since
+/// [`OBJECT_ENCODING`] resolves once and keeps the answer. The server does it
+/// at startup, which is the only place that has both the config and the
+/// guarantee that nothing has been served yet.
+pub fn set_configured_encoding(encoding: ObjectEncoding) {
+    if CONFIGURED_ENCODING.set(encoding).is_err() {
+        debug!("Object encoding was already configured; ignoring {encoding:?}");
+    }
+}
+
 /// Read once per process rather than per object.
 ///
 /// This is the daemon's environment, so it is fixed for the daemon's lifetime;
 /// changing it requires restarting the server. That was already true of
 /// `SCCACHE_CACHE_ZSTD_LEVEL`, which used to be re-read on every single object.
+///
+/// The environment wins over the config file: the file is the answer for this
+/// machine, the environment is the answer for this run of it.
 static OBJECT_ENCODING: std::sync::LazyLock<ObjectEncoding> = std::sync::LazyLock::new(|| {
-    let uncompressed = std::env::var("SCCACHE_CACHE_COMPRESSION")
-        .ok()
-        .map(|v| {
-            let v = v.trim().to_ascii_lowercase();
-            v == "none" || v == "off" || v == "false" || v == "0"
-        })
-        .unwrap_or(false);
-    if uncompressed {
-        return ObjectEncoding::Uncompressed;
+    let uncompressed = std::env::var("SCCACHE_CACHE_COMPRESSION").ok().map(|v| {
+        let v = v.trim().to_ascii_lowercase();
+        v == "none" || v == "off" || v == "false" || v == "0"
+    });
+    match uncompressed {
+        Some(true) => return ObjectEncoding::Uncompressed,
+        // Named in the environment as compressed: the level may still come
+        // from either place.
+        Some(false) => {}
+        None => {
+            if let Some(configured) = CONFIGURED_ENCODING.get() {
+                return *configured;
+            }
+        }
     }
     let level = std::env::var("SCCACHE_CACHE_ZSTD_LEVEL")
         .ok()
         .and_then(|value| value.parse::<i32>().ok())
+        .or_else(|| match CONFIGURED_ENCODING.get() {
+            Some(ObjectEncoding::Zstd(level)) => Some(*level),
+            _ => None,
+        })
         .unwrap_or(3);
     ObjectEncoding::Zstd(level)
 });

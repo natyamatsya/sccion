@@ -287,10 +287,20 @@ pub fn check(config: &Config, cwd: &Path) -> EnvReport {
         {
             "none".to_string()
         }
-        _ => format!(
+        Ok(_) => format!(
             "zstd level {}",
             std::env::var("SCCACHE_CACHE_ZSTD_LEVEL").unwrap_or_else(|_| "3".into())
         ),
+        // Nothing in the environment: the config file decides, and reporting
+        // the default here would contradict what the server is actually doing.
+        Err(_) => match config.object_encoding {
+            Some(crate::cache::ObjectEncoding::Uncompressed) => "none".to_string(),
+            Some(crate::cache::ObjectEncoding::Zstd(level)) => format!("zstd level {level}"),
+            None => format!(
+                "zstd level {}",
+                std::env::var("SCCACHE_CACHE_ZSTD_LEVEL").unwrap_or_else(|_| "3".into())
+            ),
+        },
     };
 
     let pp = config.fallback_cache.preprocessor_cache_mode;

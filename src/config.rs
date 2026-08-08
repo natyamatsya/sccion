@@ -13,7 +13,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::cache::CacheMode;
+use crate::cache::{CacheMode, ObjectEncoding};
 #[cfg(target_os = "windows")]
 use crate::util::normalize_win_path;
 use directories::ProjectDirs;
@@ -808,6 +808,22 @@ pub struct FileConfig {
     /// Base directories to strip from paths for cache key computation.
     pub basedirs: Vec<String>,
     pub client_side_mode: bool,
+    /// How cache entry payloads are stored. Applies to whichever backend is in
+    /// use, which is why it is not under `[cache.*]`.
+    pub compression: Option<CompressionConfig>,
+    /// The zstd level, when compressing. Ignored otherwise.
+    pub zstd_level: Option<i32>,
+}
+
+/// How cache entry payloads are stored.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CompressionConfig {
+    /// Verbatim. Trades cache capacity for materialization speed, and is what
+    /// makes filesystem-level block cloning possible at all.
+    None,
+    /// zstd, at `zstd_level`.
+    Zstd,
 }
 
 // If the file doesn't exist or we can't read it, log the issue and proceed. If the
@@ -1326,6 +1342,9 @@ pub struct Config {
     /// Similar to ccache's CCACHE_BASEDIR.
     pub basedirs: Vec<Vec<u8>>,
     pub client_side_mode: bool,
+    /// How cache entry payloads are stored, when the file said. `None` leaves
+    /// it to `SCCACHE_CACHE_COMPRESSION` and the default.
+    pub object_encoding: Option<ObjectEncoding>,
 }
 
 impl Config {
@@ -1349,6 +1368,8 @@ impl Config {
             server_startup_timeout_ms,
             basedirs: file_basedirs,
             client_side_mode: file_client_side_mode,
+            compression,
+            zstd_level,
         } = file_conf;
         conf_caches.merge(cache);
 
@@ -1406,6 +1427,10 @@ impl Config {
             server_startup_timeout,
             basedirs,
             client_side_mode,
+            object_encoding: compression.map(|c| match c {
+                CompressionConfig::None => ObjectEncoding::Uncompressed,
+                CompressionConfig::Zstd => ObjectEncoding::Zstd(zstd_level.unwrap_or(3)),
+            }),
         })
     }
 }
@@ -1736,6 +1761,8 @@ fn config_overrides() {
         server_startup_timeout_ms: None,
         basedirs: vec![],
         client_side_mode: false,
+        compression: None,
+        zstd_level: None,
     };
 
     assert_eq!(
@@ -1790,6 +1817,7 @@ fn config_overrides() {
             server_startup_timeout: None,
             basedirs: vec![],
             client_side_mode: false,
+            object_encoding: None,
         }
     );
 }
@@ -1810,6 +1838,8 @@ fn config_basedirs_overrides() {
         server_startup_timeout_ms: None,
         basedirs: vec!["C:/file/basedir".to_string()],
         client_side_mode: false,
+        compression: None,
+        zstd_level: None,
     };
 
     let config = Config::from_env_and_file_configs(env_conf, file_conf).unwrap();
@@ -1828,6 +1858,8 @@ fn config_basedirs_overrides() {
         server_startup_timeout_ms: None,
         basedirs: vec!["C:/file/basedir".to_string()],
         client_side_mode: false,
+        compression: None,
+        zstd_level: None,
     };
 
     let config = Config::from_env_and_file_configs(env_conf, file_conf).unwrap();
@@ -1846,6 +1878,8 @@ fn config_basedirs_overrides() {
         server_startup_timeout_ms: None,
         basedirs: vec!["C:/file/basedir".to_string()],
         client_side_mode: false,
+        compression: None,
+        zstd_level: None,
     };
 
     let config = Config::from_env_and_file_configs(env_conf, file_conf).unwrap();
@@ -1864,6 +1898,8 @@ fn config_basedirs_overrides() {
         server_startup_timeout_ms: None,
         basedirs: vec![],
         client_side_mode: false,
+        compression: None,
+        zstd_level: None,
     };
 
     let config = Config::from_env_and_file_configs(env_conf, file_conf).unwrap();
@@ -1886,6 +1922,8 @@ fn config_basedirs_overrides() {
         server_startup_timeout_ms: None,
         basedirs: vec!["/file/basedir".to_string()],
         client_side_mode: false,
+        compression: None,
+        zstd_level: None,
     };
 
     let config = Config::from_env_and_file_configs(env_conf, file_conf).unwrap();
@@ -1904,6 +1942,8 @@ fn config_basedirs_overrides() {
         server_startup_timeout_ms: None,
         basedirs: vec!["/file/basedir".to_string()],
         client_side_mode: false,
+        compression: None,
+        zstd_level: None,
     };
 
     let config = Config::from_env_and_file_configs(env_conf, file_conf).unwrap();
@@ -1922,6 +1962,8 @@ fn config_basedirs_overrides() {
         server_startup_timeout_ms: None,
         basedirs: vec!["/file/basedir".to_string()],
         client_side_mode: false,
+        compression: None,
+        zstd_level: None,
     };
 
     let config = Config::from_env_and_file_configs(env_conf, file_conf).unwrap();
@@ -1940,6 +1982,8 @@ fn config_basedirs_overrides() {
         server_startup_timeout_ms: None,
         basedirs: vec![],
         client_side_mode: false,
+        compression: None,
+        zstd_level: None,
     };
 
     let config = Config::from_env_and_file_configs(env_conf, file_conf).unwrap();
@@ -1956,6 +2000,8 @@ fn config_basedirs_overrides() {
         server_startup_timeout_ms: None,
         basedirs: vec![],
         client_side_mode: false,
+        compression: None,
+        zstd_level: None,
     };
 
     let config = Config::from_env_and_file_configs(env_conf, file_conf).unwrap();
@@ -2181,6 +2227,8 @@ fn test_env_basedirs_with_spaces() {
         server_startup_timeout_ms: None,
         basedirs: vec![],
         client_side_mode: false,
+        compression: None,
+        zstd_level: None,
     };
     Config::from_env_and_file_configs(env_conf, file_conf)
         .expect_err("Should fail due to non-absolute path");
@@ -2216,6 +2264,8 @@ fn test_env_basedirs_with_spaces() {
         server_startup_timeout_ms: None,
         basedirs: vec![],
         client_side_mode: false,
+        compression: None,
+        zstd_level: None,
     };
     Config::from_env_and_file_configs(env_conf, file_conf)
         .expect_err("Should fail due to non-absolute path");
@@ -2649,6 +2699,8 @@ key_prefix = "cosprefix"
             server_startup_timeout_ms: Some(10000),
             basedirs: vec![],
             client_side_mode: false,
+            compression: None,
+            zstd_level: None,
         }
     );
 }
@@ -2743,6 +2795,8 @@ size = "7g"
             server_startup_timeout_ms: None,
             basedirs: vec![],
             client_side_mode: false,
+            compression: None,
+            zstd_level: None,
         }
     );
 }
@@ -2768,6 +2822,8 @@ fn test_integration_config_normalizes_and_strips() {
         server_startup_timeout_ms: None,
         basedirs: vec!["/home/user/project".to_string()],
         client_side_mode: false,
+        compression: None,
+        zstd_level: None,
     };
 
     let config = Config::from_env_and_file_configs(env_conf, file_conf).unwrap();
@@ -2803,6 +2859,8 @@ fn test_integration_normalized_path_with_double_slashes() {
         server_startup_timeout_ms: None,
         basedirs: vec!["/home//user///project/".to_string()],
         client_side_mode: false,
+        compression: None,
+        zstd_level: None,
     };
 
     let config = Config::from_env_and_file_configs(env_conf, file_conf).unwrap();
@@ -2834,6 +2892,8 @@ fn test_integration_windows_path_normalization() {
         server_startup_timeout_ms: None,
         basedirs: vec!["C:\\Users\\Test\\Project".to_string()],
         client_side_mode: false,
+        compression: None,
+        zstd_level: None,
     };
 
     let config = Config::from_env_and_file_configs(env_conf, file_conf).unwrap();
@@ -2866,6 +2926,8 @@ fn test_integration_cow_borrowed_when_no_match() {
         server_startup_timeout_ms: None,
         basedirs: vec!["/home/user/project".to_string()],
         client_side_mode: false,
+        compression: None,
+        zstd_level: None,
     };
 
     let config = Config::from_env_and_file_configs(env_conf, file_conf).unwrap();
@@ -2898,6 +2960,8 @@ fn test_integration_cow_borrowed_when_empty_basedirs() {
         server_startup_timeout_ms: None,
         basedirs: vec![],
         client_side_mode: false,
+        compression: None,
+        zstd_level: None,
     };
 
     let config = Config::from_env_and_file_configs(env_conf, file_conf).unwrap();
@@ -2929,6 +2993,8 @@ fn test_integration_multiple_basedirs_longest_match() {
         server_startup_timeout_ms: None,
         basedirs: vec!["/home/user".to_string(), "/home/user/project".to_string()],
         client_side_mode: false,
+        compression: None,
+        zstd_level: None,
     };
 
     let config = Config::from_env_and_file_configs(env_conf, file_conf).unwrap();
@@ -2965,6 +3031,8 @@ fn test_integration_paths_with_dots_normalized() {
         server_startup_timeout_ms: None,
         basedirs: vec!["/home/user/./project/../project".to_string()],
         client_side_mode: false,
+        compression: None,
+        zstd_level: None,
     };
 
     let config = Config::from_env_and_file_configs(env_conf, file_conf).unwrap();
@@ -2997,6 +3065,8 @@ fn test_integration_windows_mixed_slashes() {
         server_startup_timeout_ms: None,
         basedirs: vec!["C:\\Users\\test\\project".to_string()],
         client_side_mode: false,
+        compression: None,
+        zstd_level: None,
     };
 
     let config = Config::from_env_and_file_configs(env_conf, file_conf).unwrap();
@@ -3149,5 +3219,47 @@ fn test_get_cache_levels_missing_config() {
             .unwrap_err()
             .to_string()
             .contains("S3 cache not configured")
+    );
+}
+
+/// Compression was reachable only through the environment, so the one setting
+/// a machine most wants to make permanent was the one it could not: every
+/// shell had to export it, and a shell that forgot got a different cache
+/// layout without being told.
+#[test]
+fn compression_can_be_configured() {
+    let with = |compression, zstd_level| {
+        let file_conf = FileConfig {
+            cache: Default::default(),
+            dist: Default::default(),
+            server_startup_timeout_ms: None,
+            basedirs: vec![],
+            client_side_mode: false,
+            compression,
+            zstd_level,
+        };
+        let env_conf = EnvConfig {
+            cache: Default::default(),
+            basedirs: None,
+            client_side_mode: None,
+        };
+        Config::from_env_and_file_configs(env_conf, file_conf)
+            .unwrap()
+            .object_encoding
+    };
+
+    assert_eq!(with(None, None), None, "silence leaves it to the default");
+    assert_eq!(
+        with(Some(CompressionConfig::None), None),
+        Some(ObjectEncoding::Uncompressed)
+    );
+    assert_eq!(
+        with(Some(CompressionConfig::Zstd), Some(10)),
+        Some(ObjectEncoding::Zstd(10))
+    );
+    assert_eq!(
+        with(Some(CompressionConfig::Zstd), None),
+        Some(ObjectEncoding::Zstd(3)),
+        "a level nobody gave is the one nobody gave before either"
     );
 }

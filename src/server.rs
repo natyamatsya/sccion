@@ -449,6 +449,11 @@ fn pipe_instances() -> usize {
 
 pub fn start_server(config: &Config, addr: &crate::net::SocketAddr) -> Result<()> {
     info!("start_server: {addr}");
+    // Before anything is stored or fetched: the encoding resolves once and is
+    // then fixed for the daemon's lifetime.
+    if let Some(encoding) = config.object_encoding {
+        crate::cache::set_configured_encoding(encoding);
+    }
     let panic_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
         PANIC_LOCATION.with(|l| {

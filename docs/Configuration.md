@@ -55,6 +55,16 @@ container = "my_container_name"
 # Optional string to prepend to each blob storage key
 key_prefix = ""
 
+# How cache entry payloads are stored: "zstd" (default) or "none". Applies to
+# whichever backend is in use, which is why it is not under [cache.*].
+# Overridden by SCCACHE_CACHE_COMPRESSION.
+#
+# NOTE: top-level settings must appear before any [table] header. In TOML a key
+# written below one belongs to that table, and sccache will reject it.
+compression = "zstd"
+# The zstd level, when compressing. Overridden by SCCACHE_CACHE_ZSTD_LEVEL.
+zstd_level = 3
+
 [cache.disk]
 dir = "/tmp/.cache/sccache"
 size = 7516192768 # 7 GiBytes
