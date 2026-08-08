@@ -37,6 +37,9 @@ pub struct MockStorage {
     /// compilation that was keyed because the default says so from one that was
     /// keyed because the project asked.
     dependency_keying: bool,
+    /// Raw bytes to hand back as the stored manifest, so a test can present one
+    /// that cannot be read.
+    preprocessor_entry: Option<Vec<u8>>,
 }
 
 impl MockStorage {
@@ -50,7 +53,14 @@ impl MockStorage {
             preprocessor_cache_mode,
             manifests: Default::default(),
             dependency_keying: PreprocessorCacheModeConfig::default().use_dependency_keying,
+            preprocessor_entry: None,
         }
+    }
+
+    /// Serve `bytes` as the stored manifest for every key.
+    pub(crate) fn with_preprocessor_entry(mut self, bytes: Vec<u8>) -> Self {
+        self.preprocessor_entry = Some(bytes);
+        self
     }
 
     /// Pin the machine-wide dependency keying setting.
@@ -103,6 +113,14 @@ impl Storage for MockStorage {
             use_dependency_keying: self.dependency_keying,
             ..Default::default()
         }
+    }
+    async fn get_preprocessor_cache_entry(
+        &self,
+        _key: &str,
+    ) -> Result<Option<Box<dyn crate::lru_disk_cache::ReadSeek>>> {
+        Ok(self.preprocessor_entry.clone().map(|bytes| {
+            Box::new(std::io::Cursor::new(bytes)) as Box<dyn crate::lru_disk_cache::ReadSeek>
+        }))
     }
     async fn put_preprocessor_cache_entry(
         &self,

@@ -655,7 +655,7 @@ where
         // preprocessor nor a compiler.
         if let (Some(includes), Cacheable::Yes) = (includes, cacheable) {
             let mut entry = PreprocessorCacheEntry::new();
-            entry.add_result(start_of_compilation, &key, includes);
+            entry.add_result(start_of_compilation, &key, includes, basedirs);
             if let Err(e) = storage
                 .put_preprocessor_cache_entry(manifest_key, entry)
                 .await
@@ -872,10 +872,28 @@ where
             {
                 let mut buf = vec![];
                 seekable.read_to_end(&mut buf)?;
-                let mut preprocessor_cache_entry = PreprocessorCacheEntry::read(&buf)?;
+                // An entry that cannot be read is an entry that is not there.
+                // It was a hard error, which turns a format change -- or one
+                // truncated file -- into a build that fails outright rather
+                // than one that misses and moves on. An empty entry has no
+                // results, so it misses and nothing is written back.
+                let mut preprocessor_cache_entry = match PreprocessorCacheEntry::read(&buf) {
+                    Ok(entry) => entry,
+                    Err(e) => {
+                        debug!(
+                            "Ignoring unreadable preprocessor cache entry {preprocessor_key}: {e:?}"
+                        );
+                        PreprocessorCacheEntry::new()
+                    }
+                };
                 let mut updated = false;
                 let hit = preprocessor_cache_entry
-                    .lookup_result_digest(preprocessor_cache_mode_config, &mut updated, pool)
+                    .lookup_result_digest(
+                        preprocessor_cache_mode_config,
+                        &mut updated,
+                        pool,
+                        &basedirs,
+                    )
                     .await;
 
                 let mut update_failed = false;
@@ -1109,7 +1127,7 @@ where
                 .map(|(path, digest)| (digest, path))
                 .collect();
             files.sort_unstable_by(|a, b| a.1.cmp(&b.1));
-            preprocessor_cache_entry.add_result(start_of_compilation, &key, files);
+            preprocessor_cache_entry.add_result(start_of_compilation, &key, files, &basedirs);
 
             if let Err(e) = storage
                 .put_preprocessor_cache_entry(&preprocessor_key, preprocessor_cache_entry)
@@ -2933,6 +2951,54 @@ mod dependency_keying_test {
     /// worth asserting about it.
     fn run(cwd: &Path, arguments: &[OsString], report: Option<Vec<PathBuf>>, status: u32) -> Run {
         run_with(cwd, arguments, report, status, Some(true))
+    }
+
+    /// A manifest sccache cannot read must be a miss, not a failure.
+    ///
+    /// Every entry written before a format change is one of these, so treating
+    /// it as an error turns an upgrade into a build that stops until someone
+    /// clears the cache by hand -- and the same goes for a single truncated
+    /// file.
+    #[test]
+    fn a_manifest_that_cannot_be_read_is_a_miss() {
+        let (_f, cwd, hdr) = fixture();
+        let args = ovec!["-c", "foo.c", "-Fofoo.obj"];
+        // A version byte from a format that no longer exists.
+        let stale = vec![0xFEu8, 1, 2, 3];
+
+        let runtime = single_threaded_runtime();
+        let creator = new_creator();
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        next_command_calls(&creator, mock_compiler(seen, Some(vec![hdr]), 0));
+        let storage = Arc::new(
+            MockStorage::new(None, true)
+                .with_dependency_keying(true)
+                .with_preprocessor_entry(stale),
+        );
+
+        let result = msvc_hasher(&cwd, &args)
+            .generate_hash_key(
+                &creator,
+                cwd.clone(),
+                vec![],
+                false,
+                runtime.handle(),
+                false,
+                storage.clone(),
+                CacheControl::Default,
+            )
+            .wait();
+
+        assert!(
+            result.is_ok(),
+            "an unreadable manifest must not fail the compilation: {:?}",
+            result.err()
+        );
+        assert_eq!(
+            storage.manifests().len(),
+            1,
+            "and the compilation should replace it"
+        );
     }
 
     /// Nothing asks for dependency keying: not the invocation, not the project.

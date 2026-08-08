@@ -38,7 +38,7 @@ use crate::{
     config::PreprocessorCacheModeConfig,
     util::{
         Digest, HashToDigest, MetadataCtimeExt, TimeMacroFinder, Timestamp, encode_path,
-        strip_basedirs,
+        strip_basedirs, strip_basedirs_in_arg,
     },
 };
 
@@ -46,9 +46,60 @@ use super::Language;
 
 /// The current format is 1 header byte for the version + bincode encoding
 /// of the [`PreprocessorCacheEntry`] struct.
-const FORMAT_VERSION: u8 = 0;
+///
+/// Bumped to 1 when include paths started being stored relative to a basedir:
+/// an entry written by the old code holds absolute paths that the new code
+/// would resolve against a basedir and not find. Rejecting them outright costs
+/// one cold build and cannot be confused with a legitimate miss.
+const FORMAT_VERSION: u8 = 1;
 const MAX_PREPROCESSOR_CACHE_ENTRIES: usize = 100;
 const MAX_PREPROCESSOR_CACHE_FILE_INFO_ENTRIES: usize = 10000;
+
+/// How an include is written down: relative to its basedir when it has one.
+///
+/// A path that no basedir covers -- a system header, the Qt headers -- stays
+/// absolute, which is right: it is at the same place for every checkout.
+fn portable_path(path: PathBuf, basedirs: &[Vec<u8>]) -> OsString {
+    if basedirs.is_empty() {
+        return path.into_os_string();
+    }
+    let stripped = strip_basedirs_in_arg(path.as_os_str().as_encoded_bytes(), basedirs);
+    // Only rewrite when the result is still a path this platform can name.
+    // Anything else is stored as it was: absolute, and no worse than before.
+    match std::str::from_utf8(&stripped) {
+        Ok(s) => OsString::from(s),
+        Err(_) => path.into_os_string(),
+    }
+}
+
+/// Where a recorded include is on *this* machine.
+///
+/// The counterpart of [`portable_path`]. A stored path that is still absolute
+/// was outside every basedir and is used as it stands.
+fn resolve_include(stored: &OsStr, basedirs: &[Vec<u8>]) -> PathBuf {
+    let path = Path::new(stored);
+    if path.is_absolute() || basedirs.is_empty() {
+        return path.to_path_buf();
+    }
+    let rooted = |basedir: &Vec<u8>| {
+        std::str::from_utf8(basedir)
+            .ok()
+            .map(|root| Path::new(root).join(path))
+    };
+    // One basedir is the overwhelmingly common case, and it needs no guessing:
+    // asking the filesystem which root a path belongs under would be a `stat`
+    // per include per lookup, on top of the one the check makes anyway.
+    if basedirs.len() == 1 {
+        if let Some(p) = rooted(&basedirs[0]) {
+            return p;
+        }
+    }
+    basedirs
+        .iter()
+        .filter_map(rooted)
+        .find(|candidate| candidate.exists())
+        .unwrap_or_else(|| path.to_path_buf())
+}
 
 #[derive(Clone, Deserialize, Serialize, Debug, Default, PartialEq, Eq)]
 pub struct PreprocessorCacheEntry {
@@ -94,11 +145,18 @@ impl PreprocessorCacheEntry {
     ///
     /// There can be more than one result at once for a source file if one
     /// or more of the include files has changed but not the source file.
+    ///
+    /// Paths under a basedir are stored with that prefix removed, so that a
+    /// second checkout resolves them against *its own* root and checks its own
+    /// files. Storing them absolute would either pin the entry to one checkout
+    /// or, once the key stopped being pinned, validate one checkout's manifest
+    /// against another's files -- which is how a stale object gets served.
     pub fn add_result(
         &mut self,
         compilation_time_start: SystemTime,
         result_key: &str,
         included_files: impl IntoIterator<Item = (String, PathBuf)>,
+        basedirs: &[Vec<u8>],
     ) {
         if self.results.len() > MAX_PREPROCESSOR_CACHE_ENTRIES {
             // Normally, there shouldn't be many result entries in the
@@ -136,7 +194,7 @@ impl PreprocessorCacheEntry {
                     _ => false,
                 };
                 Ok(IncludeEntry {
-                    path: path.into_os_string(),
+                    path: portable_path(path, basedirs),
                     digest,
                     file_size: meta.len(),
                     mtime: if should_cache_time { mtime } else { None },
@@ -184,11 +242,12 @@ impl PreprocessorCacheEntry {
         config: PreprocessorCacheModeConfig,
         updated: &mut bool,
         pool: &tokio::runtime::Handle,
+        basedirs: &[Vec<u8>],
     ) -> Option<String> {
         // Check newest result first since it's more likely to match.
         for (digest, includes) in self.results.iter_mut().rev() {
             let result_matches =
-                Self::result_matches(digest, includes, config, updated, pool).await;
+                Self::result_matches(digest, includes, config, updated, pool, basedirs).await;
             if result_matches {
                 return Some(digest.clone());
             }
@@ -214,11 +273,18 @@ impl PreprocessorCacheEntry {
         config: PreprocessorCacheModeConfig,
         updated: &mut bool,
         pool: &tokio::runtime::Handle,
+        basedirs: &[Vec<u8>],
     ) -> bool {
+        // Resolved once: every check below is against the files of the checkout
+        // being compiled, not of whichever one happened to write the entry.
+        let resolved: Vec<PathBuf> = includes
+            .iter()
+            .map(|include| resolve_include(&include.path, basedirs))
+            .collect();
         let mut needs_contents = Vec::new();
 
         for (index, include) in includes.iter().enumerate() {
-            let path = Path::new(include.path.as_os_str());
+            let path = resolved[index].as_path();
             let meta = match std::fs::symlink_metadata(path) {
                 Ok(meta) => {
                     if meta.len() != include.file_size {
@@ -271,9 +337,7 @@ impl PreprocessorCacheEntry {
         }
 
         let digested = digest_files_concurrently(
-            needs_contents
-                .iter()
-                .map(|&index| PathBuf::from(includes[index].path.clone())),
+            needs_contents.iter().map(|&index| resolved[index].clone()),
             config.ignore_time_macros,
             pool,
         )
@@ -282,9 +346,8 @@ impl PreprocessorCacheEntry {
         // Fold sequentially, in the original order, so the outcome does not depend
         // on which file happened to finish first.
         for (index, outcome) in needs_contents.into_iter().zip(digested) {
+            let path = resolved[index].as_path();
             let include = &mut includes[index];
-            let path = PathBuf::from(include.path.clone());
-            let path = path.as_path();
 
             let Some(contents) = outcome else {
                 return false;
@@ -588,7 +651,19 @@ pub fn preprocessor_cache_entry_hash_key(
     m.update(&[FORMAT_VERSION]);
     m.update(language.as_str().as_bytes());
     for arg in arguments {
-        arg.hash(&mut HashToDigest { digest: &mut m });
+        if basedirs.is_empty() {
+            arg.hash(&mut HashToDigest { digest: &mut m });
+        } else {
+            // The same reason the result key strips them: a compilation's
+            // arguments are full of absolute paths -- `-I`, `/FI`, `-Fp` -- so
+            // leaving them raw pins the manifest to one checkout, and the
+            // second one starts from nothing however carefully everything else
+            // was normalised. Framed with a length because the arguments are
+            // otherwise concatenated into one digest.
+            let stripped = strip_basedirs_in_arg(arg.as_encoded_bytes(), basedirs);
+            m.update(&(stripped.len() as u64).to_le_bytes());
+            m.update(&stripped);
+        }
     }
     for hash in extra_hashes {
         m.update(hash.as_bytes());
@@ -928,6 +1003,124 @@ mod test {
     }
 
     #[test]
+    /// Sharing a manifest between checkouts is only safe if the checking is
+    /// done against the files of the checkout being compiled. Recording
+    /// absolute paths would make the second checkout confirm the *first*
+    /// one's files -- they exist, they are unchanged -- and hand back an object
+    /// built from them, whatever the second checkout actually contains.
+    #[test]
+    fn an_entry_is_checked_against_the_checkout_being_compiled() {
+        use std::fs;
+        use tempfile::TempDir;
+
+        let runtime = rt();
+        let (a, b) = (TempDir::new().unwrap(), TempDir::new().unwrap());
+        let basedirs_of = |d: &TempDir| {
+            vec![crate::config::normalize_basedir(d.path().to_str().unwrap()).unwrap()]
+        };
+        for d in [&a, &b] {
+            fs::create_dir_all(d.path().join("inc")).unwrap();
+            fs::write(d.path().join("inc/h.h"), b"shared header").unwrap();
+        }
+
+        let config = PreprocessorCacheModeConfig::activated();
+        let digest = match digest_one_file(&a.path().join("inc/h.h"), config.ignore_time_macros) {
+            Some(FileContents::Plain(d)) | Some(FileContents::WithTimeMacros(d, _)) => d,
+            None => panic!("could not digest the header"),
+        };
+
+        // Written in checkout A...
+        let mut entry = PreprocessorCacheEntry::new();
+        entry.add_result(
+            SystemTime::now(),
+            "the-result-key",
+            [(digest, a.path().join("inc/h.h"))],
+            &basedirs_of(&a),
+        );
+        let serialized = {
+            let mut buf = Vec::new();
+            entry.serialize_to(&mut buf).unwrap();
+            buf
+        };
+
+        // ...and read in checkout B, whose copy of the header is identical.
+        let mut updated = false;
+        let hit = runtime.block_on(
+            PreprocessorCacheEntry::read(&serialized)
+                .unwrap()
+                .lookup_result_digest(config, &mut updated, runtime.handle(), &basedirs_of(&b)),
+        );
+        assert_eq!(hit.as_deref(), Some("the-result-key"));
+
+        // Now B's copy differs. The entry must not match, even though A's copy
+        // is still on disk and still says what it said.
+        fs::write(b.path().join("inc/h.h"), b"changed in this checkout").unwrap();
+        let miss = runtime.block_on(
+            PreprocessorCacheEntry::read(&serialized)
+                .unwrap()
+                .lookup_result_digest(config, &mut updated, runtime.handle(), &basedirs_of(&b)),
+        );
+        assert_eq!(
+            miss, None,
+            "the second checkout's own file has to be what decides"
+        );
+    }
+
+    /// The manifest key strips basedirs from the input file but not from the
+    /// arguments, and a compilation's arguments are full of absolute paths --
+    /// `-I`, `/FI`, `-Fp`. So two checkouts of one tree never share a manifest,
+    /// every compilation in the second one starts from nothing, and the
+    /// dependency-keyed result key inherits the same problem because it is
+    /// built on top of this one.
+    ///
+    /// Same defect as the one fixed for the result key in `148bce9`, one layer
+    /// down.
+    #[test]
+    fn manifest_keys_ignore_where_the_checkout_sits() {
+        use std::fs;
+        use tempfile::TempDir;
+
+        let (dir1, dir2) = (TempDir::new().unwrap(), TempDir::new().unwrap());
+        let basedirs_of = |d: &TempDir| {
+            let bytes = d.path().to_string_lossy().into_owned().into_bytes();
+            #[cfg(target_os = "windows")]
+            return vec![crate::util::normalize_win_path(&bytes)];
+            #[cfg(not(target_os = "windows"))]
+            vec![bytes]
+        };
+
+        let content = b"int main() { return 0; }";
+        fs::write(dir1.path().join("test.c"), content).unwrap();
+        fs::write(dir2.path().join("test.c"), content).unwrap();
+
+        let key_in = |d: &TempDir| {
+            let include = {
+                let mut a = std::ffi::OsString::from("-I");
+                a.push(d.path().join("include"));
+                a
+            };
+            preprocessor_cache_entry_hash_key(
+                "test_digest",
+                Language::C,
+                &[include],
+                &[],
+                &[],
+                &d.path().join("test.c"),
+                false,
+                PreprocessorCacheModeConfig::activated(),
+                &basedirs_of(d),
+            )
+            .unwrap()
+        };
+
+        assert_eq!(
+            key_in(&dir1),
+            key_in(&dir2),
+            "two checkouts of one project must agree on which compilation this is"
+        );
+    }
+
+    #[test]
     fn test_preprocessor_cache_entry_hash_key_basedirs() {
         #[cfg(target_os = "windows")]
         use crate::util::normalize_win_path;
@@ -1121,6 +1314,7 @@ mod test {
                 config,
                 &mut updated,
                 runtime.handle(),
+                &[],
             )),
             "nothing has changed yet, so the entry should match"
         );
@@ -1141,6 +1335,7 @@ mod test {
                 config,
                 &mut updated,
                 runtime.handle(),
+                &[],
             )),
             "a change to any include must be detected, not just the first"
         );

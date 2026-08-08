@@ -289,7 +289,7 @@ impl<T: CommandCreatorSync> CompilerHasher<T> for MocHasher {
                     && let Ok(mut entry) = PreprocessorCacheEntry::read(&buf)
                 {
                     let mut updated = false;
-                    if let Some(key) = entry.lookup_result_digest(config, &mut updated, pool).await {
+                    if let Some(key) = entry.lookup_result_digest(config, &mut updated, pool, &basedirs).await {
                         debug!("moc: manifest hit for {}", self.parsed.input.display());
                         return Ok(HashResult {
                             key,
@@ -382,7 +382,7 @@ impl<T: CommandCreatorSync> CompilerHasher<T> for MocHasher {
 
         if config.use_preprocessor_cache_mode {
             let mut entry = PreprocessorCacheEntry::new();
-            entry.add_result(std::time::SystemTime::now(), &key, includes);
+            entry.add_result(std::time::SystemTime::now(), &key, includes, &basedirs);
             if let Err(e) = storage.put_preprocessor_cache_entry(&manifest_key, entry).await {
                 debug!("moc: failed to store manifest: {e}");
             }
