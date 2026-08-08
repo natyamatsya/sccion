@@ -429,6 +429,10 @@ impl<T: CommandCreatorSync> CompilerHasher<T> for MocHasher {
             .unwrap_or(std::borrow::Cow::Borrowed("moc"))
     }
 
+    fn input_pretty(&self) -> Option<std::borrow::Cow<'_, str>> {
+        Some(self.parsed.input.to_string_lossy())
+    }
+
     fn box_clone(&self) -> Box<dyn CompilerHasher<T>> {
         Box::new(self.clone())
     }

@@ -1184,6 +1184,10 @@ where
         self.parsed_args.output_pretty()
     }
 
+    fn input_pretty(&self) -> Option<Cow<'_, str>> {
+        Some(self.parsed_args.input.to_string_lossy())
+    }
+
     fn box_clone(&self) -> Box<dyn CompilerHasher<T>> {
         Box::new((*self).clone())
     }

@@ -26,6 +26,7 @@ use crate::config;
 use crate::config::Config;
 use crate::dist;
 use crate::jobserver::Client;
+use crate::missrecord::{self, MissLog, MissRecord};
 use crate::mock_command::{CommandCreatorSync, ProcessCommandCreator};
 use crate::protocol::{
     Compile, CompileFinished, CompileResponse, Request, Response, StorageHandshakeInfo,
@@ -829,6 +830,9 @@ where
     /// Server statistics.
     stats: Arc<Mutex<ServerStats>>,
 
+    /// Recent cache misses, in detail the counters cannot carry.
+    misses: Arc<MissLog>,
+
     /// Distributed sccache client
     dist_client: Arc<DistClientContainer>,
 
@@ -1044,6 +1048,7 @@ where
     ) -> SccacheService<C> {
         SccacheService {
             stats: Arc::default(),
+            misses: Arc::default(),
             dist_client: Arc::new(dist_client),
             storage,
             compilers: Arc::default(),
@@ -1065,6 +1070,7 @@ where
         let dist_client = DistClientContainer::new_disabled();
         SccacheService {
             stats: Arc::default(),
+            misses: Arc::default(),
             dist_client: Arc::new(dist_client),
             storage,
             compilers: Arc::default(),
@@ -1087,6 +1093,7 @@ where
         let client = Client::new_num(1);
         SccacheService {
             stats: Arc::default(),
+            misses: Arc::default(),
             dist_client: Arc::new(DistClientContainer::new_with_state(DistClientState::Some(
                 Box::new(DistClientConfig {
                     pool: rt.clone(),
@@ -1244,6 +1251,21 @@ where
     /// stay at zero means direct mode never engaged -- which is a materially different
     /// situation from it engaging and missing, and one the two counters are here to
     /// tell apart.
+    /// Record one cache miss in detail.
+    ///
+    /// Always kept in the daemon's ring, and additionally appended to the file
+    /// the *compilation* named, if it named one. Nothing here is allowed to
+    /// fail a compilation.
+    pub fn record_miss(&self, record: MissRecord, env_vars: &[(OsString, OsString)]) {
+        self.misses
+            .record(record, missrecord::sink_from_env(env_vars).as_deref());
+    }
+
+    /// The most recent misses the daemon has seen, newest last.
+    pub fn recent_misses(&self, limit: usize) -> Vec<MissRecord> {
+        self.misses.recent(limit)
+    }
+
     pub async fn record_preprocessor_cache_lookup(&self, hit: bool) {
         let mut stats = self.stats.lock().await;
         if hit {

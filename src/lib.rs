@@ -49,6 +49,7 @@ mod jobserver;
 pub mod pipe;
 
 pub mod lru_disk_cache;
+pub mod missrecord;
 mod mock_command;
 mod net;
 pub mod projectconf;

@@ -37,9 +37,12 @@ use crate::compiler::tasking_vx::TaskingVX;
 use crate::dist::pkg;
 #[cfg(feature = "dist-client")]
 use crate::lru_disk_cache;
+use crate::missrecord::{Classification, DirectState, MissRecord};
 use crate::mock_command::{CommandChild, CommandCreatorSync, RunCommand, exit_status};
 use crate::server;
-use crate::util::{fmt_duration_as_secs, resolve_compiler_avoiding_wrapper, run_input_output};
+use crate::util::{
+    fmt_duration_as_secs, resolve_compiler_avoiding_wrapper, run_input_output, strip_basedirs_in_arg,
+};
 use crate::{counted_array, dist};
 use async_trait::async_trait;
 use filetime::FileTime;
@@ -56,7 +59,7 @@ use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::process::{self, Stdio};
 use std::str;
-use std::sync::{Arc, LazyLock, Mutex};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tempfile::TempDir;
 
@@ -99,49 +102,69 @@ where
     fn get_cwd(&self) -> PathBuf;
 }
 
-/// Append-only log of cache misses, opened once if `SCCACHE_MISS_LOG` is set.
+/// Everything a miss record needs that does not depend on *why* it missed.
 ///
-/// Misses are the interesting event when tuning a cache, and the one event
-/// `--show-stats` counts but cannot explain: it reports 141 misses without
-/// saying which translation units, or why. The existing `debug!` says which,
-/// but only inside a full debug trace of every compilation -- enormous, and
-/// slow enough to change what is being measured.
-static MISS_LOG: LazyLock<Option<Mutex<std::fs::File>>> = LazyLock::new(|| {
-    let path = std::env::var_os("SCCACHE_MISS_LOG")?;
-    match std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&path)
-    {
-        Ok(f) => Some(Mutex::new(f)),
-        Err(e) => {
-            warn!("Failed to open SCCACHE_MISS_LOG at {:?}: {}", path, e);
-            None
+/// Holds borrows only, so constructing one on the hit path costs nothing. The
+/// work -- resolving basedirs, stripping paths, digesting the command line --
+/// happens in [`MissContext::record`], which only a miss ever calls. That
+/// division is the point: this is a diagnostic, and a diagnostic that shows up
+/// in the hit path's profile has stopped being free.
+struct MissContext<'a> {
+    key: &'a str,
+    output: &'a str,
+    input: Option<Cow<'a, str>>,
+    language: Language,
+    cwd: &'a Path,
+    arguments: &'a [OsString],
+    storage: &'a dyn Storage,
+    direct: DirectState,
+}
+
+impl MissContext<'_> {
+    fn record(&self, classification: Classification) -> MissRecord {
+        // The same basedirs the cache keys use. Records that named absolute
+        // paths could not be compared between two checkouts of one project,
+        // which is the trap manifest keys fell into before `7ea3117`.
+        let basedirs = crate::compiler::c::effective_basedirs_for(self.storage.basedirs(), self.cwd);
+        let relative = |p: &Path| {
+            String::from_utf8_lossy(&strip_basedirs_in_arg(
+                p.as_os_str().as_encoded_bytes(),
+                &basedirs,
+            ))
+            .into_owned()
+        };
+
+        // A digest rather than the command line itself: the question a record
+        // has to answer is "was this even the same invocation", and the whole
+        // argument vector is both enormous and full of paths.
+        let mut digest = UtilDigest::new();
+        for arg in self.arguments {
+            digest.update(&strip_basedirs_in_arg(
+                arg.as_encoded_bytes(),
+                &basedirs,
+            ));
+            digest.update(b"\0");
+        }
+
+        MissRecord {
+            seq: 0, // assigned by the daemon, which is what orders records
+            classification,
+            direct: self.direct,
+            key: self.key.to_owned(),
+            output: self.output.to_owned(),
+            input: self
+                .input
+                .as_ref()
+                .map(|i| relative(Path::new(i.as_ref() as &str))),
+            language: self.language.as_str().to_owned(),
+            workspace: crate::projectconf::discover(self.cwd)
+                .vcs_root
+                .as_deref()
+                .map(relative),
+            agent: None,
+            command_digest: Some(digest.finish()),
         }
     }
-});
-
-/// Record one miss, if the log is enabled.
-///
-/// `direct` is the discriminator worth having. A direct-mode *hit* yields the
-/// object key straight out of the preprocessor cache entry, so a miss after one
-/// means the object was evicted or never stored -- nothing about the source
-/// changed. A direct-mode *miss* means the inputs were re-preprocessed and
-/// hashed afresh, so the key moved because the content did. Those two want
-/// completely different fixes, and the counters cannot tell them apart.
-fn log_cache_miss(kind: &str, key: &str, out_pretty: &str, preprocessor_cache_hit: Option<bool>) {
-    let Some(file) = MISS_LOG.as_ref() else {
-        return;
-    };
-    let direct = match preprocessor_cache_hit {
-        Some(true) => "direct-hit",
-        Some(false) => "direct-miss",
-        None => "direct-off",
-    };
-    let mut file = file.lock().unwrap_or_else(|e| e.into_inner());
-    // Errors are dropped deliberately: a diagnostic that can fail a compilation
-    // is worse than one that occasionally loses a line.
-    let _ = writeln!(file, "{kind}\t{direct}\t{key}\t{out_pretty}");
 }
 
 #[derive(Debug)]
@@ -719,6 +742,17 @@ where
             })
             .collect::<Vec<_>>();
 
+        let miss = MissContext {
+            key: &key,
+            output: &out_pretty,
+            input: self.input_pretty(),
+            language: self.language(),
+            cwd: &cwd,
+            arguments: &arguments,
+            storage: storage.as_ref(),
+            direct: preprocessor_cache_hit.into(),
+        };
+
         let lookup = match cache_status.await {
             (Ok(Ok(Cache::Hit(mut entry))), duration) => {
                 debug!(
@@ -766,12 +800,7 @@ where
                     Err(e) => {
                         if e.downcast_ref::<DecompressionFailure>().is_some() {
                             debug!("[{}]: Failed to decompress object", out_pretty);
-                            log_cache_miss(
-                                "read-error",
-                                &key,
-                                &out_pretty,
-                                preprocessor_cache_hit,
-                            );
+                            service.record_miss(miss.record(Classification::ReadError), &env_vars);
                             Ok(CacheLookupResult::Miss(MissType::CacheReadError))
                         } else {
                             Err(e)
@@ -785,7 +814,7 @@ where
                     out_pretty,
                     fmt_duration_as_secs(&duration)
                 );
-                log_cache_miss("normal", &key, &out_pretty, preprocessor_cache_hit);
+                service.record_miss(miss.record(Classification::Cold), &env_vars);
                 Ok(CacheLookupResult::Miss(MissType::Normal))
             }
             (Ok(Ok(Cache::None)), duration) => {
@@ -794,6 +823,7 @@ where
                     out_pretty,
                     fmt_duration_as_secs(&duration)
                 );
+                service.record_miss(miss.record(Classification::ForcedNoCache), &env_vars);
                 Ok(CacheLookupResult::Miss(MissType::ForcedNoCache))
             }
             (Ok(Ok(Cache::Recache)), duration) => {
@@ -802,6 +832,7 @@ where
                     out_pretty,
                     fmt_duration_as_secs(&duration)
                 );
+                service.record_miss(miss.record(Classification::ForcedRecache), &env_vars);
                 Ok(CacheLookupResult::Miss(MissType::ForcedRecache))
             }
             (Ok(Err(err)), duration) => {
@@ -811,6 +842,7 @@ where
                     err,
                     fmt_duration_as_secs(&duration)
                 );
+                service.record_miss(miss.record(Classification::ReadError), &env_vars);
                 Ok(CacheLookupResult::Miss(MissType::CacheReadError))
             }
             (Err(_), duration) => {
@@ -819,6 +851,7 @@ where
                     out_pretty,
                     fmt_duration_as_secs(&duration)
                 );
+                service.record_miss(miss.record(Classification::TimedOut), &env_vars);
                 Ok(CacheLookupResult::Miss(MissType::TimedOut))
             }
         }?;
@@ -950,6 +983,18 @@ where
     /// This is primarily intended for debug logging and such, not for actual
     /// artifact generation.
     fn output_pretty(&self) -> Cow<'_, str>;
+
+    /// The primary input, when the compilation has a single one.
+    ///
+    /// `output_pretty` is a basename, and three concurrent
+    /// `mocs_compilation.cpp.obj` compilations cannot be told apart by it --
+    /// which has already sent two diagnoses to the wrong target. Anything
+    /// attributing a record to a translation unit wants this instead. The
+    /// default is `None` for compilations where the question has no single
+    /// answer.
+    fn input_pretty(&self) -> Option<Cow<'_, str>> {
+        None
+    }
 
     fn box_clone(&self) -> Box<dyn CompilerHasher<T>>;
 

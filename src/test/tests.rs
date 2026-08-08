@@ -284,3 +284,73 @@ fn test_server_compile() {
     // Ensure that it shuts down.
     child.join().unwrap();
 }
+
+/// `SCCACHE_MISS_LOG` must be read from the environment the *build* had, not
+/// the daemon's.
+///
+/// The daemon is started by whichever build got there first and then outlives
+/// it, so a variable read with `env::var` does nothing unless that shell
+/// happened to start the server -- and stops working after an idle timeout.
+/// `933ec5e` fixed exactly this for `SCCACHE_CACHE_MULTIARCH`, and its tests
+/// had survived the bug by setting the variable the way the code read it rather
+/// than the way a build sets it. This one passes it as the compilation's
+/// environment, and fails against a daemon-side read.
+#[test]
+fn test_miss_log_comes_from_the_compilation_environment() {
+    let _ = env_logger::try_init();
+    let f = TestFixture::new();
+    let gcc = f.mk_bin("gcc").unwrap();
+    let (addr, sender, server_creator, child) = run_server_thread(f.tempdir.path(), None);
+    let conn = connect_to_server(&addr).unwrap();
+    std::fs::write(f.tempdir.path().join("file.c"), "whatever").unwrap();
+
+    let miss_log = f.tempdir.path().join("misses.tsv");
+    assert!(
+        std::env::var_os("SCCACHE_MISS_LOG").is_none(),
+        "this test is only meaningful while the daemon's own environment is silent"
+    );
+
+    {
+        let mut c = server_creator.lock().unwrap();
+        c.next_command_spawns(Ok(MockChild::new(exit_status(0), "compiler_id=gcc", "")));
+        c.next_command_spawns(Ok(MockChild::new(exit_status(0), "preprocessed", "")));
+        let obj = f.tempdir.path().join("file.o");
+        c.next_command_calls(move |_| {
+            let mut f = File::create(&obj)?;
+            f.write_all(b"file contents")?;
+            Ok(MockChild::new(exit_status(0), "", ""))
+        });
+    }
+
+    let cmdline = vec!["-c".into(), "file.c".into(), "-o".into(), "file.o".into()];
+    let mut stdout = Cursor::new(Vec::new());
+    let mut stderr = Cursor::new(Vec::new());
+    assert_eq!(
+        0,
+        do_compile(
+            || Ok((new_creator(), Runtime::new().unwrap())),
+            conn,
+            &gcc,
+            cmdline,
+            f.tempdir.path(),
+            Some(f.paths),
+            vec![("SCCACHE_MISS_LOG".into(), miss_log.clone().into())],
+            &mut stdout,
+            &mut stderr
+        )
+        .unwrap()
+    );
+
+    sender.send(ServerMessage::Shutdown).ok().unwrap();
+    child.join().unwrap();
+
+    let text = std::fs::read_to_string(&miss_log)
+        .expect("the compilation named a miss log and missed, so there must be one");
+    let cols: Vec<_> = text.lines().next().expect("one record").split('\t').collect();
+    assert_eq!(cols[0], "cold", "a cold cache is not a mystery");
+    assert_eq!(cols[3], "file.o");
+    assert_eq!(
+        cols[4], "file.c",
+        "the input, which is what tells two identically-named outputs apart"
+    );
+}

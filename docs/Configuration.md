@@ -212,6 +212,38 @@ Note that some env variables may need sccache server restart to take effect.
   - This option will only applied to newly compressed cache and don't affect existing cache.
   - If you want to be apply to all cache, you should reset cache and make new cache.
 * `SCCACHE_LOG_MILLIS` when set (to any value), enables millisecond precision timestamps in log output instead of the default second precision.
+* `SCCACHE_MISS_LOG` path to a file every cache miss is appended to, one
+  tab-separated record per line. `--show-stats` counts misses but cannot say
+  which translation units or why, and `SCCACHE_LOG=debug` can say but only
+  inside a trace of every compilation — large enough, and slow enough, to change
+  what is being measured.
+
+  Unlike most settings here this is read from the environment of **each
+  compilation**, not the server's, so it takes effect in the shell that sets it
+  without restarting the daemon and without that shell having to be the one that
+  started it. The daemon always keeps the last few thousand records in memory
+  regardless; this is for when you want all of them.
+
+  The columns, in order. New fields are appended, so a one-liner reading a given
+  column keeps reading the same thing:
+
+  | # | Column | Notes |
+  |---|---|---|
+  | 1 | classification | `cold`, `read_error`, `timed_out`, `forced_recache`, `forced_no_cache`, or `uncacheable:<reason>` |
+  | 2 | preprocessor cache mode | `direct-hit`, `direct-miss`, `direct-off` |
+  | 3 | cache key | |
+  | 4 | output | usually a basename |
+  | 5 | input | basedir-relative; `-` when the compilation has no single input |
+  | 6 | language | as `--show-stats` names it |
+  | 7 | workspace | the checkout root, basedir-relative |
+  | 8 | agent | see `SCCACHE_AGENT_ID` |
+  | 9 | command digest | of the basedir-stripped arguments |
+  | 10 | sequence | the order the daemon saw them in |
+
+  `uncacheable:` is the one that says *stop*: `time_macros`,
+  `dependency_report_unreadable`, `shared_pdb` and the rest are permanent
+  properties of the compilation as invoked, so retrying it unchanged reaches the
+  same verdict. Every other classification may well succeed next time.
 * `SCCACHE_ERROR_LOG` path to a file where sccache will log errors
 * `SCCACHE_LOG` log level, accepting standard env_logger values, see [env_logger documentation](https://docs.rs/env_logger/latest/env_logger/#enabling-logging) for details
 
