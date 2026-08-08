@@ -14,7 +14,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::cache::{IpcStorage, storage_from_config};
+use crate::cache::IpcStorage;
 use crate::client::{ServerConnection, connect_to_server, connect_with_retry};
 use crate::cmdline::{Command, StatsFormat};
 use crate::compiler::ColorMode;
@@ -22,7 +22,7 @@ use crate::config::{Config, default_disk_cache_dir};
 use crate::jobserver::Client;
 use crate::mock_command::{CommandChild, CommandCreatorSync, ProcessCommandCreator, RunCommand};
 use crate::protocol::{Compile, CompileFinished, CompileResponse, Request, Response};
-use crate::server::{self, DistInfo, ServerInfo, ServerStartup, ServerStats};
+use crate::server::{self, ServerStartup, ServerStats};
 use crate::util::{daemonize, new_client_runtime};
 use byteorder::{BigEndian, ByteOrder};
 use fs::{File, OpenOptions};
@@ -52,7 +52,7 @@ pub const DEFAULT_PORT: u16 = 4226;
 const SERVER_STARTUP_TIMEOUT: Duration = Duration::from_millis(10000);
 
 /// Get the port on which the server should listen.
-fn get_addr() -> crate::net::SocketAddr {
+pub(crate) fn get_addr() -> crate::net::SocketAddr {
     #[cfg(unix)]
     if let Ok(addr) = env::var("SCCACHE_SERVER_UDS")
         && let Ok(uds) = crate::net::SocketAddr::parse_uds(&addr)
@@ -310,7 +310,7 @@ fn run_server_process(startup_timeout: Option<Duration>) -> Result<ServerStartup
 }
 
 /// Attempt to connect to an sccache server listening on `addr`, or start one if no server is running.
-fn connect_or_start_server(
+pub(crate) fn connect_or_start_server(
     addr: &crate::net::SocketAddr,
     startup_timeout: Option<Duration>,
 ) -> Result<ServerConnection> {
@@ -346,59 +346,6 @@ fn connect_or_start_server(
             Ok(server)
         }
         Err(e) => Err(e.into()),
-    }
-}
-
-/// Send a `ZeroStats` request to the server, and return the `ServerInfo` request if successful.
-pub fn request_zero_stats(mut conn: ServerConnection) -> Result<()> {
-    debug!("request_stats");
-    let response = conn.request(Request::ZeroStats).context(
-        "failed to send zero statistics command to server or failed to receive response",
-    )?;
-    if let Response::ZeroStats = response {
-        Ok(())
-    } else {
-        bail!("Unexpected server response!")
-    }
-}
-
-/// Send a `GetStats` request to the server, and return the `ServerInfo` request if successful.
-pub fn request_stats(mut conn: ServerConnection) -> Result<ServerInfo> {
-    debug!("request_stats");
-    let response = conn.request(Request::GetStats).context(
-        "Failed to send data to or receive data from server. Mismatch of client/server versions?",
-    )?;
-    if let Response::Stats(stats) = response {
-        Ok(*stats)
-    } else {
-        bail!("Unexpected server response!")
-    }
-}
-
-/// Send a `DistStatus` request to the server, and return `DistStatus` if successful.
-pub fn request_dist_status(mut conn: ServerConnection) -> Result<DistInfo> {
-    debug!("request_dist_status");
-    let response = conn
-        .request(Request::DistStatus)
-        .context("Failed to send data to or receive data from server")?;
-    if let Response::DistStatus(info) = response {
-        Ok(info)
-    } else {
-        bail!("Unexpected server response!")
-    }
-}
-
-/// Send a `Shutdown` request to the server, and return the `ServerInfo` contained within the response if successful.
-pub fn request_shutdown(mut conn: ServerConnection) -> Result<ServerInfo> {
-    debug!("request_shutdown");
-    //TODO: better error mapping
-    let response = conn
-        .request(Request::Shutdown)
-        .context("Failed to send data to or receive data from server")?;
-    if let Response::ShuttingDown(stats) = response {
-        Ok(*stats)
-    } else {
-        bail!("Unexpected server response!")
     }
 }
 
@@ -762,20 +709,14 @@ pub fn run_command(cmd: Command) -> Result<i32> {
     // it early and loudly.
     let config = &Config::load()?;
     let startup_timeout = config.server_startup_timeout;
+    // Both surfaces ask the daemon the same questions through the same place;
+    // see `crate::api` for why that seam exists.
+    let daemon = crate::api::Daemon::from_config(config);
 
     match cmd {
         Command::ShowStats(fmt, advanced) => {
             trace!("Command::ShowStats({:?})", fmt);
-            let stats = match connect_to_server(&get_addr()) {
-                Ok(srv) => request_stats(srv).context("failed to get stats from server")?,
-                // If there is no server, spawning a new server would start with zero stats
-                // anyways, so we can just return (mostly) empty stats directly.
-                Err(_) => {
-                    let runtime = new_client_runtime()?;
-                    let storage = storage_from_config(config, runtime.handle()).ok();
-                    runtime.block_on(ServerInfo::new(ServerStats::default(), storage.as_deref()))?
-                }
-            };
+            let stats = daemon.stats_or_empty(config)?;
             match fmt {
                 StatsFormat::Text => stats.print(advanced),
                 StatsFormat::Json => serde_json::to_writer(&mut io::stdout(), &stats)?,
@@ -829,13 +770,12 @@ pub fn run_command(cmd: Command) -> Result<i32> {
         Command::StopServer => {
             trace!("Command::StopServer");
             println!("Stopping sccache server...");
-            let server = connect_to_server(&get_addr()).context("couldn't connect to server")?;
-            let stats = request_shutdown(server)?;
+            let stats = daemon.shutdown().context("couldn't connect to server")?;
             stats.print(false);
         }
         Command::CheckEnv(fmt) => {
             trace!("Command::CheckEnv");
-            let report = crate::checkenv::check(config, &env::current_dir()?);
+            let report = crate::api::environment(config, &env::current_dir()?);
             match fmt {
                 StatsFormat::Text => report.print(),
                 StatsFormat::Json => {
@@ -851,8 +791,7 @@ pub fn run_command(cmd: Command) -> Result<i32> {
         }
         Command::ZeroStats => {
             trace!("Command::ZeroStats");
-            let conn = connect_or_start_server(&get_addr(), startup_timeout)?;
-            request_zero_stats(conn).context("couldn't zero stats on server")?;
+            daemon.zero_stats().context("couldn't zero stats on server")?;
             eprintln!("Statistics zeroed.");
         }
         #[cfg(feature = "dist-client")]
@@ -913,9 +852,9 @@ pub fn run_command(cmd: Command) -> Result<i32> {
         ),
         Command::DistStatus => {
             trace!("Command::DistStatus");
-            let srv = connect_or_start_server(&get_addr(), startup_timeout)?;
-            let status =
-                request_dist_status(srv).context("failed to get dist-status from server")?;
+            let status = daemon
+                .dist_status()
+                .context("failed to get dist-status from server")?;
             serde_json::to_writer(&mut io::stdout(), &status)?;
             println!();
         }

@@ -36,6 +36,7 @@ mod test;
 pub mod errors;
 
 pub mod agent;
+pub mod api;
 pub mod blockclone;
 pub mod cache;
 mod checkenv;
