@@ -15,7 +15,9 @@
 // limitations under the License.
 
 use crate::compiler::args::*;
-use crate::compiler::c::{ArtifactDescriptor, CCompilerImpl, CCompilerKind, ParsedArguments, PreprocessorOutput};
+use crate::compiler::c::{
+    ArtifactDescriptor, CCompilerImpl, CCompilerKind, ParsedArguments, PreprocessorOutput,
+};
 use crate::compiler::{
     CCompileCommand, Cacheable, ColorMode, CompileCommand, CompilerArguments, Language,
     SingleCompileCommand, clang, gcc, write_temp_file,
@@ -1121,9 +1123,22 @@ where
     // promised -- which is why `#line` detection was silently broken for every
     // compiler until it was found. Only real cl.exe supports this; clang-cl
     // reports includes through the existing stderr path.
-    let source_deps = (preprocessor_cache_mode && !is_clang)
-        .then(|| tempfile::Builder::new().prefix("sccache-deps").suffix(".json").tempfile().ok())
+    //
+    // Read the caller's own report when they asked for one. `preprocess_cmd`
+    // has already put their `/sourceDependencies` on the command line, and a
+    // second one does not produce a second file -- cl takes the last, so
+    // adding ours would quietly stop theirs being written at all.
+    let caller_report = (preprocessor_cache_mode && !is_clang)
+        .then(|| parsed_args.depfile.as_ref().map(|d| cwd.join(d)))
         .flatten();
+    let source_deps = match (preprocessor_cache_mode && !is_clang, &caller_report) {
+        (true, None) => tempfile::Builder::new()
+            .prefix("sccache-deps")
+            .suffix(".json")
+            .tempfile()
+            .ok(),
+        _ => None,
+    };
     if let Some(f) = &source_deps {
         let mut arg = OsString::from("/sourceDependencies");
         arg.push(f.path());
@@ -1141,8 +1156,12 @@ where
     let output = run_input_output(cmd, None).await?;
 
     // Read the report before the temp file is dropped.
-    let reported_inputs = source_deps.and_then(|f| {
-        let text = std::fs::read_to_string(f.path()).ok()?;
+    let report_path = source_deps
+        .as_ref()
+        .map(|f| f.path().to_owned())
+        .or(caller_report);
+    let reported_inputs = report_path.and_then(|path| {
+        let text = std::fs::read_to_string(path).ok()?;
         let deps = crate::compiler::depfile::parse_source_dependencies(&text);
         // Empty means the report could not be read, which must reach the caller
         // as "nothing verifiable" rather than "no includes".
@@ -3115,6 +3134,55 @@ mod test {
         );
         let expected_args = ovec!["-E", "-nologo", "-clang:-frewrite-includes", "--", "foo.c"];
         assert_eq!(cmd.args, expected_args);
+    }
+
+    /// cl takes the last `/sourceDependencies` it is given, so asking for our
+    /// own report alongside the caller's does not produce two reports -- it
+    /// stops theirs being written, and the build system that asked for it finds
+    /// nothing where it expects its dependency file.
+    #[test]
+    fn a_callers_source_dependencies_is_not_duplicated() {
+        let parsed_args = match parse_arguments(ovec![
+            "-c",
+            "foo.c",
+            "-Fofoo.obj",
+            "-sourceDependenciesfoo.obj.json"
+        ]) {
+            CompilerArguments::Ok(args) => args,
+            o => panic!("Got unexpected parse result: {:?}", o),
+        };
+        assert!(parsed_args.depfile.is_some());
+
+        let creator = new_creator();
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let recorder = seen.clone();
+        next_command_calls(&creator, move |args: &[OsString]| {
+            *recorder.lock().unwrap() = args.to_vec();
+            Ok(MockChild::new(exit_status(0), "", ""))
+        });
+
+        let runtime = single_threaded_runtime();
+        runtime
+            .block_on(preprocess(
+                &creator,
+                "cl.exe".as_ref(),
+                &parsed_args,
+                Path::new(""),
+                &[],
+                false, // may_dist
+                "",    // includes_prefix
+                false, // rewrite_includes_only
+                false, // is_clang
+                true,  // preprocessor_cache_mode
+            ))
+            .unwrap();
+
+        let seen = seen.lock().unwrap();
+        let asked = seen
+            .iter()
+            .filter(|a| a.to_string_lossy().starts_with("/sourceDependencies"))
+            .count();
+        assert_eq!(asked, 1, "asked for the report twice: {:?}", *seen);
     }
 
     /// Preprocessor cache mode reconstructs the include list from linemarkers in the
