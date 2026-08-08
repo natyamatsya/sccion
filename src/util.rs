@@ -1173,6 +1173,23 @@ pub fn num_cpus() -> usize {
 ///
 /// Only paths that start with one of the basedirs are modified. The paths are expected to be
 /// in the format found in preprocessor output (e.g., `# 1 "/path/to/file"`).
+/// Strip basedir prefixes from a path naming a *directory*.
+///
+/// Basedirs carry a trailing separator, so that they match whole path
+/// components and never half of a name. The consequence is that a directory
+/// which *is* a basedir does not match it -- `/src` against `/src/` -- so the
+/// checkout root, which is the most likely working directory of all, would be
+/// the one path that never normalises. Supplying the separator first makes the
+/// root strip to nothing and a subdirectory strip to its path within the
+/// checkout.
+pub fn strip_basedirs_in_dir(dir: &Path, basedirs: &[Vec<u8>]) -> Vec<u8> {
+    let mut bytes = dir.as_os_str().as_encoded_bytes().to_vec();
+    if !bytes.ends_with(b"/") && !bytes.ends_with(b"\\") {
+        bytes.push(std::path::MAIN_SEPARATOR as u8);
+    }
+    strip_basedirs_in_arg(&bytes, basedirs).into_owned()
+}
+
 /// Strip basedir prefixes from a single command-line argument.
 ///
 /// Separate from [`strip_basedirs`] because the two see paths in different

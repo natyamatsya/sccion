@@ -38,7 +38,7 @@ use crate::{
     config::PreprocessorCacheModeConfig,
     util::{
         Digest, HashToDigest, MetadataCtimeExt, TimeMacroFinder, Timestamp, encode_path,
-        strip_basedirs, strip_basedirs_in_arg,
+        strip_basedirs, strip_basedirs_in_arg, strip_basedirs_in_dir,
     },
 };
 
@@ -51,7 +51,7 @@ use super::Language;
 /// an entry written by the old code holds absolute paths that the new code
 /// would resolve against a basedir and not find. Rejecting them outright costs
 /// one cold build and cannot be confused with a legitimate miss.
-const FORMAT_VERSION: u8 = 1;
+const FORMAT_VERSION: u8 = 2;
 const MAX_PREPROCESSOR_CACHE_ENTRIES: usize = 100;
 const MAX_PREPROCESSOR_CACHE_FILE_INFO_ENTRIES: usize = 10000;
 
@@ -641,6 +641,7 @@ pub fn preprocessor_cache_entry_hash_key(
     plusplus: bool,
     config: PreprocessorCacheModeConfig,
     basedirs: &[Vec<u8>],
+    cwd: &Path,
 ) -> anyhow::Result<Option<String>> {
     // If you change any of the inputs to the hash, you should change `FORMAT_VERSION`.
     let mut m = Digest::new();
@@ -705,6 +706,18 @@ pub fn preprocessor_cache_entry_hash_key(
         digest
     };
     m.update(digest.as_bytes());
+
+    // The input path above pins the directory only when the build names its
+    // sources relatively. Given absolute paths -- which is what CMake
+    // generates -- it does not, and the manifest would then hand a result key
+    // across directories that the object's debug information distinguishes.
+    if config.hash_working_directory {
+        let stripped = strip_basedirs_in_dir(cwd, basedirs);
+        m.update(b"cwd=");
+        m.update(&(stripped.len() as u64).to_le_bytes());
+        m.update(&stripped);
+    }
+
     Ok(Some(m.finish()))
 }
 
@@ -1002,7 +1015,6 @@ mod test {
         assert!(!finder.found_date());
     }
 
-    #[test]
     /// Sharing a manifest between checkouts is only safe if the checking is
     /// done against the files of the checkout being compiled. Recording
     /// absolute paths would make the second checkout confirm the *first*
@@ -1066,6 +1078,47 @@ mod test {
         );
     }
 
+    /// The manifest key names the input file absolutely, which pins the
+    /// directory only when the build names its sources relatively. Given
+    /// absolute paths -- what CMake generates -- it does not, and the manifest
+    /// would hand a result key across directories that the object's debug
+    /// information distinguishes.
+    #[test]
+    fn manifest_keys_carry_the_working_directory() {
+        use std::fs;
+        use tempfile::TempDir;
+
+        let shared = TempDir::new().unwrap();
+        let input = shared.path().join("x.c");
+        fs::write(&input, b"int main(void) { return 0; }").unwrap();
+
+        let key_from = |cwd: &str, config| {
+            preprocessor_cache_entry_hash_key(
+                "test_digest",
+                Language::C,
+                &[],
+                &[],
+                &[],
+                &input,
+                false,
+                config,
+                &[],
+                Path::new(cwd),
+            )
+            .unwrap()
+            .unwrap()
+        };
+
+        let on = PreprocessorCacheModeConfig::activated();
+        assert_neq!(key_from("/build/a", on), key_from("/build/b", on));
+
+        let off = PreprocessorCacheModeConfig {
+            hash_working_directory: false,
+            ..on
+        };
+        assert_eq!(key_from("/build/a", off), key_from("/build/b", off));
+    }
+
     /// The manifest key strips basedirs from the input file but not from the
     /// arguments, and a compilation's arguments are full of absolute paths --
     /// `-I`, `/FI`, `-Fp`. So two checkouts of one tree never share a manifest,
@@ -1109,6 +1162,7 @@ mod test {
                 false,
                 PreprocessorCacheModeConfig::activated(),
                 &basedirs_of(d),
+                d.path(),
             )
             .unwrap()
         };
@@ -1162,6 +1216,7 @@ mod test {
             false,
             config,
             &dirs,
+            Path::new("/wd"),
         )
         .unwrap()
         .unwrap();
@@ -1176,6 +1231,7 @@ mod test {
             false,
             config,
             &dirs,
+            Path::new("/wd"),
         )
         .unwrap()
         .unwrap();
@@ -1196,6 +1252,7 @@ mod test {
             false,
             config,
             &dirs[..1],
+            dir1.path(),
         )
         .unwrap()
         .unwrap();
@@ -1210,6 +1267,7 @@ mod test {
             false,
             config,
             &dirs[1..],
+            dir2.path(),
         )
         .unwrap()
         .unwrap();
@@ -1230,6 +1288,7 @@ mod test {
             false,
             config,
             &[],
+            Path::new("/wd"),
         )
         .unwrap()
         .unwrap();
@@ -1244,6 +1303,7 @@ mod test {
             false,
             config,
             &[],
+            Path::new("/wd"),
         )
         .unwrap()
         .unwrap();

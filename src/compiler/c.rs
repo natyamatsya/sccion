@@ -29,7 +29,7 @@ use crate::dist::pkg;
 use crate::mock_command::CommandCreatorSync;
 use crate::util::{
     Digest, HashToDigest, MetadataCtimeExt, TimeMacroFinder, Timestamp, decode_path, encode_path,
-    hash_all_memoized, strip_basedirs, strip_basedirs_in_arg,
+    hash_all_memoized, strip_basedirs, strip_basedirs_in_arg, strip_basedirs_in_dir,
 };
 use async_trait::async_trait;
 use fs_err as fs;
@@ -847,6 +847,7 @@ where
                 self.compiler.plusplus(),
                 preprocessor_cache_mode_config,
                 &basedirs,
+                &cwd,
             )?
         } else {
             None
@@ -1115,6 +1116,11 @@ where
         .with_env_vars(&env_vars)
         .with_plusplus(self.compiler.plusplus())
         .with_basedirs(&basedirs)
+        .with_working_directory(
+            preprocessor_cache_mode_config
+                .hash_working_directory
+                .then_some(cwd.as_path()),
+        )
         .compute();
 
         // Cache the preprocessing step
@@ -1922,7 +1928,7 @@ impl pkg::ToolchainPackager for CToolchainPackager {
 }
 
 /// The cache is versioned by the inputs to `HashKeyParams::compute`.
-pub const CACHE_VERSION: &[u8] = b"12";
+pub const CACHE_VERSION: &[u8] = b"13";
 
 /// Environment variables that are factored into the cache key.
 static CACHED_ENV_VARS: LazyLock<HashSet<&'static OsStr>> = LazyLock::new(|| {
@@ -1971,6 +1977,7 @@ pub struct HashKeyParams<'a> {
     preprocessor_output: &'a [u8],
     plusplus: bool,
     basedirs: &'a [Vec<u8>],
+    working_directory: Option<&'a Path>,
 }
 
 impl<'a> HashKeyParams<'a> {
@@ -1998,6 +2005,7 @@ impl<'a> HashKeyParams<'a> {
             env_vars: &[],
             plusplus: false,
             basedirs: &[],
+            working_directory: None,
         }
     }
 
@@ -2022,6 +2030,21 @@ impl<'a> HashKeyParams<'a> {
     /// Sets the base directories for path normalization.
     pub fn with_basedirs(mut self, basedirs: &'a [Vec<u8>]) -> Self {
         self.basedirs = basedirs;
+        self
+    }
+
+    /// Sets the directory the compilation runs in, when it belongs in the key.
+    ///
+    /// Nothing else in the key carries it: the arguments and the preprocessed
+    /// output mention it only when the build happens to use absolute paths, and
+    /// `-EP` emits no paths at all. Two builds of the same relative sources from
+    /// different directories otherwise share an entry, and the debug
+    /// information in the object names whichever directory produced it first.
+    ///
+    /// Basedirs still apply, so declaring a checkout root keeps the two
+    /// checkouts of one project sharing -- that is what declaring it asserts.
+    pub fn with_working_directory(mut self, cwd: Option<&'a Path>) -> Self {
+        self.working_directory = cwd;
         self
     }
 
@@ -2071,6 +2094,16 @@ impl<'a> HashKeyParams<'a> {
                 m.update(&b"="[..]);
                 val.hash(&mut HashToDigest { digest: &mut m });
             }
+        }
+
+        if let Some(cwd) = self.working_directory {
+            // Basedir-stripped, like everything else that names a path: a
+            // declared checkout root means two checkouts of it are the same
+            // compilation, and this must not be the one thing that disagrees.
+            let stripped = strip_basedirs_in_dir(cwd, self.basedirs);
+            m.update(b"cwd=");
+            m.update(&(stripped.len() as u64).to_le_bytes());
+            m.update(&stripped);
         }
 
         // Strip basedirs from preprocessor output if configured
@@ -2174,6 +2207,54 @@ mod test {
         let split = [("d".to_string(), PathBuf::from("/r/x.h"))];
         let joined = [(String::new(), PathBuf::from("/r/x.hd"))];
         assert_neq!(key(&split), key(&joined));
+    }
+
+    /// Nothing else in the result key carries the directory a compilation ran
+    /// in: `-EP` emits no paths at all, and a build using relative sources puts
+    /// none in its arguments either. Two such builds in different directories
+    /// share an entry, and the debug information in the object names whichever
+    /// one produced it first.
+    #[test]
+    fn the_working_directory_reaches_the_key() {
+        let args = ovec!["-c", "src/x.c"];
+        let key_in = |dir: &str, basedirs: &[Vec<u8>]| {
+            HashKeyParams::new("abcd", Language::C, &args, b"preprocessed")
+                .with_basedirs(basedirs)
+                .with_working_directory(Some(Path::new(dir)))
+                .compute()
+        };
+
+        assert_neq!(key_in("/build/a", &[]), key_in("/build/b", &[]));
+
+        // Declaring a checkout root is the assertion that its path does not
+        // matter, and that has to hold here too or it would be the one thing
+        // that keeps two checkouts apart. Both when the compilation runs at the
+        // root...
+        let (ba, bb) = (vec![b"/wt/a/".to_vec()], vec![b"/wt/b/".to_vec()]);
+        assert_eq!(key_in("/wt/a", &ba), key_in("/wt/b", &bb));
+        // ...and when it runs somewhere under it, which is the usual case.
+        assert_eq!(key_in("/wt/a/build", &ba), key_in("/wt/b/build", &bb));
+        // But a different directory *within* the checkout is still different.
+        assert_neq!(key_in("/wt/a/build", &ba), key_in("/wt/a/other", &ba));
+    }
+
+    /// And a build that would rather have the hits can still say so, in which
+    /// case the key is exactly what it was before any of this.
+    #[test]
+    fn the_working_directory_can_be_left_out() {
+        let args = ovec!["-c", "src/x.c"];
+        let without = |dir: Option<&Path>| {
+            HashKeyParams::new("abcd", Language::C, &args, b"preprocessed")
+                .with_working_directory(dir)
+                .compute()
+        };
+
+        assert_eq!(without(None), without(None));
+        assert_eq!(
+            without(None),
+            HashKeyParams::new("abcd", Language::C, &args, b"preprocessed").compute(),
+        );
+        assert_neq!(without(None), without(Some(Path::new("/build/a"))));
     }
 
     /// Arguments are concatenated into one digest, so they need framing or

@@ -47,7 +47,9 @@ Configuration options and their default values:
 
 - `skip_system_headers`: `false`. If true, the preprocessor cache will only add the paths of included system headers to the cache key but ignore the headers' contents.
 
-- `hash_working_directory`: `true`. If true, will add the current working directory to the cache key to distinguish two compilations from different directories.
+- `hash_working_directory`: `true`. If true, adds the directory a compilation runs in to the cache key, so that two compilations from different directories do not share an entry. This matters because a compiler records the path it saw in the object's debug information, while nothing else in the key reliably carries it: MSVC's `-EP` emits no paths at all, and a build naming its sources relatively puts none in its arguments either. Setting it to `false` trades that guarantee for hits, and is safe for a build whose objects do not embed absolute paths (`/Z7` with `/d1trimfile`, or `-fdebug-prefix-map`).
+
+  Basedirs apply here as they do elsewhere: the directory is recorded relative to a declared checkout root, so declaring one keeps two checkouts of a project sharing entries. That is what declaring it asserts.
 
 - `use_dependency_keying`: `true`. A compilation whose inputs are not already known is *compiled* and asked what it read, instead of being preprocessed so the same list can be recovered from the preprocessed text. This removes an entire compiler run from every preprocessor cache miss. Only compilers that can report their inputs while compiling do this (currently MSVC, via `/sourceDependencies`); the rest preprocess as before, as do distributed compilations, which need preprocessed source.
 
