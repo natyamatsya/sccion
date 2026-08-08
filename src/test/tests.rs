@@ -471,9 +471,10 @@ fn test_a_workspace_handle_is_stable_and_scopes_what_it_can_see() {
         other => panic!("unexpected response: {other:?}"),
     };
     assert_eq!(
-        Some(first.root.as_str()),
-        checkout.to_str(),
-        "a directory inside a checkout registers the checkout, not itself"
+        first.root,
+        crate::agent::canonical(&checkout),
+        "a directory inside a checkout registers the checkout, not itself -- \
+         in the one spelling everything else compares against"
     );
     assert_eq!(first.vcs, "git");
     assert!(

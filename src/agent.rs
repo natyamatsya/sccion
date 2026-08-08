@@ -46,12 +46,36 @@ pub fn identity(env_vars: &[(OsString, OsString)], cwd: &Path) -> Option<String>
 pub fn workspace(cwd: &Path) -> Option<String> {
     crate::projectconf::discover(cwd)
         .vcs_root
-        .map(|r| r.to_string_lossy().into_owned())
+        .as_deref()
+        .map(canonical)
+}
+
+/// One spelling of a path, whatever separators the caller happened to use.
+///
+/// Windows accepts both, and which one arrives here depends on how the
+/// compilation was invoked -- a build system passes `D:\x`, someone asking a
+/// question about it passes `D:/x`. These are the same directory, and every
+/// consumer of this module compares the results as *strings*: as an identity it
+/// would split one checkout into two buckets, and as a filter it would match
+/// nothing at all.
+///
+/// `afff1eb` fixed this exact shape once already, where preprocessor cache keys
+/// were built with forward slashes and the on-startup index rebuild used
+/// backslashes. Comparing `Path`s instead would fix the filter but not the
+/// identity, which has to be one string.
+pub fn canonical(path: &Path) -> String {
+    let s = path.to_string_lossy();
+    if cfg!(windows) {
+        s.replace('\\', "/")
+    } else {
+        s.into_owned()
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
 
     fn env(pairs: &[(&str, &str)]) -> Vec<(OsString, OsString)> {
         pairs
@@ -87,6 +111,42 @@ mod tests {
             got.ends_with("agent-7"),
             "the identity has to distinguish checkouts, so it must not be \
              basedir-stripped: {got:?}"
+        );
+    }
+
+    /// The same checkout reached by two spellings is one workspace.
+    ///
+    /// A build system hands over `D:\wt\build` and someone asking a question
+    /// about it hands over `D:/wt/src`. Windows accepts both, every consumer
+    /// compares the answers as strings, and the two spellings had produced two
+    /// different strings -- so a query scoped to the workspace matched none of
+    /// its own records, and reported "no misses" for a build that had just
+    /// missed hundreds of times. Found by running two agents against a real
+    /// build; the unit tests all used one spelling and were happy.
+    #[test]
+    fn one_checkout_is_one_identity_however_it_is_spelled() {
+        let t = tempfile::tempdir().unwrap();
+        let wt = t.path().join("wt");
+        std::fs::create_dir_all(wt.join("build")).unwrap();
+        std::fs::create_dir_all(wt.join("src")).unwrap();
+        std::fs::write(wt.join(".git"), "gitdir: elsewhere").unwrap();
+
+        let with_slashes = PathBuf::from(wt.join("src").to_string_lossy().replace('\\', "/"));
+        let with_backslashes =
+            PathBuf::from(wt.join("build").to_string_lossy().replace('/', "\\"));
+        // The test is only meaningful if the two really do differ.
+        if cfg!(windows) {
+            assert_ne!(
+                with_slashes.to_string_lossy().contains('/'),
+                with_backslashes.to_string_lossy().contains('/'),
+                "the fixture must actually use two different separators"
+            );
+        }
+
+        assert_eq!(
+            workspace(&with_slashes),
+            workspace(&with_backslashes),
+            "the same checkout, spelled two ways, is one workspace"
         );
     }
 

@@ -1330,7 +1330,7 @@ where
 
         Ok(crate::protocol::WorkspaceInfo {
             handle,
-            root: root.to_string_lossy().into_owned(),
+            root: crate::agent::canonical(&root),
             vcs: match vcs {
                 crate::projectconf::Vcs::Git => "git",
                 crate::projectconf::Vcs::Jj => "jj",
@@ -1362,7 +1362,7 @@ where
         let Some(root) = root else {
             return Ok(self.misses.recent(limit));
         };
-        let root = root.to_string_lossy().into_owned();
+        let root = crate::agent::canonical(&root);
         // Filtered before the limit is applied, so a busy neighbour cannot
         // crowd this workspace's records out of the answer.
         Ok(self.misses.recent_where(limit, |r| {
