@@ -18,6 +18,7 @@ use crate::compiler::args::*;
 use crate::compiler::c::{
     ArtifactDescriptor, CCompilerImpl, CCompilerKind, ParsedArguments, PreprocessorOutput,
 };
+use crate::compiler::depfile::DepFileFormat;
 use crate::compiler::{
     CCompileCommand, Cacheable, ColorMode, CompileCommand, CompilerArguments, Language,
     SingleCompileCommand, clang, gcc, write_temp_file,
@@ -97,6 +98,18 @@ impl CCompilerImpl for Msvc {
         )
         .await
         .map(Into::into)
+    }
+
+    fn dependency_report_format(&self) -> Option<DepFileFormat> {
+        // clang-cl accepts the flag but reports through the existing
+        // `-showIncludes` stderr path; only real cl.exe answers here.
+        (!self.is_clang).then_some(DepFileFormat::MsvcJson)
+    }
+
+    fn dependency_report_args(&self, path: &Path) -> Vec<OsString> {
+        let mut arg = OsString::from("/sourceDependencies");
+        arg.push(path);
+        vec![arg]
     }
 
     fn generate_compile_commands<T>(

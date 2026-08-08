@@ -189,6 +189,29 @@ pub fn parse_source_dependencies(contents: &str) -> Vec<PathBuf> {
         .unwrap_or_default()
 }
 
+/// The shape a tool reports its inputs in.
+///
+/// Which one a compiler speaks is a property of the compiler, so it travels
+/// with the request for a report rather than being guessed from the file.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DepFileFormat {
+    /// Make rules, as `-MD`/`-MF` and moc's `--output-dep-file` produce.
+    Make,
+    /// MSVC's `/sourceDependencies` JSON.
+    MsvcJson,
+}
+
+impl DepFileFormat {
+    /// Read a report in this format. As with the parsers themselves, an empty
+    /// result means "cannot cache", never "no dependencies".
+    pub fn parse(self, contents: &str) -> Vec<PathBuf> {
+        match self {
+            Self::Make => parse(contents),
+            Self::MsvcJson => parse_source_dependencies(contents),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -14,6 +14,7 @@
 // limitations under the License.
 
 use crate::cache::{Cache, CacheWrite, Storage};
+use crate::compiler::PreprocessorCacheEntry;
 use crate::config::PreprocessorCacheModeConfig;
 use crate::errors::*;
 use async_trait::async_trait;
@@ -29,6 +30,9 @@ pub struct MockStorage {
     tx: mpsc::UnboundedSender<Result<Cache>>,
     delay: Option<Duration>,
     preprocessor_cache_mode: bool,
+    /// Manifests written, so a test can tell whether a compilation recorded
+    /// what it read for the next one to find.
+    manifests: Arc<std::sync::Mutex<Vec<(String, PreprocessorCacheEntry)>>>,
 }
 
 impl MockStorage {
@@ -40,12 +44,18 @@ impl MockStorage {
             rx: Arc::new(Mutex::new(rx)),
             delay,
             preprocessor_cache_mode,
+            manifests: Default::default(),
         }
     }
 
     /// Queue up `res` to be returned as the next result from `Storage::get`.
     pub(crate) fn next_get(&self, res: Result<Cache>) {
         self.tx.unbounded_send(res).unwrap();
+    }
+
+    /// The manifests written so far, in the order they were written.
+    pub(crate) fn manifests(&self) -> Vec<(String, PreprocessorCacheEntry)> {
+        self.manifests.lock().unwrap().clone()
     }
 }
 
@@ -81,5 +91,16 @@ impl Storage for MockStorage {
             use_preprocessor_cache_mode: self.preprocessor_cache_mode,
             ..Default::default()
         }
+    }
+    async fn put_preprocessor_cache_entry(
+        &self,
+        key: &str,
+        preprocessor_cache_entry: PreprocessorCacheEntry,
+    ) -> Result<()> {
+        self.manifests
+            .lock()
+            .unwrap()
+            .push((key.to_string(), preprocessor_cache_entry));
+        Ok(())
     }
 }

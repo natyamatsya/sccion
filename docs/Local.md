@@ -49,6 +49,10 @@ Configuration options and their default values:
 
 - `hash_working_directory`: `true`. If true, will add the current working directory to the cache key to distinguish two compilations from different directories.
 
+- `use_dependency_keying`: `false`. If true, a compilation whose inputs are not already known is *compiled* and asked what it read, instead of being preprocessed so the same list can be recovered from the preprocessed text. This removes an entire compiler run from every preprocessor cache miss — on a reference MSVC build, 285ms of the 681ms such a miss costs. Only compilers that can report their inputs while compiling do this (currently MSVC, via `/sourceDependencies`); the rest preprocess as before, as do distributed compilations, which need preprocessed source.
+
+  The trade is that a miss now costs a compile rather than a preprocess, so a compilation whose *manifest* is missing but whose *object* is already in the cache pays the difference instead of getting a cheap hit. Measure before enabling it on a build that shares a cache between checkouts. This can be overridden for an sccache invocation by setting the environment variable `SCCACHE_DEPEND` to `true`/`on`/`1` or `false`/`off`/`0`.
+
 See where to write the config in [the configuration doc](Configuration.md).
 
 ## Read-only cache mode

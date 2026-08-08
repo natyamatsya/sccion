@@ -29,8 +29,8 @@ use async_trait::async_trait;
 use crate::cache::{FileObjectSource, Storage};
 use crate::compiler::preprocessor_cache::{PreprocessorCacheEntry, includes_from_dep_file};
 use crate::compiler::{
-    CacheControl, Cacheable, ColorMode, CompileCommand, Compilation, Compiler, CompilerArguments,
-    CompilerHasher, CompilerKind, HashResult, SingleCompileCommand,
+    AlreadyProduced, CacheControl, Cacheable, ColorMode, Compilation, CompileCommand, Compiler,
+    CompilerArguments, CompilerHasher, CompilerKind, HashResult, SingleCompileCommand,
 };
 use crate::dist;
 use crate::mock_command::CommandCreatorSync;
@@ -456,57 +456,6 @@ pub struct MocCompilation {
     cacheable: Cacheable,
 }
 
-/// A compilation whose output is already on disk.
-///
-/// moc has to run during hashing on a manifest miss, because until it reports
-/// its dependencies there is nothing to compute a key from. Running it a second
-/// time to "perform" the compilation would double the cost of every cold
-/// build -- 211ms becoming 422ms across 669 invocations -- to reproduce a file
-/// that is already sitting where it belongs. So this stands in for the command
-/// and reports the success that already happened.
-#[derive(Debug)]
-struct AlreadyProduced {
-    executable: PathBuf,
-    arguments: Vec<OsString>,
-    env_vars: Vec<(OsString, OsString)>,
-    cwd: PathBuf,
-    /// moc's own diagnostics, replayed so a cold build looks like an
-    /// uncached one -- "No relevant classes found" and friends still reach the
-    /// user, and get stored for replay on later hits.
-    stdout: Vec<u8>,
-    stderr: Vec<u8>,
-}
-
-#[async_trait]
-impl crate::compiler::CompileCommandImpl for AlreadyProduced {
-    fn get_executable(&self) -> PathBuf {
-        self.executable.clone()
-    }
-    fn get_arguments(&self) -> Vec<OsString> {
-        self.arguments.clone()
-    }
-    fn get_env_vars(&self) -> Vec<(OsString, OsString)> {
-        self.env_vars.clone()
-    }
-    fn get_cwd(&self) -> PathBuf {
-        self.cwd.clone()
-    }
-    async fn execute<T>(
-        &self,
-        _: &crate::server::SccacheService<T>,
-        _: &T,
-    ) -> Result<process::Output>
-    where
-        T: CommandCreatorSync,
-    {
-        Ok(process::Output {
-            status: crate::mock_command::exit_status(0),
-            stdout: self.stdout.clone(),
-            stderr: self.stderr.clone(),
-        })
-    }
-}
-
 impl<T: CommandCreatorSync> Compilation<T> for MocCompilation {
     fn generate_compile_commands(
         &self,
@@ -524,8 +473,11 @@ impl<T: CommandCreatorSync> Compilation<T> for MocCompilation {
                     arguments: self.parsed.all_args.clone(),
                     env_vars: self.env_vars.clone(),
                     cwd: self.cwd.clone(),
-                    stdout: self.stdout.clone(),
-                    stderr: self.stderr.clone(),
+                    output: process::Output {
+                        status: crate::mock_command::exit_status(0),
+                        stdout: self.stdout.clone(),
+                        stderr: self.stderr.clone(),
+                    },
                 }),
                 None,
                 self.cacheable,

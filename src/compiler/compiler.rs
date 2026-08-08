@@ -240,6 +240,21 @@ impl CompileCommandImpl for SingleCompileCommand {
     where
         T: CommandCreatorSync,
     {
+        self.run(creator).await
+    }
+}
+
+impl SingleCompileCommand {
+    /// Run the command with no service context.
+    ///
+    /// [`CompileCommandImpl::execute`] takes a service this implementation has
+    /// never used. Dependency-keyed hashing runs the compilation from inside
+    /// `generate_hash_key`, where there is no service to hand, so the body
+    /// lives here and `execute` delegates to it.
+    pub async fn run<T>(&self, creator: &T) -> Result<process::Output>
+    where
+        T: CommandCreatorSync,
+    {
         let SingleCompileCommand {
             executable,
             arguments,
@@ -254,6 +269,49 @@ impl CompileCommandImpl for SingleCompileCommand {
             .envs(env_vars.clone())
             .current_dir(cwd);
         run_input_output(cmd, None).await
+    }
+}
+
+/// A compilation whose output is already on disk.
+///
+/// Some tools have to run before their inputs are known: until they report what
+/// they read there is nothing to compute a cache key from. Running them a
+/// second time to "perform" the compilation would double the cost of every cold
+/// build to reproduce a file that is already sitting where it belongs. So this
+/// stands in for the command and reports the run that already happened --
+/// including a failing status, so a compile error is counted and reported as
+/// one rather than as an sccache error.
+#[derive(Clone, Debug)]
+pub struct AlreadyProduced {
+    pub executable: PathBuf,
+    pub arguments: Vec<OsString>,
+    pub env_vars: Vec<(OsString, OsString)>,
+    pub cwd: PathBuf,
+    /// The compiler's own diagnostics, replayed so a cold build looks like an
+    /// uncached one, and stored for replay on later hits.
+    pub output: process::Output,
+}
+
+#[async_trait]
+impl CompileCommandImpl for AlreadyProduced {
+    fn get_executable(&self) -> PathBuf {
+        self.executable.clone()
+    }
+    fn get_arguments(&self) -> Vec<OsString> {
+        self.arguments.clone()
+    }
+    fn get_env_vars(&self) -> Vec<(OsString, OsString)> {
+        self.env_vars.clone()
+    }
+    fn get_cwd(&self) -> PathBuf {
+        self.cwd.clone()
+    }
+
+    async fn execute<T>(&self, _: &server::SccacheService<T>, _: &T) -> Result<process::Output>
+    where
+        T: CommandCreatorSync,
+    {
+        Ok(self.output.clone())
     }
 }
 

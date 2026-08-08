@@ -73,6 +73,9 @@ ignore_time_macros = false
 skip_system_headers = false
 # Whether hash the current working directory
 hash_working_directory = true
+# Whether to learn a compilation's inputs by compiling and asking, rather than
+# by preprocessing first
+use_dependency_keying = false
 
 [cache.gcs]
 # optional oauth url

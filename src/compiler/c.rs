@@ -17,8 +17,8 @@
 use crate::cache::{FileObjectSource, Storage};
 use crate::compiler::preprocessor_cache::preprocessor_cache_entry_hash_key;
 use crate::compiler::{
-    Cacheable, ColorMode, Compilation, CompileCommand, Compiler, CompilerArguments, CompilerHasher,
-    CompilerKind, HashResult, Language,
+    AlreadyProduced, CCompileCommand, Cacheable, ColorMode, Compilation, CompileCommand, Compiler,
+    CompilerArguments, CompilerHasher, CompilerKind, HashResult, Language, SingleCompileCommand,
 };
 #[cfg(feature = "dist-client")]
 use crate::compiler::{DistPackagers, NoopOutputsRewriter};
@@ -115,6 +115,56 @@ impl From<process::Output> for PreprocessorOutput {
     }
 }
 
+/// The key a dependency-keyed result is stored under: the manifest key plus
+/// everything the compilation read.
+///
+/// Nothing here is hashed that the manifest key does not already cover except
+/// the inputs themselves, which is the whole point -- the manifest maps this
+/// same list back to this same key, so a later compilation that reads identical
+/// files finds the result without the compiler running at all.
+///
+/// Paths are basedir-stripped for the same reason arguments are: two checkouts
+/// of one tree read files at different absolute paths, and a key that pins them
+/// is a key neither can share.
+fn dependency_result_key(
+    manifest_key: &str,
+    includes: &[(String, PathBuf)],
+    basedirs: &[Vec<u8>],
+) -> String {
+    let mut m = Digest::new();
+    m.update(manifest_key.as_bytes());
+    for (digest, path) in includes {
+        // Framed with an explicit length: the digests and paths are otherwise
+        // concatenated into one stream, where `a/b.h` + `c.h` and `a/b.hc` +
+        // `.h` are indistinguishable.
+        let stripped = strip_basedirs_in_arg(path.as_os_str().as_encoded_bytes(), basedirs);
+        m.update(&(stripped.len() as u64).to_le_bytes());
+        m.update(&stripped);
+        m.update(digest.as_bytes());
+    }
+    m.finish()
+}
+
+/// A key nothing can collide with, for a compilation that must not be cached.
+///
+/// The compilation still has to come back with *a* key -- the caller looks one
+/// up before it is told the result is uncacheable -- and any key derived only
+/// from the compilation itself is a key some other run could legitimately hold.
+fn uncacheable_key(manifest_key: &str) -> String {
+    let mut m = Digest::new();
+    m.update(manifest_key.as_bytes());
+    m.update(b"uncacheable");
+    m.update(
+        &std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+            .to_le_bytes(),
+    );
+    m.update(&std::process::id().to_le_bytes());
+    m.finish()
+}
+
 /// A generic implementation of the `Compiler` trait for C/C++ compilers.
 #[derive(Clone)]
 pub struct CCompiler<I>
@@ -209,6 +259,11 @@ struct CCompilation<I: CCompilerImpl> {
     compiler: I,
     cwd: PathBuf,
     env_vars: Vec<(OsString, OsString)>,
+    /// Set when the compiler already ran during hashing, because its inputs
+    /// could not be known until it had. Carries the verdict from that run:
+    /// `Cacheable::No` when nothing verifiable could be recorded about what it
+    /// read, or when the compilation failed.
+    already_produced: Option<(AlreadyProduced, Cacheable)>,
 }
 
 /// Supported C compilers.
@@ -267,6 +322,26 @@ pub trait CCompilerImpl: Clone + fmt::Debug + Send + Sync + 'static {
     ) -> Result<PreprocessorOutput>
     where
         T: CommandCreatorSync;
+    /// The format in which this compiler reports the files it read while
+    /// performing the real compilation, if it can be asked to report at all.
+    ///
+    /// Answering here opts the compiler into dependency-keyed hashing, which
+    /// runs [`Self::generate_compile_commands`]' command directly rather than
+    /// through a [`CompileCommand`]. An implementation that returns `Some` must
+    /// therefore produce a command that is a plain single process invocation.
+    ///
+    /// `None` (the default) means the compilation's inputs can only be learned
+    /// by preprocessing.
+    fn dependency_report_format(&self) -> Option<crate::compiler::depfile::DepFileFormat> {
+        None
+    }
+    /// Arguments that make the compiler write that report to `path`.
+    ///
+    /// `path` is the caller's own dependency file when they asked for one:
+    /// nothing else produces it in this mode, and it is the same list.
+    fn dependency_report_args(&self, _path: &Path) -> Vec<OsString> {
+        Vec::new()
+    }
     /// Generate a command that can be used to invoke the C compiler to perform
     /// the compilation.
     fn generate_compile_commands<T>(
@@ -427,6 +502,176 @@ impl<T: CommandCreatorSync, I: CCompilerImpl> Compiler<T> for CCompiler<I> {
     }
 }
 
+impl<I> CCompilerHasher<I>
+where
+    I: CCompilerImpl,
+{
+    /// Perform the compilation, and key on the inputs the compiler reports
+    /// having read while doing it.
+    ///
+    /// Reached only on a manifest miss, where the alternative is a preprocessor
+    /// run whose sole purpose is to make the same list recoverable from text.
+    /// The compilation was going to happen anyway on all but one path -- a
+    /// manifest miss whose result key is nonetheless already in the cache --
+    /// and that is the case this trades away.
+    ///
+    /// Refusing to cache is the failure mode throughout. A dependency list is
+    /// used later to decide whether a cached result is still valid, so a list
+    /// that is quietly short cannot cause a miss; it causes a *hit* on a stale
+    /// result.
+    #[allow(clippy::too_many_arguments)]
+    async fn compile_keyed_on_dependencies<T>(
+        &self,
+        creator: &T,
+        cwd: &Path,
+        env_vars: &[(OsString, OsString)],
+        manifest_key: &str,
+        basedirs: &[Vec<u8>],
+        storage: &Arc<dyn Storage>,
+        config: PreprocessorCacheModeConfig,
+        pool: &tokio::runtime::Handle,
+        start_of_compilation: std::time::SystemTime,
+        format: crate::compiler::depfile::DepFileFormat,
+    ) -> Result<HashResult<T>>
+    where
+        T: CommandCreatorSync,
+    {
+        // Point the report at the dependency file the caller asked for, when
+        // they asked for one. Nothing else produces it in this mode -- sccache
+        // normally generates it during the preprocessor run that is no longer
+        // happening -- and it is the same list either way, so writing it where
+        // the build expects to find it costs nothing and asking twice would
+        // only fight over the path.
+        let scratch;
+        let report_path = match &self.parsed_args.depfile {
+            Some(depfile) => cwd.join(depfile),
+            None => {
+                scratch = tempfile::Builder::new()
+                    .prefix("sccache-deps")
+                    .tempdir()
+                    .context("failed to reserve a place for the dependency report")?;
+                scratch.path().join("deps")
+            }
+        };
+
+        let mut parsed_args = self.parsed_args.clone();
+        parsed_args
+            .dependency_args
+            .extend(self.compiler.dependency_report_args(&report_path));
+
+        let (command, _dist_command, cacheable) = self.compiler.generate_compile_commands::<T>(
+            &mut dist::PathTransformer::new(),
+            &self.executable,
+            &parsed_args,
+            cwd,
+            env_vars,
+            false,
+        )?;
+        // Run the command directly rather than through `CompileCommand`, which
+        // wants a service this side of the process does not have. Opting into
+        // dependency reporting is a promise that the command is a plain single
+        // invocation; see `CCompilerImpl::dependency_report_format`.
+        let command = SingleCompileCommand {
+            executable: command.get_executable(),
+            arguments: command.get_arguments(),
+            env_vars: command.get_env_vars(),
+            cwd: command.get_cwd(),
+        };
+        let output = match command.run(creator).await {
+            Ok(output) => output,
+            // A compilation that fails is not a failure of sccache, and must
+            // not be reported as one: it goes back through the normal path so
+            // that it is counted as a compile failure and the compiler's own
+            // diagnostics reach the user. It is simply never cached.
+            Err(e) => match e.downcast::<ProcessError>() {
+                Ok(ProcessError(output)) => output,
+                Err(e) => return Err(e),
+            },
+        };
+        let produced = AlreadyProduced {
+            executable: command.executable.clone(),
+            arguments: command.arguments.clone(),
+            env_vars: command.env_vars.clone(),
+            cwd: command.cwd.clone(),
+            output,
+        };
+
+        // A compilation that failed wrote no object worth keying, and whatever
+        // report it left behind describes a run that did not finish.
+        let includes = if produced.output.status.success() {
+            match fs::read_to_string(&report_path) {
+                Ok(text) => {
+                    crate::compiler::preprocessor_cache::includes_from_paths(
+                        format.parse(&text),
+                        cwd,
+                        config.ignore_time_macros,
+                        pool,
+                    )
+                    .await
+                }
+                Err(e) => {
+                    debug!(
+                        "[{}]: no dependency report at {} ({e}); not caching",
+                        self.parsed_args.output_pretty(),
+                        report_path.display()
+                    );
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
+        let (key, cacheable) = match &includes {
+            Some(includes) => (
+                dependency_result_key(manifest_key, includes, basedirs),
+                cacheable,
+            ),
+            None => (uncacheable_key(manifest_key), Cacheable::No),
+        };
+
+        // Record what was read against the key it produced, so the next
+        // compilation of this source with these files unchanged needs neither a
+        // preprocessor nor a compiler.
+        if let (Some(includes), Cacheable::Yes) = (includes, cacheable) {
+            let mut entry = PreprocessorCacheEntry::new();
+            entry.add_result(start_of_compilation, &key, includes);
+            if let Err(e) = storage
+                .put_preprocessor_cache_entry(manifest_key, entry)
+                .await
+            {
+                debug!("Failed to update preprocessor cache: {}", e);
+            }
+        }
+
+        let weak_toolchain_key = format!(
+            "{}-{}",
+            self.executable.to_string_lossy(),
+            self.executable_digest
+        );
+        Ok(HashResult {
+            key,
+            compilation: Box::new(CCompilation {
+                parsed_args: self.parsed_args.clone(),
+                // The compilation ran locally and wrote its own dependency
+                // file, if it was asked for one. A cache hit found after the
+                // fact must leave that alone rather than restore another
+                // compilation's.
+                is_locally_preprocessed: true,
+                #[cfg(feature = "dist-client")]
+                preprocessed_input: PREPROCESSING_SKIPPED_COMPILE_POISON.to_vec(),
+                executable: self.executable.clone(),
+                compiler: self.compiler.clone(),
+                cwd: cwd.to_owned(),
+                env_vars: env_vars.to_owned(),
+                already_produced: Some((produced, cacheable)),
+            }),
+            weak_toolchain_key,
+            preprocessor_cache_hit: Some(false),
+        })
+    }
+}
+
 #[async_trait]
 impl<T, I> CompilerHasher<T> for CCompilerHasher<I>
 where
@@ -524,6 +769,24 @@ where
             false
         };
 
+        // Dependency keying replaces only the way a compilation's inputs are
+        // *learned*, so it is meaningless without the manifest that consumes
+        // them, and it has nothing to hand a distributed compile, which needs
+        // preprocessed source.
+        let mut use_dependency_keying = use_preprocessor_cache_mode
+            && !may_dist
+            && preprocessor_cache_mode_config.use_dependency_keying;
+        for (key, val) in env_vars.iter() {
+            if key == "SCCACHE_DEPEND" {
+                if let Some(val) = val.to_str() {
+                    use_dependency_keying = use_preprocessor_cache_mode
+                        && !may_dist
+                        && !matches!(val.to_lowercase().as_str(), "false" | "off" | "0");
+                }
+                break;
+            }
+        }
+
         let mut preprocessor_key = if use_preprocessor_cache_mode {
             preprocessor_cache_entry_hash_key(
                 &self.executable_digest,
@@ -605,6 +868,7 @@ where
                                 compiler: self.compiler.to_owned(),
                                 cwd: cwd.clone(),
                                 env_vars: env_vars.clone(),
+                                already_produced: None,
                             }),
                             weak_toolchain_key,
                             preprocessor_cache_hit: Some(true),
@@ -613,6 +877,37 @@ where
                         debug!("Preprocessor cache miss: {preprocessor_key}");
                     }
                 }
+            }
+
+            // A manifest miss leaves the compilation's inputs unknown, and
+            // sccache's answer has always been to preprocess and recover them
+            // from the text. That is an entire extra compiler run -- 285ms of
+            // the 681ms a direct-mode miss costs on the reference build -- to
+            // learn something the compiler will state outright while doing the
+            // work it was going to do anyway.
+            //
+            // So when it will, perform the compilation here instead and key on
+            // what it reports. The result key is the manifest key plus that
+            // list, which is what the manifest maps back to, and the object
+            // stays where the compiler put it.
+            if let Some(manifest_key) = preprocessor_key.clone()
+                && use_dependency_keying
+                && let Some(format) = self.compiler.dependency_report_format()
+            {
+                return self
+                    .compile_keyed_on_dependencies(
+                        creator,
+                        &cwd,
+                        &env_vars,
+                        &manifest_key,
+                        &basedirs,
+                        &storage,
+                        preprocessor_cache_mode_config,
+                        pool,
+                        start_of_compilation,
+                        format,
+                    )
+                    .await;
             }
 
             let result = self
@@ -794,6 +1089,7 @@ where
                 compiler: self.compiler.clone(),
                 cwd,
                 env_vars,
+                already_produced: None,
             }),
             weak_toolchain_key,
             preprocessor_cache_hit,
@@ -1300,6 +1596,12 @@ impl<T: CommandCreatorSync, I: CCompilerImpl> Compilation<T> for CCompilation<I>
         Option<dist::CompileCommand>,
         Cacheable,
     )> {
+        // The compiler ran during hashing because there was no other way to
+        // learn what it read. Its output is on disk and its diagnostics are
+        // here; running it again would only reproduce both.
+        if let Some((produced, cacheable)) = &self.already_produced {
+            return Ok((CCompileCommand::new(produced.clone()), None, *cacheable));
+        }
         self.compiler.generate_compile_commands(
             path_transformer,
             &self.executable,
@@ -2445,5 +2747,228 @@ mod test {
             // hash of `b"contents"`
             "a93900c371d997927c5bc568ea538bed59ae5c960021dcfe7b0b369da5267528",
         );
+    }
+}
+
+/// Dependency keying: performing the compilation to learn what it read, instead
+/// of preprocessing so the same list can be recovered from the text.
+#[cfg(test)]
+mod dependency_keying_test {
+    use super::*;
+    use crate::compiler::msvc::Msvc;
+    use crate::mock_command::{MockChild, MockCommandCreator, exit_status};
+    use crate::test::mock_storage::MockStorage;
+    use crate::test::utils::*;
+    use std::sync::Mutex;
+
+    fn msvc_hasher(cwd: &Path, arguments: &[OsString]) -> CCompilerHasher<Msvc> {
+        let parsed_args = match crate::compiler::msvc::parse_arguments(arguments, cwd, false) {
+            CompilerArguments::Ok(p) => p,
+            o => panic!("Bad result from parse_arguments: {:?}", o),
+        };
+        CCompilerHasher {
+            parsed_args,
+            executable: cwd.join("cl.exe"),
+            executable_digest: "compiler-digest".to_string(),
+            compiler: Msvc {
+                includes_prefix: String::new(),
+                is_clang: false,
+                version: None,
+            },
+        }
+    }
+
+    /// Stand in for cl.exe: write the `/sourceDependencies` report it was asked
+    /// for, and record the command line so the test can see what ran.
+    fn mock_compiler(
+        seen: Arc<Mutex<Vec<OsString>>>,
+        report: Option<Vec<PathBuf>>,
+        status: u32,
+    ) -> impl Fn(&[OsString]) -> Result<MockChild> + Send + 'static {
+        move |args: &[OsString]| {
+            *seen.lock().unwrap() = args.to_vec();
+            if let Some(includes) = &report {
+                // `/sourceDependencies` takes its path joined or separated, and
+                // a caller's own flag arrives in whichever form they wrote it.
+                let path = args
+                    .iter()
+                    .enumerate()
+                    .find_map(|(i, a)| {
+                        let rest = a.to_string_lossy();
+                        let rest = rest.strip_prefix("/sourceDependencies")?;
+                        if rest.is_empty() {
+                            args.get(i + 1).map(PathBuf::from)
+                        } else {
+                            Some(PathBuf::from(rest))
+                        }
+                    })
+                    .expect("the compilation was never asked to report its inputs");
+                let includes: Vec<_> = includes
+                    .iter()
+                    .map(|p| p.to_string_lossy().into_owned())
+                    .collect();
+                let json = serde_json::json!({
+                    "Version": "1.2",
+                    "Data": {"Source": "foo.c", "Includes": includes},
+                });
+                std::fs::write(&path, serde_json::to_string(&json).unwrap()).unwrap();
+            }
+            Ok(MockChild::new(exit_status(status), "compiling foo.c", ""))
+        }
+    }
+
+    struct Run {
+        key: String,
+        cacheable: Cacheable,
+        command_line: Vec<OsString>,
+        manifests: Vec<(String, PreprocessorCacheEntry)>,
+    }
+
+    /// Hash one compilation with dependency keying on, and report everything
+    /// worth asserting about it.
+    fn run(cwd: &Path, arguments: &[OsString], report: Option<Vec<PathBuf>>, status: u32) -> Run {
+        let runtime = single_threaded_runtime();
+        let creator = new_creator();
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        next_command_calls(&creator, mock_compiler(seen.clone(), report, status));
+        let storage = Arc::new(MockStorage::new(None, true));
+
+        let result = msvc_hasher(cwd, arguments)
+            .generate_hash_key(
+                &creator,
+                cwd.to_path_buf(),
+                vec![("SCCACHE_DEPEND".into(), "true".into())],
+                false,
+                runtime.handle(),
+                false,
+                storage.clone(),
+                CacheControl::Default,
+            )
+            .wait()
+            .expect("hashing a failed compilation is not itself a failure");
+
+        // Exactly one process ran. Two would mean a preprocessor pass survived.
+        assert!(
+            creator.lock().unwrap().children.is_empty(),
+            "a queued command went unused, so something other than the compilation ran"
+        );
+        let (_, _, cacheable) =
+            Compilation::<Arc<Mutex<MockCommandCreator>>>::generate_compile_commands(
+                result.compilation.as_ref(),
+                &mut dist::PathTransformer::new(),
+                false,
+            )
+            .unwrap();
+        let command_line = seen.lock().unwrap().clone();
+        Run {
+            key: result.key,
+            cacheable,
+            command_line,
+            manifests: storage.manifests(),
+        }
+    }
+
+    fn fixture() -> (TestFixture, PathBuf, PathBuf) {
+        let f = TestFixture::new();
+        let cwd = f.tempdir.path().to_path_buf();
+        std::fs::write(cwd.join("foo.c"), "#include \"hdr.h\"\n").unwrap();
+        let hdr = cwd.join("hdr.h");
+        std::fs::write(&hdr, "// original").unwrap();
+        (f, cwd, hdr)
+    }
+
+    /// The compilation itself is what runs, and the key follows what it
+    /// reported reading.
+    ///
+    /// The mock returns identical output whatever the header says, so a key
+    /// taken from preprocessed text cannot tell these two runs apart. That is
+    /// the assertion that fails without dependency keying.
+    #[test]
+    fn a_changed_header_changes_the_key() {
+        let (_f, cwd, hdr) = fixture();
+        let args = ovec!["-c", "foo.c", "-Fofoo.obj"];
+
+        let first = run(&cwd, &args, Some(vec![hdr.clone()]), 0);
+        std::fs::write(&hdr, "// changed").unwrap();
+        let second = run(&cwd, &args, Some(vec![hdr.clone()]), 0);
+
+        assert_neq!(first.key, second.key);
+
+        // What ran was the compilation, not a preprocessor pass.
+        assert!(
+            first.command_line.contains(&OsString::from("-Fofoo.obj")),
+            "expected the compile command, got {:?}",
+            first.command_line
+        );
+        assert!(
+            !first.command_line.iter().any(|a| a == "-E" || a == "-EP"),
+            "a preprocessor pass survived: {:?}",
+            first.command_line
+        );
+
+        // And what it read was recorded, so the next compilation of this source
+        // needs neither a preprocessor nor a compiler.
+        assert_eq!(first.manifests.len(), 1);
+        assert_eq!(first.cacheable, Cacheable::Yes);
+    }
+
+    /// A caller that already asked for a report gets its own file used. A second
+    /// `/sourceDependencies` would fight over the path with theirs.
+    #[test]
+    fn a_callers_own_report_is_reused() {
+        let (_f, cwd, hdr) = fixture();
+        let args = ovec![
+            "-c",
+            "foo.c",
+            "-Fofoo.obj",
+            "/sourceDependenciesfoo.obj.json"
+        ];
+
+        let r = run(&cwd, &args, Some(vec![hdr]), 0);
+
+        let asked = r
+            .command_line
+            .iter()
+            .filter(|a| a.to_string_lossy().starts_with("/sourceDependencies"))
+            .count();
+        assert_eq!(
+            asked, 1,
+            "the caller's report should be the only one asked for: {:?}",
+            r.command_line
+        );
+        // And it is theirs that was written, where they asked for it.
+        assert!(cwd.join("foo.obj.json").exists());
+        assert_eq!(r.cacheable, Cacheable::Yes);
+    }
+
+    /// A report that cannot be read must stop the result being cached. Anything
+    /// else records a dependency list that is quietly short, which causes a
+    /// later *hit* on a stale result rather than a miss.
+    #[test]
+    fn an_unreadable_report_refuses_the_cache() {
+        let (_f, cwd, _hdr) = fixture();
+        let args = ovec!["-c", "foo.c", "-Fofoo.obj"];
+
+        let r = run(&cwd, &args, None, 0);
+
+        assert_eq!(r.cacheable, Cacheable::No);
+        assert!(
+            r.manifests.is_empty(),
+            "nothing verifiable was read, so nothing may be recorded to verify against"
+        );
+    }
+
+    /// A failed compilation comes back through the normal path, so that it is
+    /// reported and counted as a compile failure rather than as an sccache
+    /// error -- and is not cached.
+    #[test]
+    fn a_failed_compilation_is_not_an_error() {
+        let (_f, cwd, hdr) = fixture();
+        let args = ovec!["-c", "foo.c", "-Fofoo.obj"];
+
+        let r = run(&cwd, &args, Some(vec![hdr]), 1);
+
+        assert_eq!(r.cacheable, Cacheable::No);
+        assert!(r.manifests.is_empty());
     }
 }
