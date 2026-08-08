@@ -132,15 +132,18 @@ pub struct MissRecord {
     pub seq: u64,
     pub classification: Classification,
     pub direct: DirectState,
-    /// The cache key that was looked up.
-    pub key: String,
-    /// The output, as the rest of sccache describes it -- usually a basename.
+    /// The cache key that was looked up. Absent when the compilation was
+    /// refused before one could be computed.
+    pub key: Option<String>,
+    /// The output, as the rest of sccache describes it -- usually a basename,
+    /// and the compiler's own name when the arguments were never parsed.
     pub output: String,
     /// The primary input, basedir-relative. Absent for compilations that have
-    /// no single one.
+    /// no single one, and for those whose arguments were never parsed.
     pub input: Option<String>,
-    /// The language, as `--show-stats` names it.
-    pub language: String,
+    /// The language, as `--show-stats` names it. Absent when the arguments were
+    /// never parsed far enough to say.
+    pub language: Option<String>,
     /// The checkout this compilation ran in, basedir-relative.
     pub workspace: Option<String>,
     /// Who asked, when they said. See `SCCACHE_AGENT_ID`.
@@ -163,16 +166,44 @@ impl MissRecord {
             "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
             self.classification.as_token(),
             self.direct.as_str(),
-            self.key,
+            opt(&self.key),
             self.output,
             opt(&self.input),
-            self.language,
+            opt(&self.language),
             opt(&self.workspace),
             opt(&self.agent),
             opt(&self.command_digest),
             self.seq,
         )
     }
+}
+
+/// A digest of an invocation's arguments, with basedirs stripped.
+///
+/// The question a record has to answer is "was this even the same invocation",
+/// and the whole argument vector is both enormous and full of paths. Stripping
+/// basedirs first is what makes the answer the same in two checkouts of one
+/// project, exactly as it does for the cache keys themselves.
+pub fn command_digest(arguments: &[OsString], basedirs: &[Vec<u8>]) -> String {
+    let mut digest = crate::util::Digest::new();
+    for arg in arguments {
+        digest.update(&crate::util::strip_basedirs_in_arg(
+            arg.as_encoded_bytes(),
+            basedirs,
+        ));
+        digest.update(b"\0");
+    }
+    digest.finish()
+}
+
+/// A path as a record should carry it: relative to a basedir when one covers
+/// it, so that records from two checkouts can be compared at all.
+pub fn relative_to_basedirs(path: &Path, basedirs: &[Vec<u8>]) -> String {
+    String::from_utf8_lossy(&crate::util::strip_basedirs_in_arg(
+        path.as_os_str().as_encoded_bytes(),
+        basedirs,
+    ))
+    .into_owned()
 }
 
 /// The daemon's bounded ring of recent misses, plus any files it mirrors them
@@ -257,10 +288,10 @@ mod tests {
             seq: 0,
             classification: Classification::Cold,
             direct: DirectState::Off,
-            key: "key".into(),
+            key: Some("key".into()),
             output: output.into(),
             input: None,
-            language: "C/C++".into(),
+            language: Some("C/C++".into()),
             workspace: None,
             agent: None,
             command_digest: None,

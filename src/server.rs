@@ -56,7 +56,7 @@ use std::mem;
 use std::os::android::net::SocketAddrExt;
 #[cfg(target_os = "linux")]
 use std::os::linux::net::SocketAddrExt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::process::{ExitStatus, Output};
 use std::sync::Arc;
@@ -1218,10 +1218,11 @@ where
         let env_vars = compile.env_vars;
         let me = self.clone();
 
+        let exe: PathBuf = exe.into();
         let info = self
-            .compiler_info(exe.into(), cwd.clone(), &cmd, &env_vars)
+            .compiler_info(exe.clone(), cwd.clone(), &cmd, &env_vars)
             .await;
-        Ok(me.check_compiler(info, cmd, cwd, env_vars).await)
+        Ok(me.check_compiler(info, &exe, cmd, cwd, env_vars).await)
     }
 
     /// Run a compile entirely in the current process (used in client-side mode).
@@ -1264,6 +1265,50 @@ where
     /// The most recent misses the daemon has seen, newest last.
     pub fn recent_misses(&self, limit: usize) -> Vec<MissRecord> {
         self.misses.recent(limit)
+    }
+
+    /// Record a compilation refused before its arguments could be parsed.
+    ///
+    /// These are the permanent misses, and the ones with the least to go on:
+    /// there is no key, no parsed output and no language, because nothing got
+    /// that far. What there is -- the reason and the command -- is the whole
+    /// point. `/dynamicdeopt` made every translation unit of a real build
+    /// uncacheable through this path, and `--show-stats` could say how many but
+    /// never which.
+    fn record_cannot_cache(
+        &self,
+        why: &str,
+        extra_info: Option<&str>,
+        exe: &Path,
+        cmd: &[OsString],
+        cwd: &Path,
+        env_vars: &[(OsString, OsString)],
+    ) {
+        let basedirs = crate::compiler::effective_basedirs_for(self.storage.basedirs(), cwd);
+        let reason = match extra_info {
+            Some(extra) => format!("{why} ({extra})"),
+            None => why.to_owned(),
+        };
+        self.record_miss(
+            MissRecord {
+                seq: 0,
+                classification: missrecord::Classification::Uncacheable(reason),
+                direct: missrecord::DirectState::Off,
+                key: None,
+                // The compiler's own name: the output is one of the things
+                // parsing would have told us.
+                output: exe.file_name().unwrap_or(exe.as_os_str()).to_string_lossy().into_owned(),
+                input: None,
+                language: None,
+                workspace: crate::projectconf::discover(cwd)
+                    .vcs_root
+                    .as_deref()
+                    .map(|r| missrecord::relative_to_basedirs(r, &basedirs)),
+                agent: None,
+                command_digest: Some(missrecord::command_digest(cmd, &basedirs)),
+            },
+            env_vars,
+        );
     }
 
     pub async fn record_preprocessor_cache_lookup(&self, hit: bool) {
@@ -1437,6 +1482,7 @@ where
     async fn check_compiler(
         &self,
         compiler: Result<Box<dyn Compiler<C>>>,
+        exe: &Path,
         cmd: Vec<OsString>,
         cwd: PathBuf,
         env_vars: Vec<(OsString, OsString)>,
@@ -1469,7 +1515,7 @@ where
                         );
                     }
                     CompilerArguments::CannotCache(why, extra_info) => {
-                        if let Some(extra_info) = extra_info {
+                        if let Some(ref extra_info) = extra_info {
                             debug!(
                                 "parse_arguments: CannotCache({}, {}): {:?}",
                                 why, extra_info, cmd
@@ -1477,6 +1523,20 @@ where
                         } else {
                             debug!("parse_arguments: CannotCache({}): {:?}", why, cmd);
                         }
+                        // The permanent misses, and the ones that used to be
+                        // invisible: sccache refuses these before it can parse
+                        // the arguments, so nothing downstream ever recorded
+                        // them. `/dynamicdeopt` made 100% of a real build
+                        // uncacheable this way and the counters could say only
+                        // that it had happened, never to which invocation.
+                        self.record_cannot_cache(
+                            why,
+                            extra_info.as_deref(),
+                            exe,
+                            &cmd,
+                            &cwd,
+                            &env_vars,
+                        );
                         let mut stats = self.stats.lock().await;
                         stats.requests_not_cacheable += 1;
                         *stats.not_cached.entry(why.to_string()).or_insert(0) += 1;

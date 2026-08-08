@@ -346,11 +346,77 @@ fn test_miss_log_comes_from_the_compilation_environment() {
 
     let text = std::fs::read_to_string(&miss_log)
         .expect("the compilation named a miss log and missed, so there must be one");
-    let cols: Vec<_> = text.lines().next().expect("one record").split('\t').collect();
+    let lines: Vec<_> = text.lines().collect();
+    // One compilation, one record. This catches the record being written both
+    // at the lookup and again after the compile; it does not reach the case the
+    // deferral exists for, which is a miss whose *compile* then proves it
+    // permanently uncacheable and must reclassify the record rather than add a
+    // second one. That needs a compiler mock that returns `Cacheable::No`.
+    assert_eq!(lines.len(), 1, "a single compilation wrote: {text}");
+    let cols: Vec<_> = lines[0].split('\t').collect();
     assert_eq!(cols[0], "cold", "a cold cache is not a mystery");
     assert_eq!(cols[3], "file.o");
     assert_eq!(
         cols[4], "file.c",
         "the input, which is what tells two identically-named outputs apart"
+    );
+}
+
+/// A compilation sccache refuses before parsing used to produce no record at
+/// all. It is the most important kind to record: nothing about it will ever be
+/// cached, so a caller that treats it as an ordinary miss retries forever.
+///
+/// `/dynamicdeopt` reached this path for 100% of a real build's translation
+/// units, and the counters could say only that it had happened.
+#[test]
+fn test_a_refusal_before_parsing_is_recorded() {
+    let _ = env_logger::try_init();
+    let f = TestFixture::new();
+    let gcc = f.mk_bin("gcc").unwrap();
+    let (addr, sender, server_creator, child) = run_server_thread(f.tempdir.path(), None);
+    let conn = connect_to_server(&addr).unwrap();
+
+    let miss_log = f.tempdir.path().join("misses.tsv");
+    {
+        let mut c = server_creator.lock().unwrap();
+        c.next_command_spawns(Ok(MockChild::new(exit_status(0), "compiler_id=gcc", "")));
+    }
+
+    // A refused compilation comes back as `UnhandledCompile` and the client
+    // runs the compiler itself, so it needs a process of its own to run.
+    let client_creator = new_creator();
+    next_command(&client_creator, Ok(MockChild::new(exit_status(0), "", "")));
+
+    // `-E` means "preprocess only", which sccache declines outright.
+    let cmdline = vec!["-c".into(), "-E".into(), "file.c".into()];
+    let mut stdout = Cursor::new(Vec::new());
+    let mut stderr = Cursor::new(Vec::new());
+    let _ = do_compile(
+        || Ok((client_creator, Runtime::new().unwrap())),
+        conn,
+        &gcc,
+        cmdline,
+        f.tempdir.path(),
+        Some(f.paths),
+        vec![("SCCACHE_MISS_LOG".into(), miss_log.clone().into())],
+        &mut stdout,
+        &mut stderr,
+    );
+
+    sender.send(ServerMessage::Shutdown).ok().unwrap();
+    child.join().unwrap();
+
+    let text = std::fs::read_to_string(&miss_log)
+        .expect("a refusal is a miss, and a permanent one");
+    let cols: Vec<_> = text.lines().next().expect("one record").split('\t').collect();
+    assert!(
+        cols[0].starts_with("uncacheable:"),
+        "the classification has to say `stop`, not `try again`: {:?}",
+        cols[0]
+    );
+    assert_eq!(cols[2], "-", "nothing got far enough to compute a key");
+    assert!(
+        cols[8] != "-",
+        "and the command digest is what is left to identify it by"
     );
 }

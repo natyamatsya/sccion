@@ -231,8 +231,8 @@ Note that some env variables may need sccache server restart to take effect.
   |---|---|---|
   | 1 | classification | `cold`, `read_error`, `timed_out`, `forced_recache`, `forced_no_cache`, or `uncacheable:<reason>` |
   | 2 | preprocessor cache mode | `direct-hit`, `direct-miss`, `direct-off` |
-  | 3 | cache key | |
-  | 4 | output | usually a basename |
+  | 3 | cache key | `-` when the compilation was refused before one could be computed |
+  | 4 | output | usually a basename; the compiler's own name when the arguments were never parsed |
   | 5 | input | basedir-relative; `-` when the compilation has no single input |
   | 6 | language | as `--show-stats` names it |
   | 7 | workspace | the checkout root, basedir-relative |

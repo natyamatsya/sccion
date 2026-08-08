@@ -37,12 +37,10 @@ use crate::compiler::tasking_vx::TaskingVX;
 use crate::dist::pkg;
 #[cfg(feature = "dist-client")]
 use crate::lru_disk_cache;
-use crate::missrecord::{Classification, DirectState, MissRecord};
+use crate::missrecord::{self, Classification, DirectState, MissRecord};
 use crate::mock_command::{CommandChild, CommandCreatorSync, RunCommand, exit_status};
 use crate::server;
-use crate::util::{
-    fmt_duration_as_secs, resolve_compiler_avoiding_wrapper, run_input_output, strip_basedirs_in_arg,
-};
+use crate::util::{fmt_duration_as_secs, resolve_compiler_avoiding_wrapper, run_input_output};
 use crate::{counted_array, dist};
 use async_trait::async_trait;
 use filetime::FileTime;
@@ -126,43 +124,25 @@ impl MissContext<'_> {
         // paths could not be compared between two checkouts of one project,
         // which is the trap manifest keys fell into before `7ea3117`.
         let basedirs = crate::compiler::c::effective_basedirs_for(self.storage.basedirs(), self.cwd);
-        let relative = |p: &Path| {
-            String::from_utf8_lossy(&strip_basedirs_in_arg(
-                p.as_os_str().as_encoded_bytes(),
-                &basedirs,
-            ))
-            .into_owned()
-        };
-
-        // A digest rather than the command line itself: the question a record
-        // has to answer is "was this even the same invocation", and the whole
-        // argument vector is both enormous and full of paths.
-        let mut digest = UtilDigest::new();
-        for arg in self.arguments {
-            digest.update(&strip_basedirs_in_arg(
-                arg.as_encoded_bytes(),
-                &basedirs,
-            ));
-            digest.update(b"\0");
-        }
+        let relative = |p: &Path| missrecord::relative_to_basedirs(p, &basedirs);
 
         MissRecord {
             seq: 0, // assigned by the daemon, which is what orders records
             classification,
             direct: self.direct,
-            key: self.key.to_owned(),
+            key: Some(self.key.to_owned()),
             output: self.output.to_owned(),
             input: self
                 .input
                 .as_ref()
                 .map(|i| relative(Path::new(i.as_ref() as &str))),
-            language: self.language.as_str().to_owned(),
+            language: Some(self.language.as_str().to_owned()),
             workspace: crate::projectconf::discover(self.cwd)
                 .vcs_root
                 .as_deref()
                 .map(relative),
             agent: None,
-            command_digest: Some(digest.finish()),
+            command_digest: Some(missrecord::command_digest(self.arguments, &basedirs)),
         }
     }
 }
@@ -753,6 +733,14 @@ where
             direct: preprocessor_cache_hit.into(),
         };
 
+        // Built here, recorded after the compile. One compilation must produce
+        // one record: the lookup says *whether* it was in the cache, but only
+        // the compile that follows can say whether it could ever have been, and
+        // recording both would double-count every permanently uncacheable
+        // translation unit. It is built here because `cwd`, `arguments` and
+        // `storage` are all consumed below.
+        let mut pending: Option<MissRecord> = None;
+
         let lookup = match cache_status.await {
             (Ok(Ok(Cache::Hit(mut entry))), duration) => {
                 debug!(
@@ -800,7 +788,7 @@ where
                     Err(e) => {
                         if e.downcast_ref::<DecompressionFailure>().is_some() {
                             debug!("[{}]: Failed to decompress object", out_pretty);
-                            service.record_miss(miss.record(Classification::ReadError), &env_vars);
+                            pending = Some(miss.record(Classification::ReadError));
                             Ok(CacheLookupResult::Miss(MissType::CacheReadError))
                         } else {
                             Err(e)
@@ -814,7 +802,7 @@ where
                     out_pretty,
                     fmt_duration_as_secs(&duration)
                 );
-                service.record_miss(miss.record(Classification::Cold), &env_vars);
+                pending = Some(miss.record(Classification::Cold));
                 Ok(CacheLookupResult::Miss(MissType::Normal))
             }
             (Ok(Ok(Cache::None)), duration) => {
@@ -823,7 +811,7 @@ where
                     out_pretty,
                     fmt_duration_as_secs(&duration)
                 );
-                service.record_miss(miss.record(Classification::ForcedNoCache), &env_vars);
+                pending = Some(miss.record(Classification::ForcedNoCache));
                 Ok(CacheLookupResult::Miss(MissType::ForcedNoCache))
             }
             (Ok(Ok(Cache::Recache)), duration) => {
@@ -832,7 +820,7 @@ where
                     out_pretty,
                     fmt_duration_as_secs(&duration)
                 );
-                service.record_miss(miss.record(Classification::ForcedRecache), &env_vars);
+                pending = Some(miss.record(Classification::ForcedRecache));
                 Ok(CacheLookupResult::Miss(MissType::ForcedRecache))
             }
             (Ok(Err(err)), duration) => {
@@ -842,7 +830,7 @@ where
                     err,
                     fmt_duration_as_secs(&duration)
                 );
-                service.record_miss(miss.record(Classification::ReadError), &env_vars);
+                pending = Some(miss.record(Classification::ReadError));
                 Ok(CacheLookupResult::Miss(MissType::CacheReadError))
             }
             (Err(_), duration) => {
@@ -851,7 +839,7 @@ where
                     out_pretty,
                     fmt_duration_as_secs(&duration)
                 );
-                service.record_miss(miss.record(Classification::TimedOut), &env_vars);
+                pending = Some(miss.record(Classification::TimedOut));
                 Ok(CacheLookupResult::Miss(MissType::TimedOut))
             }
         }?;
@@ -898,6 +886,21 @@ where
                 )
                 .await?;
                 let duration_compilation = start.elapsed();
+
+                // The compile has now said whether this compilation could ever
+                // have been cached, which is the last thing the record was
+                // waiting for. `uncacheable` is the classification that tells a
+                // caller to stop rather than to try again.
+                if let Cacheable::No(why) = cacheable
+                    && let Some(record) = pending.as_mut()
+                {
+                    record.classification =
+                        Classification::Uncacheable(why.as_str().to_owned());
+                }
+                if let Some(record) = pending.take() {
+                    service.record_miss(record, &env_vars);
+                }
+
                 if !compiler_result.status.success() {
                     debug!(
                         "[{}]: Compiled in {}, but failed, not storing in cache",
