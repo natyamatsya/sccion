@@ -118,6 +118,9 @@ impl From<process::Output> for PreprocessorOutput {
 /// The key a dependency-keyed result is stored under: the manifest key plus
 /// everything the compilation read.
 ///
+/// Shared with moc, which keys the same way for the same reason: it also has to
+/// run before its inputs are known.
+///
 /// Nothing here is hashed that the manifest key does not already cover except
 /// the inputs themselves, which is the whole point -- the manifest maps this
 /// same list back to this same key, so a later compilation that reads identical
@@ -126,7 +129,7 @@ impl From<process::Output> for PreprocessorOutput {
 /// Paths are basedir-stripped for the same reason arguments are: two checkouts
 /// of one tree read files at different absolute paths, and a key that pins them
 /// is a key neither can share.
-fn dependency_result_key(
+pub fn dependency_result_key(
     manifest_key: &str,
     includes: &[(String, PathBuf)],
     basedirs: &[Vec<u8>],
@@ -2051,6 +2054,59 @@ mod test {
             .with_basedirs(&bb)
             .compute();
         assert_eq!(n1, n2);
+    }
+
+    /// The same tree checked out twice reads the same files at different
+    /// absolute paths. With each root declared, the result key must converge --
+    /// otherwise every checkout stores its own copy of an identical object and
+    /// none of them can find another's.
+    #[test]
+    fn dependency_keys_converge_across_checkouts() {
+        let a = [
+            ("digest-h".to_string(), PathBuf::from("/wt/agent-a/inc/x.h")),
+            ("digest-y".to_string(), PathBuf::from("/wt/agent-a/inc/y.h")),
+        ];
+        let b = [
+            ("digest-h".to_string(), PathBuf::from("/wt/agent-b/inc/x.h")),
+            ("digest-y".to_string(), PathBuf::from("/wt/agent-b/inc/y.h")),
+        ];
+        let ba: Vec<Vec<u8>> = vec![b"/wt/agent-a".to_vec()];
+        let bb: Vec<Vec<u8>> = vec![b"/wt/agent-b".to_vec()];
+
+        // Without basedirs the two checkouts are genuinely different.
+        assert_neq!(
+            dependency_result_key("manifest", &a, &[]),
+            dependency_result_key("manifest", &b, &[])
+        );
+        assert_eq!(
+            dependency_result_key("manifest", &a, &ba),
+            dependency_result_key("manifest", &b, &bb),
+        );
+    }
+
+    /// A changed file must change the key, and the paths and digests are
+    /// concatenated into one digest, so they need framing or a boundary can be
+    /// shifted undetected.
+    #[test]
+    fn dependency_keys_distinguish_what_was_read() {
+        let base = [("digest-h".to_string(), PathBuf::from("/r/x.h"))];
+        let changed = [("digest-i".to_string(), PathBuf::from("/r/x.h"))];
+        let renamed = [("digest-h".to_string(), PathBuf::from("/r/y.h"))];
+        let extra = [
+            ("digest-h".to_string(), PathBuf::from("/r/x.h")),
+            ("digest-j".to_string(), PathBuf::from("/r/z.h")),
+        ];
+        let key = |i: &[(String, PathBuf)]| dependency_result_key("manifest", i, &[]);
+
+        assert_neq!(key(&base), key(&changed));
+        assert_neq!(key(&base), key(&renamed));
+        assert_neq!(key(&base), key(&extra));
+        assert_neq!(key(&base), dependency_result_key("other-manifest", &base, &[]));
+
+        // `/r/x.h` + `digest` and `/r/x.hdigest` + `` must not collide.
+        let split = [("d".to_string(), PathBuf::from("/r/x.h"))];
+        let joined = [("".to_string(), PathBuf::from("/r/x.hd"))];
+        assert_neq!(key(&split), key(&joined));
     }
 
     /// Arguments are concatenated into one digest, so they need framing or

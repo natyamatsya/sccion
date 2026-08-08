@@ -27,6 +27,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 
 use crate::cache::{FileObjectSource, Storage};
+use crate::compiler::c::dependency_result_key;
 use crate::compiler::preprocessor_cache::{PreprocessorCacheEntry, includes_from_dep_file};
 use crate::compiler::{
     AlreadyProduced, CacheControl, Cacheable, ColorMode, Compilation, CompileCommand, Compiler,
@@ -34,7 +35,7 @@ use crate::compiler::{
 };
 use crate::dist;
 use crate::mock_command::CommandCreatorSync;
-use crate::util::{Digest, HashToDigest, run_input_output, strip_basedirs_in_arg};
+use crate::util::{Digest, run_input_output, strip_basedirs_in_arg};
 
 use crate::errors::*;
 
@@ -259,20 +260,7 @@ impl MocHasher {
         m.update(&stripped);
         m.finish()
     }
-
-    /// Key for the result: the manifest key plus everything that was read.
-    fn result_key(manifest_key: &str, includes: &[(String, PathBuf)]) -> String {
-        let mut m = Digest::new();
-        m.update(manifest_key.as_bytes());
-        for (digest, path) in includes {
-            path.hash(&mut HashToDigest { digest: &mut m });
-            m.update(digest.as_bytes());
-        }
-        m.finish()
-    }
 }
-
-use std::hash::Hash;
 
 #[async_trait]
 impl<T: CommandCreatorSync> CompilerHasher<T> for MocHasher {
@@ -390,7 +378,7 @@ impl<T: CommandCreatorSync> CompilerHasher<T> for MocHasher {
             });
         };
 
-        let key = Self::result_key(&manifest_key, &includes);
+        let key = dependency_result_key(&manifest_key, &includes, &basedirs);
 
         if config.use_preprocessor_cache_mode {
             let mut entry = PreprocessorCacheEntry::new();
