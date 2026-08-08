@@ -694,10 +694,13 @@ where
     ) -> Result<HashResult<T>> {
         let start_of_compilation = std::time::SystemTime::now();
 
-        // Configured basedirs, plus any contributed by a `.sccache.toml` found
+        // What the project being built asks for, from a `.sccache.toml` found
         // at or above this compilation. Discovery is keyed on the compilation's
         // own directory rather than on the daemon's, because one daemon serves
         // every checkout on the machine.
+        let project = crate::projectconf::discover(&cwd);
+
+        // Configured basedirs, plus any the project contributes.
         let basedirs = if involves_pch(&self.parsed_args) {
             // Keep the absolute paths, so this key cannot be reused by another
             // checkout. See `involves_pch`.
@@ -706,8 +709,26 @@ where
             effective_basedirs_for(storage.basedirs(), &cwd)
         };
 
-        let extra_hashes =
+        let mut extra_hashes =
             hash_all_memoized(&self.parsed_args.extra_hash_files, &pool.clone()).await?;
+        // Files the project says every compilation in the tree depends on --
+        // a toolchain manifest, a generated config header. The same idea as
+        // `SCCACHE_EXTRAFILES`, named by the repository that knows about them
+        // rather than by whoever remembered to export the variable. Hashed
+        // here rather than added to `extra_hash_files`, because they belong in
+        // the key and not in the input package a distributed compile ships.
+        if !project.extra_hash_files.is_empty() {
+            extra_hashes.extend(hash_all_memoized(&project.extra_hash_files, &pool.clone()).await?);
+        }
+        // A string the project can change to invalidate its own entries, the
+        // committed counterpart of `SCCACHE_C_CUSTOM_CACHE_BUSTER`. It goes in
+        // with the extra hashes because those already reach both keys, and it
+        // has to reach both: busting only the result key would leave the
+        // manifest handing out the old one.
+        if let Some(buster) = &project.custom_cache_buster {
+            extra_hashes.push(format!("custom_cache_buster={buster}"));
+        }
+        let extra_hashes = extra_hashes;
         // Create an argument vector containing both preprocessor and arch args, to
         // use in creating a hash key
         let mut preprocessor_and_arch_args = self.parsed_args.preprocessor_args.clone();
@@ -744,23 +765,25 @@ where
 
             let mut use_preprocessor_cache_mode = can_use_preprocessor_cache_mode;
 
-            // Allow overrides from the env
-            for (key, val) in env_vars.iter() {
-                if key == "SCCACHE_DIRECT" {
-                    if let Some(val) = val.to_str() {
-                        use_preprocessor_cache_mode = match val.to_lowercase().as_str() {
-                            "false" | "off" | "0" => false,
-                            _ => can_use_preprocessor_cache_mode,
-                        };
-                    }
-                    break;
-                }
+            // Allow overrides from the env, and from the project being built.
+            // Both can only decline: whether the mode is available at all
+            // depends on the cache backend, which is the machine's business and
+            // not something a checkout gets to assert.
+            let declined = env_vars
+                .iter()
+                .find_map(|(key, val)| {
+                    (key == "SCCACHE_DIRECT")
+                        .then(|| val.to_str())
+                        .flatten()
+                        .map(|val| matches!(val.to_lowercase().as_str(), "false" | "off" | "0"))
+                })
+                .or_else(|| project.use_preprocessor_cache_mode.map(|on| !on));
+            if declined == Some(true) {
+                use_preprocessor_cache_mode = false;
             }
 
             if can_use_preprocessor_cache_mode && !use_preprocessor_cache_mode {
-                debug!(
-                    "generate_hash_key: Disabling preprocessor cache because SCCACHE_DIRECT=false"
-                );
+                debug!("generate_hash_key: Preprocessor cache mode declined");
             }
 
             use_preprocessor_cache_mode
@@ -792,7 +815,7 @@ where
                     .map(|val| !matches!(val.to_lowercase().as_str(), "false" | "off" | "0"))
             });
             use_dependency_keying = from_env
-                .or_else(|| crate::projectconf::discover(&cwd).use_dependency_keying)
+                .or(project.use_dependency_keying)
                 .unwrap_or(preprocessor_cache_mode_config.use_dependency_keying);
         }
 
@@ -2114,7 +2137,7 @@ mod test {
 
         // `/r/x.h` + `digest` and `/r/x.hdigest` + `` must not collide.
         let split = [("d".to_string(), PathBuf::from("/r/x.h"))];
-        let joined = [("".to_string(), PathBuf::from("/r/x.hd"))];
+        let joined = [(String::new(), PathBuf::from("/r/x.hd"))];
         assert_neq!(key(&split), key(&joined));
     }
 
@@ -3067,6 +3090,72 @@ mod dependency_keying_test {
             r.command_line
         );
         assert_eq!(r.manifests.len(), 1);
+    }
+
+    /// A project can extend and invalidate its own keys, and two checkouts of
+    /// it agree -- the file's directory is a basedir, so nothing about where
+    /// the tree happens to sit reaches the key.
+    #[test]
+    fn a_project_can_extend_and_bust_its_own_keys() {
+        let key_for = |conf: &str, extra: &str| {
+            // A fresh checkout each time: same project, different root.
+            let (_f, cwd, hdr) = fixture();
+            std::fs::write(cwd.join("extra.txt"), extra).unwrap();
+            std::fs::write(
+                cwd.join(crate::projectconf::PROJECT_CONF_NAME),
+                format!("use_dependency_keying = true\nextra_hash_files = [\"extra.txt\"]\n{conf}"),
+            )
+            .unwrap();
+            let args = ovec!["-c", "foo.c", "-Fofoo.obj"];
+            run_with(&cwd, &args, Some(vec![hdr]), 0, None).key
+        };
+
+        assert_eq!(
+            key_for("", "shared"),
+            key_for("", "shared"),
+            "two checkouts of one project must agree"
+        );
+        // The contents of a file the project named reach the key.
+        assert_neq!(key_for("", "shared"), key_for("", "changed"));
+        // And so does the buster, which is the point of having one.
+        assert_neq!(
+            key_for("", "shared"),
+            key_for("custom_cache_buster = \"v2\"\n", "shared")
+        );
+    }
+
+    /// A project that declines preprocessor cache mode gets no manifest, and
+    /// therefore no dependency keying either -- it has nothing to key against.
+    #[test]
+    fn a_project_can_decline_preprocessor_cache_mode() {
+        let (_f, cwd, hdr) = fixture();
+        std::fs::write(
+            cwd.join(crate::projectconf::PROJECT_CONF_NAME),
+            "use_preprocessor_cache_mode = false\nuse_dependency_keying = true\n",
+        )
+        .unwrap();
+        let args = ovec!["-c", "foo.c", "-Fofoo.obj"];
+
+        // Nothing asks the compiler to report here, so there is no report to
+        // write: without a manifest there is nothing to key a report against.
+        let _ = hdr;
+        let r = run_with(&cwd, &args, None, 0, None);
+
+        // `-EP` rather than `-E`: with no manifest to reconstruct an include
+        // list for, the cheaper form that emits no line markers is preferred.
+        assert!(
+            r.command_line.iter().any(|a| a == "-E" || a == "-EP"),
+            "declining the manifest must leave the preprocessor in charge: {:?}",
+            r.command_line
+        );
+        assert!(
+            !r.command_line
+                .iter()
+                .any(|a| a.to_string_lossy().starts_with("/sourceDependencies")),
+            "no manifest means nothing to ask about: {:?}",
+            r.command_line
+        );
+        assert!(r.manifests.is_empty());
     }
 
     /// The run in front of you outranks the file. Someone bisecting a cache

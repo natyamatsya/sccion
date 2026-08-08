@@ -31,7 +31,7 @@
 //! thing a repository knows and a machine-wide config cannot.
 
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::sync::{LazyLock, Mutex};
 
 use serde::Deserialize;
@@ -61,16 +61,55 @@ struct ProjectConf {
     /// project has no opinion and the machine-wide setting stands.
     #[serde(default)]
     use_dependency_keying: Option<bool>,
+    /// Whether preprocessor cache mode may be used here. `false` declines it;
+    /// `true` means only "no objection", since whether it is available at all
+    /// depends on the cache backend.
+    #[serde(default)]
+    use_preprocessor_cache_mode: Option<bool>,
+    /// An arbitrary string folded into every cache key from this tree, so the
+    /// project can invalidate its own entries.
+    #[serde(default)]
+    custom_cache_buster: Option<String>,
+    /// Files whose contents belong in every cache key from this tree -- a
+    /// toolchain manifest, a generated config header. Relative to the file.
+    #[serde(default)]
+    extra_hash_files: Vec<String>,
 }
 
 /// What a project file at or above a directory contributes.
+///
+/// Every `Option` is `None` when the file said nothing, which is not the same
+/// as saying no: the machine-wide setting has to be able to stand, or a project
+/// would be opting out of settings it never mentioned.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Discovered {
     /// Roots whose absolute paths must not reach a cache key. Empty when there
     /// is no project file, which is every project that has not opted in.
     pub basedirs: Vec<Vec<u8>>,
-    /// `None` when the file said nothing about it.
     pub use_dependency_keying: Option<bool>,
+    pub use_preprocessor_cache_mode: Option<bool>,
+    pub custom_cache_buster: Option<String>,
+    /// Absolute, already resolved against the file's directory.
+    pub extra_hash_files: Vec<PathBuf>,
+}
+
+/// Enough of a file to notice that it has been edited.
+type Stamp = (Option<std::time::SystemTime>, u64);
+
+fn stamp(path: &Path) -> Option<Stamp> {
+    let meta = std::fs::metadata(path).ok()?;
+    Some((meta.modified().ok(), meta.len()))
+}
+
+/// What was answered for a directory, and how to tell it is still the answer.
+#[derive(Clone)]
+struct Memo {
+    found: Discovered,
+    /// The file the answer came from, as it looked when it was read. `None`
+    /// when there was no file: a project that adds one is opting in rather than
+    /// editing, and noticing that would mean redoing the walk every time, which
+    /// is the whole thing being avoided.
+    source: Option<(PathBuf, Stamp)>,
 }
 
 /// Discovered settings, keyed by the directory the search started from.
@@ -78,24 +117,35 @@ pub struct Discovered {
 /// The walk is a handful of `stat`s, but it would otherwise run on every single
 /// compilation, and a build asks the same question a thousand times with the
 /// same answer.
-static CACHE: LazyLock<Mutex<HashMap<PathBuf, Discovered>>> =
+static CACHE: LazyLock<Mutex<HashMap<PathBuf, Memo>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
 /// Everything a project file at or above `start` contributes.
 pub fn discover(start: &Path) -> Discovered {
-    if let Some(hit) = CACHE
+    if let Some(memo) = CACHE
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .get(start)
         .cloned()
     {
-        return hit;
+        // Re-read a file that has been edited. One `stat` on a path already
+        // known is nothing next to a compilation, and the alternative is a
+        // trap: `custom_cache_buster` exists to be changed, and a build that
+        // went on using the old value until someone restarted the server would
+        // look exactly like the setting doing nothing.
+        match &memo.source {
+            Some((path, seen)) if stamp(path).as_ref() != Some(seen) => {}
+            _ => return memo.found,
+        }
     }
-    let found = walk(start);
-    CACHE
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .insert(start.to_path_buf(), found.clone());
+    let (found, source) = walk(start);
+    CACHE.lock().unwrap_or_else(|e| e.into_inner()).insert(
+        start.to_path_buf(),
+        Memo {
+            found: found.clone(),
+            source: source.and_then(|p| stamp(&p).map(|s| (p, s))),
+        },
+    );
     found
 }
 
@@ -104,22 +154,24 @@ pub fn discover_basedirs(start: &Path) -> Vec<Vec<u8>> {
     discover(start).basedirs
 }
 
-fn walk(start: &Path) -> Discovered {
+/// The settings in force at `start`, and the file they came from.
+fn walk(start: &Path) -> (Discovered, Option<PathBuf>) {
     let mut dir = Some(start);
     while let Some(d) = dir {
         let candidate = d.join(PROJECT_CONF_NAME);
         if candidate.is_file() {
-            return read_conf(&candidate, d);
+            let found = read_conf(&candidate, d);
+            return (found, Some(candidate));
         }
         // Stop *after* looking in the VCS root: the config belongs at the top of
         // the checkout, and continuing past it would let a file outside the
         // repository silently govern builds inside it.
         if VCS_MARKERS.iter().any(|m| d.join(m).exists()) {
-            return Discovered::default();
+            return (Discovered::default(), None);
         }
         dir = d.parent();
     }
-    Discovered::default()
+    (Discovered::default(), None)
 }
 
 fn read_conf(path: &Path, dir: &Path) -> Discovered {
@@ -135,7 +187,7 @@ fn read_conf(path: &Path, dir: &Path) -> Discovered {
 
     let only_the_root = |basedirs| Discovered {
         basedirs,
-        use_dependency_keying: None,
+        ..Default::default()
     };
 
     let text = match std::fs::read_to_string(path) {
@@ -174,15 +226,40 @@ fn read_conf(path: &Path, dir: &Path) -> Discovered {
             );
         }
     }
+    // Named files are resolved against the file's directory and must stay under
+    // it. A path reaching out of the checkout is either a mistake or an attempt
+    // to make a build depend on something the repository does not carry, and
+    // neither is worth honouring.
+    let mut extra_hash_files = Vec::new();
+    for rel in conf.extra_hash_files {
+        let entry = Path::new(&rel);
+        if entry.is_absolute() || entry.components().any(|c| c == Component::ParentDir) {
+            warn!(
+                "{}: extra_hash_files entries must be relative to the file and stay under it; ignoring {rel:?}",
+                path.display()
+            );
+            continue;
+        }
+        extra_hash_files.push(dir.join(entry));
+    }
+
     Discovered {
         basedirs: out,
         use_dependency_keying: conf.use_dependency_keying,
+        use_preprocessor_cache_mode: conf.use_preprocessor_cache_mode,
+        custom_cache_buster: conf.custom_cache_buster,
+        extra_hash_files,
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The settings in force at `start`, without the file they came from.
+    fn found(start: &Path) -> Discovered {
+        walk(start).0
+    }
 
     fn write(dir: &Path, name: &str, body: &str) {
         std::fs::create_dir_all(dir).unwrap();
@@ -197,7 +274,7 @@ mod tests {
         std::fs::create_dir_all(&deep).unwrap();
         write(&root, PROJECT_CONF_NAME, "");
 
-        let found = walk(&deep);
+        let found = found(&deep);
         let expected = normalize_basedir(root.to_str().unwrap()).unwrap();
         assert_eq!(
             found.basedirs,
@@ -217,7 +294,7 @@ mod tests {
         std::fs::create_dir_all(root.join(".git")).unwrap();
 
         assert!(
-            walk(&deep).basedirs.is_empty(),
+            found(&deep).basedirs.is_empty(),
             "the walk must not escape the checkout"
         );
     }
@@ -231,7 +308,7 @@ mod tests {
         // In a worktree `.git` is a file, not a directory.
         std::fs::write(root.join(".git"), "gitdir: ../repo/.git/worktrees/wt").unwrap();
 
-        assert!(walk(&root).basedirs.is_empty());
+        assert!(found(&root).basedirs.is_empty());
     }
 
     #[test]
@@ -241,7 +318,7 @@ mod tests {
         std::fs::create_dir_all(root.join("vendor")).unwrap();
         write(&root, PROJECT_CONF_NAME, "basedirs = [\"vendor\"]\n");
 
-        let found = walk(&root).basedirs;
+        let found = found(&root).basedirs;
         assert_eq!(found.len(), 2);
         assert!(found.contains(&normalize_basedir(root.to_str().unwrap()).unwrap()));
         assert!(found.contains(&normalize_basedir(root.join("vendor").to_str().unwrap()).unwrap()));
@@ -265,7 +342,7 @@ mod tests {
 
         // Only the file's own directory survives; a committed file cannot know
         // anyone else's layout, and honouring it would recreate the problem.
-        assert_eq!(walk(&root).basedirs.len(), 1);
+        assert_eq!(found(&root).basedirs.len(), 1);
     }
 
     #[test]
@@ -277,7 +354,7 @@ mod tests {
 
         // The root is still usable; the alternative is failing every
         // compilation over a typo in an optional file.
-        assert_eq!(walk(&root).basedirs.len(), 1);
+        assert_eq!(found(&root).basedirs.len(), 1);
     }
 
     /// Whether dependency keying pays off depends on how a project is built,
@@ -289,10 +366,10 @@ mod tests {
         std::fs::create_dir_all(&root).unwrap();
 
         write(&root, PROJECT_CONF_NAME, "use_dependency_keying = true\n");
-        assert_eq!(walk(&root).use_dependency_keying, Some(true));
+        assert_eq!(found(&root).use_dependency_keying, Some(true));
 
         write(&root, PROJECT_CONF_NAME, "use_dependency_keying = false\n");
-        assert_eq!(walk(&root).use_dependency_keying, Some(false));
+        assert_eq!(found(&root).use_dependency_keying, Some(false));
     }
 
     /// Saying nothing is not the same as saying no: the machine-wide setting
@@ -305,12 +382,85 @@ mod tests {
         std::fs::create_dir_all(&root).unwrap();
 
         write(&root, PROJECT_CONF_NAME, "");
-        assert_eq!(walk(&root).use_dependency_keying, None);
+        assert_eq!(found(&root).use_dependency_keying, None);
 
         // Including when the file is unusable, or absent entirely.
         write(&root, PROJECT_CONF_NAME, "this is not toml {{{");
-        assert_eq!(walk(&root).use_dependency_keying, None);
-        assert_eq!(walk(t.path()).use_dependency_keying, None);
+        assert_eq!(found(&root).use_dependency_keying, None);
+        assert_eq!(found(t.path()).use_dependency_keying, None);
+    }
+
+    #[test]
+    fn the_project_can_name_files_that_belong_in_every_key() {
+        let t = tempfile::tempdir().unwrap();
+        let root = t.path().join("repo");
+        std::fs::create_dir_all(&root).unwrap();
+        write(
+            &root,
+            PROJECT_CONF_NAME,
+            "extra_hash_files = [\"toolchain.lock\", \"gen/config.h\"]\n",
+        );
+
+        assert_eq!(
+            found(&root).extra_hash_files,
+            vec![root.join("toolchain.lock"), root.join("gen/config.h")],
+            "resolved against the file, not the compilation's directory"
+        );
+    }
+
+    /// A named file reaching out of the checkout is either a mistake or an
+    /// attempt to make a build depend on something the repository does not
+    /// carry. `..` gets there without ever looking absolute.
+    #[test]
+    fn named_files_may_not_escape_the_checkout() {
+        let t = tempfile::tempdir().unwrap();
+        let root = t.path().join("repo");
+        std::fs::create_dir_all(&root).unwrap();
+        let abs = if cfg!(windows) {
+            "C:\\\\elsewhere\\\\x"
+        } else {
+            "/elsewhere/x"
+        };
+        write(
+            &root,
+            PROJECT_CONF_NAME,
+            &format!("extra_hash_files = [\"../outside\", \"a/../../b\", \"{abs}\", \"kept\"]\n"),
+        );
+
+        assert_eq!(found(&root).extra_hash_files, vec![root.join("kept")]);
+    }
+
+    #[test]
+    fn the_project_can_set_the_remaining_key_inputs() {
+        let t = tempfile::tempdir().unwrap();
+        let root = t.path().join("repo");
+        std::fs::create_dir_all(&root).unwrap();
+        write(
+            &root,
+            PROJECT_CONF_NAME,
+            "use_preprocessor_cache_mode = false\ncustom_cache_buster = \"v2\"\n",
+        );
+
+        let found = found(&root);
+        assert_eq!(found.use_preprocessor_cache_mode, Some(false));
+        assert_eq!(found.custom_cache_buster.as_deref(), Some("v2"));
+    }
+
+    /// The answer is memoized per directory for the life of the server, which
+    /// outlives any number of edits. A cache buster that only took effect after
+    /// someone restarted the server would be indistinguishable from one that
+    /// did nothing.
+    #[test]
+    fn an_edited_file_is_read_again() {
+        let t = tempfile::tempdir().unwrap();
+        let root = t.path().join("repo");
+        std::fs::create_dir_all(&root).unwrap();
+
+        write(&root, PROJECT_CONF_NAME, "custom_cache_buster = \"v1\"\n");
+        assert_eq!(discover(&root).custom_cache_buster.as_deref(), Some("v1"));
+
+        write(&root, PROJECT_CONF_NAME, "custom_cache_buster = \"v22\"\n");
+        assert_eq!(discover(&root).custom_cache_buster.as_deref(), Some("v22"));
     }
 
     #[test]
@@ -323,7 +473,7 @@ mod tests {
         // honoured.
         write(&root, PROJECT_CONF_NAME, "dir = \"//server/share\"\n");
         assert_eq!(
-            walk(&root).basedirs.len(),
+            found(&root).basedirs.len(),
             1,
             "only the root, and a warning logged"
         );

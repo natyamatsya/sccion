@@ -72,9 +72,32 @@ basedirs = ["some/generated/tree"]
 # See "Preprocessor cache mode" above. Absent means the project has no opinion
 # and the machine-wide setting stands.
 use_dependency_keying = true
+
+# Decline preprocessor cache mode for this project. `true` only means "no
+# objection": whether the mode is available at all depends on the cache
+# backend, which a checkout does not get to assert. The counterpart of
+# SCCACHE_DIRECT.
+use_preprocessor_cache_mode = false
+
+# Files every compilation in this tree depends on but does not include -- a
+# toolchain manifest, a generated config header. Their contents go into every
+# cache key. The counterpart of SCCACHE_EXTRAFILES, named by the repository
+# that knows about them rather than by whoever remembered to export it.
+extra_hash_files = ["toolchain.lock", "generated/buildinfo.h"]
+
+# An arbitrary string folded into every cache key from this tree. Change it to
+# invalidate the project's own entries. The counterpart of
+# SCCACHE_C_CUSTOM_CACHE_BUSTER.
+custom_cache_buster = "v2"
 ```
 
-Only these two keys are honoured, and the file is ignored (with a warning) if it contains anything else. It travels with the repository, so anything it can set is something a repository can set: the test a key has to pass is that the worst a hostile repository could do with it is make its own builds slower. Settings that could redirect a build — where the cache lives, what the compiler is — are deliberately not available here, for the same reason `.clang-format` cannot run a command. `basedirs` entries must be relative to the file; absolute ones are ignored.
+For each of these, the most specific answer wins: the environment variable for this invocation, then the project file, then the machine-wide config. A file that says nothing about a setting leaves it alone — absent is not the same as `false`.
+
+Only these keys are honoured, and the file is ignored (with a warning) if it contains anything else. It travels with the repository, so anything it can set is something a repository can set: the test a key has to pass is that the worst a hostile repository could do with it is make its own builds slower or less shared. Settings that could redirect a build — where the cache lives, what the compiler is, which server to talk to — are deliberately not available here, for the same reason `.clang-format` cannot run a command.
+
+Most of sccache's configuration cannot be set here even in principle, quite apart from that rule: one sccache server serves every checkout on the machine and reads its configuration once at startup, so the cache backend, cache size, compression, logging, idle timeout and distributed-build settings are fixed for the server's lifetime. Two checkouts asking for different ones would have no answer.
+
+`basedirs` and `extra_hash_files` entries must be relative to the file and stay under it; absolute paths, and paths containing `..`, are ignored with a warning.
 
 A malformed file does not fail the build. The checkout root is still used as a basedir, and a warning is logged.
 
