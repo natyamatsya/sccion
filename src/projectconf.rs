@@ -14,12 +14,21 @@
 //! directory holding the file *is* the checkout root, so one committed file is
 //! correct in every checkout, including ones that do not exist yet.
 //!
-//! **Only `basedirs` is honoured.** The file travels with the repository, so
-//! anything it could set is something a repository can set. A basedir can only
-//! make cache keys less specific to a path; letting it move the cache
-//! directory, or point at a network path, would turn a checkout into a way to
-//! redirect another user's build. That is the same reason `.clang-format`
-//! cannot run a command.
+//! **What the file may set is deliberately narrow.** It travels with the
+//! repository, so anything it can set is something a repository can set.
+//! Letting it move the cache directory, or point at a network path, would turn
+//! a checkout into a way to redirect another user's build. That is the same
+//! reason `.clang-format` cannot run a command.
+//!
+//! The test a key has to pass is that the worst a hostile repository can do
+//! with it is make its own builds slower. `basedirs` passes: it can only make
+//! cache keys less specific to a path. `use_dependency_keying` passes: it
+//! chooses whether a compilation's inputs are learned by compiling and asking
+//! or by preprocessing first, which changes what the build spends and nothing
+//! about where anything is read from or written to. It is here because the
+//! choice depends on how the project is built -- how often a compilation misses
+//! its manifest while its object is still in the cache -- which is exactly the
+//! thing a repository knows and a machine-wide config cannot.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -47,21 +56,33 @@ struct ProjectConf {
     /// included, so the common case is an empty file.
     #[serde(default)]
     basedirs: Vec<String>,
+    /// Whether compilations in this tree should be keyed on what the compiler
+    /// reports reading, rather than on preprocessed text. Absent means the
+    /// project has no opinion and the machine-wide setting stands.
+    #[serde(default)]
+    use_dependency_keying: Option<bool>,
 }
 
-/// Discovered basedirs, keyed by the directory the search started from.
+/// What a project file at or above a directory contributes.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Discovered {
+    /// Roots whose absolute paths must not reach a cache key. Empty when there
+    /// is no project file, which is every project that has not opted in.
+    pub basedirs: Vec<Vec<u8>>,
+    /// `None` when the file said nothing about it.
+    pub use_dependency_keying: Option<bool>,
+}
+
+/// Discovered settings, keyed by the directory the search started from.
 ///
 /// The walk is a handful of `stat`s, but it would otherwise run on every single
 /// compilation, and a build asks the same question a thousand times with the
 /// same answer.
-static CACHE: LazyLock<Mutex<HashMap<PathBuf, Vec<Vec<u8>>>>> =
+static CACHE: LazyLock<Mutex<HashMap<PathBuf, Discovered>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
-/// Basedirs contributed by a project file at or above `start`.
-///
-/// Empty when there is no such file, which is the case for every project that
-/// has not opted in.
-pub fn discover_basedirs(start: &Path) -> Vec<Vec<u8>> {
+/// Everything a project file at or above `start` contributes.
+pub fn discover(start: &Path) -> Discovered {
     if let Some(hit) = CACHE
         .lock()
         .unwrap_or_else(|e| e.into_inner())
@@ -78,7 +99,12 @@ pub fn discover_basedirs(start: &Path) -> Vec<Vec<u8>> {
     found
 }
 
-fn walk(start: &Path) -> Vec<Vec<u8>> {
+/// Basedirs contributed by a project file at or above `start`.
+pub fn discover_basedirs(start: &Path) -> Vec<Vec<u8>> {
+    discover(start).basedirs
+}
+
+fn walk(start: &Path) -> Discovered {
     let mut dir = Some(start);
     while let Some(d) = dir {
         let candidate = d.join(PROJECT_CONF_NAME);
@@ -89,14 +115,14 @@ fn walk(start: &Path) -> Vec<Vec<u8>> {
         // the checkout, and continuing past it would let a file outside the
         // repository silently govern builds inside it.
         if VCS_MARKERS.iter().any(|m| d.join(m).exists()) {
-            return Vec::new();
+            return Discovered::default();
         }
         dir = d.parent();
     }
-    Vec::new()
+    Discovered::default()
 }
 
-fn read_conf(path: &Path, dir: &Path) -> Vec<Vec<u8>> {
+fn read_conf(path: &Path, dir: &Path) -> Discovered {
     let mut out = Vec::new();
 
     // The directory holding the file, always. This is the whole point: the
@@ -107,11 +133,16 @@ fn read_conf(path: &Path, dir: &Path) -> Vec<Vec<u8>> {
         None => warn!("{}: directory is not valid UTF-8", path.display()),
     }
 
+    let only_the_root = |basedirs| Discovered {
+        basedirs,
+        use_dependency_keying: None,
+    };
+
     let text = match std::fs::read_to_string(path) {
         Ok(t) => t,
         Err(e) => {
             warn!("Failed to read {}: {}", path.display(), e);
-            return out;
+            return only_the_root(out);
         }
     };
     let conf: ProjectConf = match toml::from_str(&text) {
@@ -120,7 +151,7 @@ fn read_conf(path: &Path, dir: &Path) -> Vec<Vec<u8>> {
             // Not fatal: a malformed project file must not stop the build. The
             // root is still usable, which is the part that matters.
             warn!("Ignoring {}: {}", path.display(), e);
-            return out;
+            return only_the_root(out);
         }
     };
 
@@ -143,7 +174,10 @@ fn read_conf(path: &Path, dir: &Path) -> Vec<Vec<u8>> {
             );
         }
     }
-    out
+    Discovered {
+        basedirs: out,
+        use_dependency_keying: conf.use_dependency_keying,
+    }
 }
 
 #[cfg(test)]
@@ -165,7 +199,11 @@ mod tests {
 
         let found = walk(&deep);
         let expected = normalize_basedir(root.to_str().unwrap()).unwrap();
-        assert_eq!(found, vec![expected], "the file's directory is the basedir");
+        assert_eq!(
+            found.basedirs,
+            vec![expected],
+            "the file's directory is the basedir"
+        );
     }
 
     #[test]
@@ -179,7 +217,7 @@ mod tests {
         std::fs::create_dir_all(root.join(".git")).unwrap();
 
         assert!(
-            walk(&deep).is_empty(),
+            walk(&deep).basedirs.is_empty(),
             "the walk must not escape the checkout"
         );
     }
@@ -193,7 +231,7 @@ mod tests {
         // In a worktree `.git` is a file, not a directory.
         std::fs::write(root.join(".git"), "gitdir: ../repo/.git/worktrees/wt").unwrap();
 
-        assert!(walk(&root).is_empty());
+        assert!(walk(&root).basedirs.is_empty());
     }
 
     #[test]
@@ -203,7 +241,7 @@ mod tests {
         std::fs::create_dir_all(root.join("vendor")).unwrap();
         write(&root, PROJECT_CONF_NAME, "basedirs = [\"vendor\"]\n");
 
-        let found = walk(&root);
+        let found = walk(&root).basedirs;
         assert_eq!(found.len(), 2);
         assert!(found.contains(&normalize_basedir(root.to_str().unwrap()).unwrap()));
         assert!(found.contains(&normalize_basedir(root.join("vendor").to_str().unwrap()).unwrap()));
@@ -214,7 +252,11 @@ mod tests {
         let t = tempfile::tempdir().unwrap();
         let root = t.path().join("repo");
         std::fs::create_dir_all(&root).unwrap();
-        let abs = if cfg!(windows) { "C:\\elsewhere" } else { "/elsewhere" };
+        let abs = if cfg!(windows) {
+            "C:\\elsewhere"
+        } else {
+            "/elsewhere"
+        };
         write(
             &root,
             PROJECT_CONF_NAME,
@@ -223,7 +265,7 @@ mod tests {
 
         // Only the file's own directory survives; a committed file cannot know
         // anyone else's layout, and honouring it would recreate the problem.
-        assert_eq!(walk(&root).len(), 1);
+        assert_eq!(walk(&root).basedirs.len(), 1);
     }
 
     #[test]
@@ -235,7 +277,40 @@ mod tests {
 
         // The root is still usable; the alternative is failing every
         // compilation over a typo in an optional file.
-        assert_eq!(walk(&root).len(), 1);
+        assert_eq!(walk(&root).basedirs.len(), 1);
+    }
+
+    /// Whether dependency keying pays off depends on how a project is built,
+    /// which is what the committed file is for.
+    #[test]
+    fn dependency_keying_can_be_set_by_the_project() {
+        let t = tempfile::tempdir().unwrap();
+        let root = t.path().join("repo");
+        std::fs::create_dir_all(&root).unwrap();
+
+        write(&root, PROJECT_CONF_NAME, "use_dependency_keying = true\n");
+        assert_eq!(walk(&root).use_dependency_keying, Some(true));
+
+        write(&root, PROJECT_CONF_NAME, "use_dependency_keying = false\n");
+        assert_eq!(walk(&root).use_dependency_keying, Some(false));
+    }
+
+    /// Saying nothing is not the same as saying no: the machine-wide setting
+    /// has to be able to stand, or every project without the key would be
+    /// opting out of one it never mentioned.
+    #[test]
+    fn saying_nothing_leaves_the_decision_alone() {
+        let t = tempfile::tempdir().unwrap();
+        let root = t.path().join("repo");
+        std::fs::create_dir_all(&root).unwrap();
+
+        write(&root, PROJECT_CONF_NAME, "");
+        assert_eq!(walk(&root).use_dependency_keying, None);
+
+        // Including when the file is unusable, or absent entirely.
+        write(&root, PROJECT_CONF_NAME, "this is not toml {{{");
+        assert_eq!(walk(&root).use_dependency_keying, None);
+        assert_eq!(walk(t.path()).use_dependency_keying, None);
     }
 
     #[test]
@@ -247,6 +322,10 @@ mod tests {
         // loudly beats appearing to accept a setting that is deliberately not
         // honoured.
         write(&root, PROJECT_CONF_NAME, "dir = \"//server/share\"\n");
-        assert_eq!(walk(&root).len(), 1, "only the root, and a warning logged");
+        assert_eq!(
+            walk(&root).basedirs.len(),
+            1,
+            "only the root, and a warning logged"
+        );
     }
 }

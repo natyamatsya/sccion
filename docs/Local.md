@@ -51,9 +51,32 @@ Configuration options and their default values:
 
 - `use_dependency_keying`: `false`. If true, a compilation whose inputs are not already known is *compiled* and asked what it read, instead of being preprocessed so the same list can be recovered from the preprocessed text. This removes an entire compiler run from every preprocessor cache miss — on a reference MSVC build, 285ms of the 681ms such a miss costs. Only compilers that can report their inputs while compiling do this (currently MSVC, via `/sourceDependencies`); the rest preprocess as before, as do distributed compilations, which need preprocessed source.
 
-  The trade is that a miss now costs a compile rather than a preprocess, so a compilation whose *manifest* is missing but whose *object* is already in the cache pays the difference instead of getting a cheap hit. Measure before enabling it on a build that shares a cache between checkouts. This can be overridden for an sccache invocation by setting the environment variable `SCCACHE_DEPEND` to `true`/`on`/`1` or `false`/`off`/`0`.
+  The trade is that a miss now costs a compile rather than a preprocess, so a compilation whose *manifest* is missing but whose *object* is already in the cache pays the difference instead of getting a cheap hit. Measure before enabling it on a build that shares a cache between checkouts.
+
+  Whether it pays off is a property of the project rather than of the machine, so it can also be set in a committed `.sccache.toml` (see [Project configuration](#project-configuration)). It is asked for in order of how specific the answer is: the environment variable `SCCACHE_DEPEND` (`true`/`on`/`1` or `false`/`off`/`0`) for this invocation, then the project file, then this setting.
 
 See where to write the config in [the configuration doc](Configuration.md).
+
+## Project configuration
+
+Some settings depend on the project being built rather than on the machine building it. Those can be set in a `.sccache.toml` committed to the repository, which sccache looks for the way tools look for `.clang-format`: by walking up from the directory a compilation runs in, stopping once it has looked in the checkout root (a directory or file named `.git`, `.jj` or `.hg`).
+
+The point of finding it by walking up is that the file does not have to name a path. **The directory holding the file is the checkout root**, so one committed file is correct in every checkout of the project, including worktrees that do not exist yet.
+
+```toml
+# Every path under this file's directory is normalized out of cache keys, so
+# two checkouts of this project can share cache entries. The file's own
+# directory is always included, so an empty file is the common case.
+basedirs = ["some/generated/tree"]
+
+# See "Preprocessor cache mode" above. Absent means the project has no opinion
+# and the machine-wide setting stands.
+use_dependency_keying = true
+```
+
+Only these two keys are honoured, and the file is ignored (with a warning) if it contains anything else. It travels with the repository, so anything it can set is something a repository can set: the test a key has to pass is that the worst a hostile repository could do with it is make its own builds slower. Settings that could redirect a build — where the cache lives, what the compiler is — are deliberately not available here, for the same reason `.clang-format` cannot run a command. `basedirs` entries must be relative to the file; absolute ones are ignored.
+
+A malformed file does not fail the build. The checkout root is still used as a basedir, and a warning is logged.
 
 ## Read-only cache mode
 

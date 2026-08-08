@@ -776,18 +776,24 @@ where
         // *learned*, so it is meaningless without the manifest that consumes
         // them, and it has nothing to hand a distributed compile, which needs
         // preprocessed source.
-        let mut use_dependency_keying = use_preprocessor_cache_mode
-            && !may_dist
-            && preprocessor_cache_mode_config.use_dependency_keying;
-        for (key, val) in env_vars.iter() {
-            if key == "SCCACHE_DEPEND" {
-                if let Some(val) = val.to_str() {
-                    use_dependency_keying = use_preprocessor_cache_mode
-                        && !may_dist
-                        && !matches!(val.to_lowercase().as_str(), "false" | "off" | "0");
-                }
-                break;
-            }
+        //
+        // Asked in order of how specific the answer is: this invocation, then
+        // the project being built, then the machine. Whether it pays off
+        // depends on how often a compilation misses its manifest while its
+        // object is still in the cache, which is a property of the project --
+        // so a committed `.sccache.toml` outranks a machine-wide setting, and
+        // `SCCACHE_DEPEND` outranks both for the run in front of you.
+        let mut use_dependency_keying = use_preprocessor_cache_mode && !may_dist;
+        if use_dependency_keying {
+            let from_env = env_vars.iter().find_map(|(key, val)| {
+                (key == "SCCACHE_DEPEND")
+                    .then(|| val.to_str())
+                    .flatten()
+                    .map(|val| !matches!(val.to_lowercase().as_str(), "false" | "off" | "0"))
+            });
+            use_dependency_keying = from_env
+                .or_else(|| crate::projectconf::discover(&cwd).use_dependency_keying)
+                .unwrap_or(preprocessor_cache_mode_config.use_dependency_keying);
         }
 
         let mut preprocessor_key = if use_preprocessor_cache_mode {
@@ -2101,7 +2107,10 @@ mod test {
         assert_neq!(key(&base), key(&changed));
         assert_neq!(key(&base), key(&renamed));
         assert_neq!(key(&base), key(&extra));
-        assert_neq!(key(&base), dependency_result_key("other-manifest", &base, &[]));
+        assert_neq!(
+            key(&base),
+            dependency_result_key("other-manifest", &base, &[])
+        );
 
         // `/r/x.h` + `digest` and `/r/x.hdigest` + `` must not collide.
         let split = [("d".to_string(), PathBuf::from("/r/x.h"))];
@@ -2883,17 +2892,38 @@ mod dependency_keying_test {
     /// Hash one compilation with dependency keying on, and report everything
     /// worth asserting about it.
     fn run(cwd: &Path, arguments: &[OsString], report: Option<Vec<PathBuf>>, status: u32) -> Run {
+        run_with(cwd, arguments, report, status, Some(true))
+    }
+
+    /// As [`run`], with the `SCCACHE_DEPEND` this invocation carries -- `None`
+    /// for one that says nothing, leaving the decision to the project file and
+    /// then to the machine-wide setting.
+    fn run_with(
+        cwd: &Path,
+        arguments: &[OsString],
+        report: Option<Vec<PathBuf>>,
+        status: u32,
+        depend: Option<bool>,
+    ) -> Run {
         let runtime = single_threaded_runtime();
         let creator = new_creator();
         let seen = Arc::new(Mutex::new(Vec::new()));
         next_command_calls(&creator, mock_compiler(seen.clone(), report, status));
         let storage = Arc::new(MockStorage::new(None, true));
+        let env_vars: Vec<(OsString, OsString)> = depend
+            .map(|d| {
+                vec![(
+                    "SCCACHE_DEPEND".into(),
+                    if d { "true" } else { "false" }.into(),
+                )]
+            })
+            .unwrap_or_default();
 
         let result = msvc_hasher(cwd, arguments)
             .generate_hash_key(
                 &creator,
                 cwd.to_path_buf(),
-                vec![("SCCACHE_DEPEND".into(), "true".into())],
+                env_vars,
                 false,
                 runtime.handle(),
                 false,
@@ -3011,6 +3041,52 @@ mod dependency_keying_test {
         assert!(
             r.manifests.is_empty(),
             "nothing verifiable was read, so nothing may be recorded to verify against"
+        );
+    }
+
+    /// Whether this pays off depends on how the project is built, so a
+    /// committed `.sccache.toml` can ask for it with no environment variable
+    /// and no machine-wide setting -- which is what a build the whole team
+    /// shares needs.
+    #[test]
+    fn a_project_file_can_ask_for_it() {
+        let (_f, cwd, hdr) = fixture();
+        std::fs::write(
+            cwd.join(crate::projectconf::PROJECT_CONF_NAME),
+            "use_dependency_keying = true\n",
+        )
+        .unwrap();
+        let args = ovec!["-c", "foo.c", "-Fofoo.obj"];
+
+        let r = run_with(&cwd, &args, Some(vec![hdr]), 0, None);
+
+        // The compilation ran, not a preprocessor pass.
+        assert!(
+            !r.command_line.iter().any(|a| a == "-E" || a == "-EP"),
+            "the project file was not honoured: {:?}",
+            r.command_line
+        );
+        assert_eq!(r.manifests.len(), 1);
+    }
+
+    /// The run in front of you outranks the file. Someone bisecting a cache
+    /// problem has to be able to turn it off without editing the repository.
+    #[test]
+    fn the_environment_outranks_the_project_file() {
+        let (_f, cwd, hdr) = fixture();
+        std::fs::write(
+            cwd.join(crate::projectconf::PROJECT_CONF_NAME),
+            "use_dependency_keying = true\n",
+        )
+        .unwrap();
+        let args = ovec!["-c", "foo.c", "-Fofoo.obj"];
+
+        let r = run_with(&cwd, &args, Some(vec![hdr]), 0, Some(false));
+
+        assert!(
+            r.command_line.iter().any(|a| a == "-E"),
+            "SCCACHE_DEPEND=false should have left the preprocessor in charge: {:?}",
+            r.command_line
         );
     }
 
