@@ -833,6 +833,13 @@ where
     /// Recent cache misses, in detail the counters cannot carry.
     misses: Arc<MissLog>,
 
+    /// Registered workspaces, by the handle that names each one.
+    ///
+    /// A `std::sync::Mutex` rather than the async one used for stats: every
+    /// critical section here is a map lookup with no await in it, and the
+    /// async mutex would only add a scheduling point.
+    workspaces: Arc<std::sync::Mutex<HashMap<String, PathBuf>>>,
+
     /// Distributed sccache client
     dist_client: Arc<DistClientContainer>,
 
@@ -1023,6 +1030,20 @@ where
                     me.merge_stats(*delta).await;
                     Ok(Message::WithoutBody(Response::RecordStats))
                 }
+                Request::RegisterWorkspace { path } => {
+                    debug!("handle_client: register_workspace");
+                    let info = me.register_workspace(Path::new(&path));
+                    Ok(Message::WithoutBody(Response::Workspace(
+                        info.map_err(|e| e.to_string()),
+                    )))
+                }
+                Request::GetMissRecords { handle, limit } => {
+                    debug!("handle_client: get_miss_records");
+                    let records = me.miss_records(handle.as_deref(), limit);
+                    Ok(Message::WithoutBody(Response::MissRecords(
+                        records.map_err(|e| e.to_string()),
+                    )))
+                }
             }
         })
     }
@@ -1049,6 +1070,7 @@ where
         SccacheService {
             stats: Arc::default(),
             misses: Arc::default(),
+            workspaces: Arc::default(),
             dist_client: Arc::new(dist_client),
             storage,
             compilers: Arc::default(),
@@ -1071,6 +1093,7 @@ where
         SccacheService {
             stats: Arc::default(),
             misses: Arc::default(),
+            workspaces: Arc::default(),
             dist_client: Arc::new(dist_client),
             storage,
             compilers: Arc::default(),
@@ -1094,6 +1117,7 @@ where
         SccacheService {
             stats: Arc::default(),
             misses: Arc::default(),
+            workspaces: Arc::default(),
             dist_client: Arc::new(DistClientContainer::new_with_state(DistClientState::Some(
                 Box::new(DistClientConfig {
                     pool: rt.clone(),
@@ -1265,6 +1289,80 @@ where
     /// The most recent misses the daemon has seen, newest last.
     pub fn recent_misses(&self, limit: usize) -> Vec<MissRecord> {
         self.misses.recent(limit)
+    }
+
+    /// Resolve `path` to the checkout it is in and mint a handle naming it.
+    ///
+    /// Registering the same checkout twice returns the same handle. That makes
+    /// the call idempotent and bounds the table by the number of checkouts
+    /// rather than by the number of times anyone asks -- a handle minted afresh
+    /// each time would let a caller grow this without limit.
+    pub fn register_workspace(&self, path: &Path) -> Result<crate::protocol::WorkspaceInfo> {
+        let found = crate::projectconf::discover(path);
+        // A directory that is not in a checkout is still a place a build runs.
+        let root = found.vcs_root.clone().unwrap_or_else(|| path.to_path_buf());
+
+        let mut table = self.workspaces.lock().unwrap_or_else(|e| e.into_inner());
+        let handle = match table.iter().find(|(_, r)| **r == root) {
+            Some((handle, _)) => handle.clone(),
+            None => {
+                if table.len() >= MAX_WORKSPACES {
+                    bail!("too many registered workspaces ({MAX_WORKSPACES})");
+                }
+                // Unguessable, because holding one is what grants read access
+                // to a workspace's build state. There is no session to bound
+                // it, so it lives as long as the daemon and the state it names.
+                let handle = uuid::Uuid::new_v4().as_simple().to_string();
+                table.insert(handle.clone(), root.clone());
+                handle
+            }
+        };
+
+        Ok(crate::protocol::WorkspaceInfo {
+            handle,
+            root: found
+                .vcs_root
+                .as_ref()
+                .map(|r| r.to_string_lossy().into_owned()),
+            vcs: found.vcs.map(|v| {
+                match v {
+                    crate::projectconf::Vcs::Git => "git",
+                    crate::projectconf::Vcs::Jj => "jj",
+                    crate::projectconf::Vcs::Mercurial => "hg",
+                }
+                .to_owned()
+            }),
+        })
+    }
+
+    /// Recent misses, scoped to the workspace a handle names.
+    ///
+    /// Without a handle this answers for everything the daemon has seen, which
+    /// is right for a person at a terminal and wrong for anything else: one
+    /// caller's records name paths and headers from a repository another caller
+    /// may have written, and handing those across is a way for one build's
+    /// contents to reach another's.
+    pub fn miss_records(&self, handle: Option<&str>, limit: usize) -> Result<Vec<MissRecord>> {
+        let root = match handle {
+            None => None,
+            Some(handle) => Some(
+                self.workspaces
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .get(handle)
+                    .cloned()
+                    .ok_or_else(|| anyhow!("unknown workspace handle"))?,
+            ),
+        };
+        let Some(root) = root else {
+            return Ok(self.misses.recent(limit));
+        };
+        let root = root.to_string_lossy().into_owned();
+        // Filtered before the limit is applied, so a busy neighbour cannot
+        // crowd this workspace's records out of the answer.
+        Ok(self.misses.recent_where(limit, |r| {
+            r.workspace.as_deref() == Some(root.as_str())
+        }))
     }
 
     /// Record a compilation refused before its arguments could be parsed.
@@ -1961,6 +2059,14 @@ const MAX_TRACKED_AGENTS: usize = 64;
 
 /// Where callers past [`MAX_TRACKED_AGENTS`] are counted.
 pub const OTHER_AGENTS: &str = "<other>";
+
+/// How many workspaces may be registered at once.
+///
+/// Registering is idempotent per checkout, so reaching this means either a
+/// machine with hundreds of live checkouts or a caller doing something odd.
+/// Either way an unbounded table fed by a caller-supplied path is not something
+/// to leave open.
+const MAX_WORKSPACES: usize = 256;
 
 /// What is worth knowing per caller.
 ///

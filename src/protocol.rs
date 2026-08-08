@@ -3,6 +3,7 @@
 use crate::cache::{CacheMode, GetPathResult};
 use crate::compiler::ColorMode;
 use crate::config::PreprocessorCacheModeConfig;
+use crate::missrecord::MissRecord;
 use crate::server::{DistInfo, ServerInfo, ServerStats};
 use serde::{Deserialize, Serialize};
 
@@ -12,7 +13,10 @@ use serde::{Deserialize, Serialize};
 /// side of a change fail to find each other rather than exchanging bytes one of
 /// them will misread. bincode is not self-describing, so without this the
 /// mismatch is silent misinterpretation rather than a clean error.
-pub const PROTOCOL_VERSION: u32 = 1;
+/// Bumped to 2 when `RegisterWorkspace` and `GetMissRecords` were added. A
+/// daemon left running across the change will not be found by the new client,
+/// which is the intended outcome: stop it with `sccache --stop-server`.
+pub const PROTOCOL_VERSION: u32 = 2;
 use std::ffi::OsString;
 
 /// A client request.
@@ -45,6 +49,18 @@ pub enum Request {
     StoragePutPreprocessorEntry { key: String, entry_bytes: Vec<u8> },
     /// Merge per-invocation stats into the daemon's running totals.
     RecordStats(Box<ServerStats>),
+
+    // --- Out-of-band queries ---
+    /// Resolve a directory to the checkout it is in, and mint a handle naming
+    /// it. The handle is how a later request says *which* build it is asking
+    /// about without having to repeat, or be trusted with, a path.
+    RegisterWorkspace { path: OsString },
+    /// Recent cache misses in detail, most recent last. Scoped to one workspace
+    /// when a handle is given, and to everything the daemon has seen when not.
+    GetMissRecords {
+        handle: Option<String>,
+        limit: usize,
+    },
 }
 
 /// A server response.
@@ -78,6 +94,30 @@ pub enum Response {
     StoragePutPreprocessorEntry(Result<(), String>),
     /// Response for `Request::RecordStats`.
     RecordStats,
+
+    // --- Out-of-band query responses ---
+    /// Response for `Request::RegisterWorkspace`.
+    Workspace(Result<WorkspaceInfo, String>),
+    /// Response for `Request::GetMissRecords`.
+    MissRecords(Result<Vec<MissRecord>, String>),
+}
+
+/// A registered workspace, and the handle that names it.
+///
+/// The handle is a capability: holding one grants read access to that
+/// workspace's build state, so it is minted by the daemon rather than derived
+/// from anything a caller supplies, and it is unguessable. There are no
+/// sessions to bound its lifetime -- it lives as long as the daemon does, which
+/// is the same lifetime as the state it names.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+pub struct WorkspaceInfo {
+    pub handle: String,
+    /// The checkout root the path resolved to, absolute. `None` when the path
+    /// is not inside a checkout, in which case the handle names the path
+    /// itself.
+    pub root: Option<String>,
+    /// `git`, `jj` or `hg`, when the root came from one.
+    pub vcs: Option<String>,
 }
 
 /// Possible responses from the server for a `Compile` request.

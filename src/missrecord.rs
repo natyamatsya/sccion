@@ -236,8 +236,25 @@ impl MissLog {
 
     /// The most recent records, newest last, at most `limit` of them.
     pub fn recent(&self, limit: usize) -> Vec<MissRecord> {
+        self.recent_where(limit, |_| true)
+    }
+
+    /// As [`MissLog::recent`], keeping only records the predicate accepts.
+    ///
+    /// The filter runs before the limit, so a busy caller's records cannot
+    /// crowd a quiet one's out of an answer scoped to the quiet one.
+    pub fn recent_where(
+        &self,
+        limit: usize,
+        keep: impl Fn(&MissRecord) -> bool,
+    ) -> Vec<MissRecord> {
         let ring = self.ring.lock().unwrap_or_else(|e| e.into_inner());
-        ring.iter().skip(ring.len().saturating_sub(limit)).cloned().collect()
+        let matching: Vec<&MissRecord> = ring.iter().filter(|r| keep(r)).collect();
+        matching
+            .iter()
+            .skip(matching.len().saturating_sub(limit))
+            .map(|r| (*r).clone())
+            .collect()
     }
 
     fn append(&self, path: &Path, record: &MissRecord) {
@@ -326,6 +343,28 @@ mod tests {
 
         let recent = log.recent(1);
         assert_eq!(recent[0].seq as usize, RING_CAPACITY + 4);
+    }
+
+    /// Scoping has to filter before it limits. Filtering after would let a busy
+    /// neighbour's records fill the window and hand back nothing for the
+    /// workspace actually asked about -- an empty answer that looks like "no
+    /// misses" rather than "your records were crowded out".
+    #[test]
+    fn scoped_records_are_filtered_before_they_are_limited() {
+        let log = MissLog::default();
+        // One record for "mine", then a wall of somebody else's.
+        let mut mine = record("mine.obj");
+        mine.workspace = Some("D:/mine".into());
+        log.record(mine, None);
+        for i in 0..100 {
+            let mut theirs = record(&format!("theirs{i}.obj"));
+            theirs.workspace = Some("D:/theirs".into());
+            log.record(theirs, None);
+        }
+
+        let got = log.recent_where(10, |r| r.workspace.as_deref() == Some("D:/mine"));
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].output, "mine.obj");
     }
 
     #[test]

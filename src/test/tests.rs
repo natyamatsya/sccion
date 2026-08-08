@@ -438,6 +438,88 @@ fn test_stats_break_down_per_caller() {
     assert_eq!(a.cache_hits + b.cache_hits, stats.cache_hits.all());
 }
 
+/// A handle names a workspace, and is the same handle next time.
+///
+/// Minting a fresh one per call would let a caller grow the daemon's table
+/// without limit, and would mean an agent that reconnects loses the identity it
+/// was using -- there are no sessions to hang it on, so the handle *is* the
+/// continuity.
+#[test]
+fn test_a_workspace_handle_is_stable_and_scopes_what_it_can_see() {
+    let f = TestFixture::new();
+    let checkout = f.tempdir.path().join("checkout");
+    std::fs::create_dir_all(checkout.join("src")).unwrap();
+    std::fs::create_dir_all(checkout.join(".git")).unwrap();
+    let elsewhere = f.tempdir.path().join("elsewhere");
+    std::fs::create_dir_all(&elsewhere).unwrap();
+
+    let (addr, sender, _creator, child) = run_server_thread(f.tempdir.path(), None);
+
+    let mut conn = connect_to_server(&addr).unwrap();
+    let first = match conn
+        .request(crate::protocol::Request::RegisterWorkspace {
+            path: checkout.join("src").into_os_string(),
+        })
+        .unwrap()
+    {
+        crate::protocol::Response::Workspace(Ok(info)) => info,
+        other => panic!("unexpected response: {other:?}"),
+    };
+    assert_eq!(
+        first.root.as_deref(),
+        checkout.to_str(),
+        "a directory inside a checkout registers the checkout, not itself"
+    );
+    assert_eq!(first.vcs.as_deref(), Some("git"));
+    assert!(
+        first.handle.len() >= 32,
+        "a handle is a capability, so it has to be unguessable: {:?}",
+        first.handle
+    );
+
+    // The same checkout, reached from a different directory inside it.
+    let again = match conn
+        .request(crate::protocol::Request::RegisterWorkspace {
+            path: checkout.clone().into_os_string(),
+        })
+        .unwrap()
+    {
+        crate::protocol::Response::Workspace(Ok(info)) => info,
+        other => panic!("unexpected response: {other:?}"),
+    };
+    assert_eq!(again.handle, first.handle, "same checkout, same handle");
+
+    // A different place is a different handle.
+    let other = match conn
+        .request(crate::protocol::Request::RegisterWorkspace {
+            path: elsewhere.into_os_string(),
+        })
+        .unwrap()
+    {
+        crate::protocol::Response::Workspace(Ok(info)) => info,
+        other => panic!("unexpected response: {other:?}"),
+    };
+    assert_ne!(other.handle, first.handle);
+
+    // And an invented handle is refused rather than answered broadly.
+    match conn
+        .request(crate::protocol::Request::GetMissRecords {
+            handle: Some("0".repeat(32)),
+            limit: 10,
+        })
+        .unwrap()
+    {
+        crate::protocol::Response::MissRecords(Err(_)) => {}
+        other => panic!("an unknown handle must not be answered: {other:?}"),
+    }
+
+    // The shutdown waits for open connections, and this one is deliberately
+    // reused across every request above rather than opened per call.
+    drop(conn);
+    sender.send(ServerMessage::Shutdown).ok().unwrap();
+    child.join().unwrap();
+}
+
 /// A compilation sccache refuses before parsing used to produce no record at
 /// all. It is the most important kind to record: nothing about it will ever be
 /// cached, so a caller that treats it as an ordinary miss retries forever.

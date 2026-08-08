@@ -28,6 +28,7 @@ use crate::errors::*;
 use crate::protocol::{Request, Response};
 
 pub use crate::checkenv::EnvReport;
+pub use crate::protocol::WorkspaceInfo;
 pub use crate::missrecord::{Classification, DirectState, MissRecord};
 pub use crate::server::{AgentStats, DistInfo, ServerInfo, ServerStats};
 
@@ -89,6 +90,34 @@ impl Daemon {
 
     pub fn dist_status(&self) -> Result<DistInfo> {
         request_dist_status(self.connect_or_start()?)
+    }
+
+    /// Resolve a directory to the checkout it is in, and get a handle naming
+    /// it. Every later question about that build passes the handle instead of
+    /// the path.
+    pub fn register_workspace(&self, path: &Path) -> Result<WorkspaceInfo> {
+        let mut conn = self.connect()?;
+        match conn.request(Request::RegisterWorkspace {
+            path: path.as_os_str().to_owned(),
+        })? {
+            Response::Workspace(Ok(info)) => Ok(info),
+            Response::Workspace(Err(e)) => bail!(e),
+            _ => bail!("Unexpected server response!"),
+        }
+    }
+
+    /// Recent cache misses in detail, most recent last, scoped to the workspace
+    /// the handle names.
+    pub fn miss_records(&self, handle: Option<&str>, limit: usize) -> Result<Vec<MissRecord>> {
+        let mut conn = self.connect()?;
+        match conn.request(Request::GetMissRecords {
+            handle: handle.map(str::to_owned),
+            limit,
+        })? {
+            Response::MissRecords(Ok(records)) => Ok(records),
+            Response::MissRecords(Err(e)) => bail!(e),
+            _ => bail!("Unexpected server response!"),
+        }
     }
 }
 
