@@ -455,6 +455,9 @@ pub fn start_server(config: &Config, addr: &crate::net::SocketAddr) -> Result<()
     if let Some(encoding) = config.object_encoding {
         crate::cache::set_configured_encoding(encoding);
     }
+    // Same shape, same reason: a machine-wide decision, fixed for the life of
+    // the daemon that enforces it.
+    crate::api::set_mcp_enabled(config.mcp_enabled);
     let panic_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
         PANIC_LOCATION.with(|l| {
@@ -1298,7 +1301,22 @@ where
     /// rather than by the number of times anyone asks -- a handle minted afresh
     /// each time would let a caller grow this without limit.
     pub fn register_workspace(&self, path: &Path) -> Result<crate::protocol::WorkspaceInfo> {
+        // The single enforcement point for the MCP surface. Every other tool
+        // needs a handle, so refusing here closes all of them, and the daemon
+        // rather than the adapter is the right place to do it: the adapter is
+        // stateless, replaceable and not the authority on what this machine
+        // allows.
+        if !crate::api::mcp_enabled() {
+            bail!("the MCP query surface is disabled on this machine (see `mcp` in the config, or SCCACHE_MCP)");
+        }
         let found = crate::projectconf::discover(path);
+        if found.expose_over_mcp == Some(false) {
+            bail!(
+                "{} declines to be answered for over MCP (expose_over_mcp = false in its {})",
+                path.display(),
+                crate::projectconf::PROJECT_CONF_NAME
+            );
+        }
         // A workspace is a checkout, here and in the records, and it has to be
         // the same definition in both. Falling back to the bare path for a
         // directory outside any checkout would mint a handle that no record can

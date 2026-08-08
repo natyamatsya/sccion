@@ -26,6 +26,46 @@ transport would import an authorization surface that is itself mid-migration,
 for no gain. Under stdio, a leaked workspace handle is confined to the process
 tree that could already talk to the daemon.
 
+## Turning it off
+
+Enabled by default, so a developer machine needs no configuration. There are two
+switches, and they answer different questions.
+
+**"Does this machine offer the surface at all?"** — the operator's decision, and
+the one to use on a build server, where there is no agent to serve and the
+surface is only a way to read build state:
+
+```toml
+# in the sccache config file
+mcp = false
+```
+```
+SCCACHE_MCP=false     # outranks the config file, so a CI job needs no edit
+```
+
+Read by the server at startup like the cache settings, so restart it with
+`sccache --stop-server`. `sccache-mcp` refuses to start too, which turns "every
+tool call fails" into one line an operator can act on.
+
+**"May this checkout be answered for?"** — the repository's decision, in its
+committed `.sccache.toml`:
+
+```toml
+expose_over_mcp = false
+```
+
+**A project may decline and may not grant.** `true` is ignored rather than
+honoured. Every other key in that file shapes cache keys, where the rule is that
+the worst a hostile repository can do is make its own builds slower; this one
+governs whether build state can be read, so it only passes that rule one way. A
+repository that could switch the surface on would be a way to make a machine
+answer questions about itself by being cloned onto it.
+
+Both are enforced in one place — the daemon, when a workspace is registered.
+Every other tool needs a handle, so refusing there closes all of them, and the
+daemon rather than the stateless adapter is the authority on what the machine
+allows.
+
 ## Running it
 
 ```

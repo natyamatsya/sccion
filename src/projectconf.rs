@@ -102,6 +102,11 @@ struct ProjectConf {
     /// toolchain manifest, a generated config header. Relative to the file.
     #[serde(default)]
     extra_hash_files: Vec<String>,
+    /// Whether this checkout's build state may be answered for over MCP.
+    ///
+    /// **Only `false` is honoured.** See [`Discovered::expose_over_mcp`].
+    #[serde(default)]
+    expose_over_mcp: Option<bool>,
 }
 
 /// What a project file at or above a directory contributes.
@@ -125,6 +130,17 @@ pub struct Discovered {
     /// heard of sccache still belongs to a workspace worth naming.
     pub vcs_root: Option<PathBuf>,
     pub vcs: Option<Vcs>,
+    /// `Some(false)` when this checkout declines to be answered for over MCP.
+    ///
+    /// **Deliberately one-directional: a project may say no and cannot say
+    /// yes.** Everything else here shapes cache keys, where the rule is that
+    /// the worst a hostile repository can do is make its own builds slower.
+    /// This one is different in kind -- it governs whether build state can be
+    /// read -- so it only passes that rule in the refusing direction. A
+    /// repository that could *enable* the surface would be a repository that
+    /// turns on a way to read a machine's build state by being checked out on
+    /// it, which is exactly what the machine-wide setting exists to decide.
+    pub expose_over_mcp: Option<bool>,
 }
 
 /// Enough of a file to notice that it has been edited.
@@ -303,6 +319,13 @@ fn read_conf(path: &Path, dir: &Path) -> Discovered {
         use_preprocessor_cache_mode: conf.use_preprocessor_cache_mode,
         custom_cache_buster: conf.custom_cache_buster,
         extra_hash_files,
+        // Only a refusal is carried forward. `true` is not worth warning about
+        // -- it is what the default already is -- but it must not be able to
+        // overrule a machine that said no.
+        expose_over_mcp: match conf.expose_over_mcp {
+            Some(false) => Some(false),
+            _ => None,
+        },
         // Filled in by `finish`: the file has been found but the walk has not
         // reached the root yet.
         vcs_root: None,
@@ -574,6 +597,35 @@ mod tests {
 
         write(&root, PROJECT_CONF_NAME, "custom_cache_buster = \"v22\"\n");
         assert_eq!(discover(&root).custom_cache_buster.as_deref(), Some("v22"));
+    }
+
+    /// A repository may refuse to have its build state answered for, and may
+    /// not grant it.
+    ///
+    /// Every other key here shapes a cache key, where the rule is that the
+    /// worst a hostile repository can do is make its own builds slower. This
+    /// one governs whether build state can be *read*, so it only satisfies
+    /// that rule in one direction: a checkout that could switch the surface on
+    /// would be a way to make a machine answer questions about itself by being
+    /// cloned onto it.
+    #[test]
+    fn a_project_may_decline_mcp_but_may_not_demand_it() {
+        let t = tempfile::tempdir().unwrap();
+        let root = t.path().join("repo");
+        std::fs::create_dir_all(&root).unwrap();
+
+        write(&root, PROJECT_CONF_NAME, "expose_over_mcp = false\n");
+        assert_eq!(found(&root).expose_over_mcp, Some(false), "a refusal counts");
+
+        write(&root, PROJECT_CONF_NAME, "expose_over_mcp = true\n");
+        assert_eq!(
+            found(&root).expose_over_mcp,
+            None,
+            "and a demand is not a refusal -- it leaves the machine's setting standing"
+        );
+
+        write(&root, PROJECT_CONF_NAME, "");
+        assert_eq!(found(&root).expose_over_mcp, None);
     }
 
     #[test]

@@ -6,6 +6,11 @@
 # If specified, wait this long for the server to start up.
 server_startup_timeout_ms = 10000
 
+# Whether the out-of-band MCP query surface may be used on this machine
+# (see docs/MCP.md). Enabled by default; set it to false on a build
+# server, where there is no agent to serve. SCCACHE_MCP overrides it.
+mcp = true
+
 # Base directories to strip from source paths during cache key
 # computation.
 #
@@ -212,6 +217,19 @@ Note that some env variables may need sccache server restart to take effect.
   - This option will only applied to newly compressed cache and don't affect existing cache.
   - If you want to be apply to all cache, you should reset cache and make new cache.
 * `SCCACHE_LOG_MILLIS` when set (to any value), enables millisecond precision timestamps in log output instead of the default second precision.
+* `SCCACHE_MCP` set to `false` (or `off`/`0`) disables the [MCP query
+  surface](MCP.md) on this machine. Enabled by default, so a developer machine
+  needs no configuration.
+
+  **Turn it off on a build server.** The surface exists so that an agent can ask
+  why a build missed; where there is no agent it is only a way to read build
+  state with nobody to serve. The environment variable outranks the `mcp` key in
+  the config file, so a CI job can disable it without editing machine
+  configuration.
+
+  Read by the **server** at startup, like the cache settings: change it and
+  restart with `sccache --stop-server`. `sccache-mcp` also refuses to start, so
+  the failure is one clear line rather than an error per tool call.
 * `SCCACHE_AGENT_ID` names the caller, so `--show-stats` can break its numbers
   down per caller instead of reporting one sum with no addends. One daemon
   serves every build on the machine, and "2557 hits" does not say whether one

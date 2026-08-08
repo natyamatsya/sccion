@@ -20,6 +20,7 @@
 //! *is* the state, and a second cache in front of it could only be wrong.
 
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use crate::client::{ServerConnection, connect_to_server};
@@ -31,6 +32,26 @@ pub use crate::checkenv::EnvReport;
 pub use crate::protocol::WorkspaceInfo;
 pub use crate::missrecord::{Classification, DirectState, MissRecord};
 pub use crate::server::{AgentStats, DistInfo, ServerInfo, ServerStats};
+
+/// Whether this machine allows the MCP query surface at all.
+///
+/// Resolved once at daemon startup from the configuration, the same way the
+/// object encoding is, because it is a property of the machine for the
+/// daemon's lifetime rather than of any one compilation.
+///
+/// Defaults to enabled so that a developer machine needs no configuration. A
+/// build server should turn it off: the surface exists so an agent can ask why
+/// a build missed, and where there is no agent it is a way to read build state
+/// with nobody to serve.
+static MCP_ENABLED: AtomicBool = AtomicBool::new(true);
+
+pub fn set_mcp_enabled(enabled: bool) {
+    MCP_ENABLED.store(enabled, Ordering::Relaxed);
+}
+
+pub fn mcp_enabled() -> bool {
+    MCP_ENABLED.load(Ordering::Relaxed)
+}
 
 /// The daemon answered, and said no.
 ///

@@ -808,6 +808,13 @@ pub struct FileConfig {
     /// Base directories to strip from paths for cache key computation.
     pub basedirs: Vec<String>,
     pub client_side_mode: bool,
+    /// Whether the out-of-band MCP query surface may be used at all.
+    ///
+    /// `None` means the machine has no opinion and the default (enabled)
+    /// stands. Set it to `false` on a build server: the surface exists to let
+    /// an agent ask why a build missed, and on a machine with no agent it is
+    /// only an attack surface with nobody to serve.
+    pub mcp: Option<bool>,
     /// How cache entry payloads are stored. Applies to whichever backend is in
     /// use, which is why it is not under `[cache.*]`.
     pub compression: Option<CompressionConfig>,
@@ -897,6 +904,7 @@ pub struct EnvConfig {
     cache: CacheConfigs,
     basedirs: Option<Vec<String>>,
     client_side_mode: Option<bool>,
+    mcp: Option<bool>,
 }
 
 fn string_from_env_var(env_var_name: &str) -> Option<String> {
@@ -1300,11 +1308,13 @@ fn config_from_env() -> Result<EnvConfig> {
     });
 
     let client_side_mode = bool_from_env_var("SCCACHE_CLIENT_SIDE")?;
+    let mcp = bool_from_env_var("SCCACHE_MCP")?;
 
     Ok(EnvConfig {
         cache,
         basedirs,
         client_side_mode,
+        mcp,
     })
 }
 
@@ -1342,6 +1352,8 @@ pub struct Config {
     /// Similar to ccache's CCACHE_BASEDIR.
     pub basedirs: Vec<Vec<u8>>,
     pub client_side_mode: bool,
+    /// Whether the MCP query surface may be used on this machine.
+    pub mcp_enabled: bool,
     /// How cache entry payloads are stored, when the file said. `None` leaves
     /// it to `SCCACHE_CACHE_COMPRESSION` and the default.
     pub object_encoding: Option<ObjectEncoding>,
@@ -1368,6 +1380,7 @@ impl Config {
             server_startup_timeout_ms,
             basedirs: file_basedirs,
             client_side_mode: file_client_side_mode,
+            mcp: file_mcp,
             compression,
             zstd_level,
         } = file_conf;
@@ -1380,6 +1393,7 @@ impl Config {
             cache,
             basedirs: env_basedirs,
             client_side_mode: env_client_side_mode,
+            mcp: env_mcp,
         } = env_conf;
         conf_caches.merge(cache);
 
@@ -1418,6 +1432,10 @@ impl Config {
             // Client-side mode is also not compatible with distributed compilation.
             && dist.scheduler_url.is_none();
 
+        // Enabled unless something says otherwise, and the environment outranks
+        // the file so a CI job can turn it off without editing machine config.
+        let mcp_enabled = env_mcp.or(file_mcp).unwrap_or(true);
+
         let (caches, fallback_cache) = conf_caches.clone().into_fallback();
         Ok(Self {
             cache: caches,
@@ -1427,6 +1445,7 @@ impl Config {
             server_startup_timeout,
             basedirs,
             client_side_mode,
+            mcp_enabled,
             object_encoding: compression.map(|c| match c {
                 CompressionConfig::None => ObjectEncoding::Uncompressed,
                 CompressionConfig::Zstd => ObjectEncoding::Zstd(zstd_level.unwrap_or(3)),
@@ -1733,6 +1752,7 @@ fn config_overrides() {
         },
         basedirs: None,
         client_side_mode: None,
+        mcp: None,
     };
 
     let file_conf = FileConfig {
@@ -1761,6 +1781,7 @@ fn config_overrides() {
         server_startup_timeout_ms: None,
         basedirs: vec![],
         client_side_mode: false,
+        mcp: None,
         compression: None,
         zstd_level: None,
     };
@@ -1817,6 +1838,7 @@ fn config_overrides() {
             server_startup_timeout: None,
             basedirs: vec![],
             client_side_mode: false,
+            mcp_enabled: true,
             object_encoding: None,
         }
     );
@@ -1830,6 +1852,7 @@ fn config_basedirs_overrides() {
         cache: Default::default(),
         basedirs: vec!["C:/env/basedir".to_string()].into(),
         client_side_mode: None,
+        mcp: None,
     };
 
     let file_conf = FileConfig {
@@ -1838,6 +1861,7 @@ fn config_basedirs_overrides() {
         server_startup_timeout_ms: None,
         basedirs: vec!["C:/file/basedir".to_string()],
         client_side_mode: false,
+        mcp: None,
         compression: None,
         zstd_level: None,
     };
@@ -1850,6 +1874,7 @@ fn config_basedirs_overrides() {
         cache: Default::default(),
         basedirs: None,
         client_side_mode: None,
+        mcp: None,
     };
 
     let file_conf = FileConfig {
@@ -1858,6 +1883,7 @@ fn config_basedirs_overrides() {
         server_startup_timeout_ms: None,
         basedirs: vec!["C:/file/basedir".to_string()],
         client_side_mode: false,
+        mcp: None,
         compression: None,
         zstd_level: None,
     };
@@ -1870,6 +1896,7 @@ fn config_basedirs_overrides() {
         cache: Default::default(),
         basedirs: vec![].into(),
         client_side_mode: None,
+        mcp: None,
     };
 
     let file_conf = FileConfig {
@@ -1878,6 +1905,7 @@ fn config_basedirs_overrides() {
         server_startup_timeout_ms: None,
         basedirs: vec!["C:/file/basedir".to_string()],
         client_side_mode: false,
+        mcp: None,
         compression: None,
         zstd_level: None,
     };
@@ -1890,6 +1918,7 @@ fn config_basedirs_overrides() {
         cache: Default::default(),
         basedirs: vec![].into(),
         client_side_mode: None,
+        mcp: None,
     };
 
     let file_conf = FileConfig {
@@ -1898,6 +1927,7 @@ fn config_basedirs_overrides() {
         server_startup_timeout_ms: None,
         basedirs: vec![],
         client_side_mode: false,
+        mcp: None,
         compression: None,
         zstd_level: None,
     };
@@ -1914,6 +1944,7 @@ fn config_basedirs_overrides() {
         cache: Default::default(),
         basedirs: vec!["/env/basedir".to_string()].into(),
         client_side_mode: None,
+        mcp: None,
     };
 
     let file_conf = FileConfig {
@@ -1922,6 +1953,7 @@ fn config_basedirs_overrides() {
         server_startup_timeout_ms: None,
         basedirs: vec!["/file/basedir".to_string()],
         client_side_mode: false,
+        mcp: None,
         compression: None,
         zstd_level: None,
     };
@@ -1934,6 +1966,7 @@ fn config_basedirs_overrides() {
         cache: Default::default(),
         basedirs: None,
         client_side_mode: None,
+        mcp: None,
     };
 
     let file_conf = FileConfig {
@@ -1942,6 +1975,7 @@ fn config_basedirs_overrides() {
         server_startup_timeout_ms: None,
         basedirs: vec!["/file/basedir".to_string()],
         client_side_mode: false,
+        mcp: None,
         compression: None,
         zstd_level: None,
     };
@@ -1954,6 +1988,7 @@ fn config_basedirs_overrides() {
         cache: Default::default(),
         basedirs: vec![].into(),
         client_side_mode: None,
+        mcp: None,
     };
 
     let file_conf = FileConfig {
@@ -1962,6 +1997,7 @@ fn config_basedirs_overrides() {
         server_startup_timeout_ms: None,
         basedirs: vec!["/file/basedir".to_string()],
         client_side_mode: false,
+        mcp: None,
         compression: None,
         zstd_level: None,
     };
@@ -1974,6 +2010,7 @@ fn config_basedirs_overrides() {
         cache: Default::default(),
         basedirs: vec![].into(),
         client_side_mode: None,
+        mcp: None,
     };
 
     let file_conf = FileConfig {
@@ -1982,6 +2019,7 @@ fn config_basedirs_overrides() {
         server_startup_timeout_ms: None,
         basedirs: vec![],
         client_side_mode: false,
+        mcp: None,
         compression: None,
         zstd_level: None,
     };
@@ -1992,6 +2030,7 @@ fn config_basedirs_overrides() {
         cache: Default::default(),
         basedirs: None,
         client_side_mode: None,
+        mcp: None,
     };
 
     let file_conf = FileConfig {
@@ -2000,6 +2039,7 @@ fn config_basedirs_overrides() {
         server_startup_timeout_ms: None,
         basedirs: vec![],
         client_side_mode: false,
+        mcp: None,
         compression: None,
         zstd_level: None,
     };
@@ -2227,6 +2267,7 @@ fn test_env_basedirs_with_spaces() {
         server_startup_timeout_ms: None,
         basedirs: vec![],
         client_side_mode: false,
+        mcp: None,
         compression: None,
         zstd_level: None,
     };
@@ -2264,6 +2305,7 @@ fn test_env_basedirs_with_spaces() {
         server_startup_timeout_ms: None,
         basedirs: vec![],
         client_side_mode: false,
+        mcp: None,
         compression: None,
         zstd_level: None,
     };
@@ -2699,6 +2741,7 @@ key_prefix = "cosprefix"
             server_startup_timeout_ms: Some(10000),
             basedirs: vec![],
             client_side_mode: false,
+            mcp: None,
             compression: None,
             zstd_level: None,
         }
@@ -2795,6 +2838,7 @@ size = "7g"
             server_startup_timeout_ms: None,
             basedirs: vec![],
             client_side_mode: false,
+            mcp: None,
             compression: None,
             zstd_level: None,
         }
@@ -2814,6 +2858,7 @@ fn test_integration_config_normalizes_and_strips() {
         cache: Default::default(),
         basedirs: None,
         client_side_mode: None,
+        mcp: None,
     };
 
     let file_conf = FileConfig {
@@ -2822,6 +2867,7 @@ fn test_integration_config_normalizes_and_strips() {
         server_startup_timeout_ms: None,
         basedirs: vec!["/home/user/project".to_string()],
         client_side_mode: false,
+        mcp: None,
         compression: None,
         zstd_level: None,
     };
@@ -2851,6 +2897,7 @@ fn test_integration_normalized_path_with_double_slashes() {
         cache: Default::default(),
         basedirs: None,
         client_side_mode: None,
+        mcp: None,
     };
 
     let file_conf = FileConfig {
@@ -2859,6 +2906,7 @@ fn test_integration_normalized_path_with_double_slashes() {
         server_startup_timeout_ms: None,
         basedirs: vec!["/home//user///project/".to_string()],
         client_side_mode: false,
+        mcp: None,
         compression: None,
         zstd_level: None,
     };
@@ -2884,6 +2932,7 @@ fn test_integration_windows_path_normalization() {
         cache: Default::default(),
         basedirs: None,
         client_side_mode: None,
+        mcp: None,
     };
 
     let file_conf = FileConfig {
@@ -2892,6 +2941,7 @@ fn test_integration_windows_path_normalization() {
         server_startup_timeout_ms: None,
         basedirs: vec!["C:\\Users\\Test\\Project".to_string()],
         client_side_mode: false,
+        mcp: None,
         compression: None,
         zstd_level: None,
     };
@@ -2918,6 +2968,7 @@ fn test_integration_cow_borrowed_when_no_match() {
         cache: Default::default(),
         basedirs: None,
         client_side_mode: None,
+        mcp: None,
     };
 
     let file_conf = FileConfig {
@@ -2926,6 +2977,7 @@ fn test_integration_cow_borrowed_when_no_match() {
         server_startup_timeout_ms: None,
         basedirs: vec!["/home/user/project".to_string()],
         client_side_mode: false,
+        mcp: None,
         compression: None,
         zstd_level: None,
     };
@@ -2952,6 +3004,7 @@ fn test_integration_cow_borrowed_when_empty_basedirs() {
         cache: Default::default(),
         basedirs: None,
         client_side_mode: None,
+        mcp: None,
     };
 
     let file_conf = FileConfig {
@@ -2960,6 +3013,7 @@ fn test_integration_cow_borrowed_when_empty_basedirs() {
         server_startup_timeout_ms: None,
         basedirs: vec![],
         client_side_mode: false,
+        mcp: None,
         compression: None,
         zstd_level: None,
     };
@@ -2985,6 +3039,7 @@ fn test_integration_multiple_basedirs_longest_match() {
         cache: Default::default(),
         basedirs: None,
         client_side_mode: None,
+        mcp: None,
     };
 
     let file_conf = FileConfig {
@@ -2993,6 +3048,7 @@ fn test_integration_multiple_basedirs_longest_match() {
         server_startup_timeout_ms: None,
         basedirs: vec!["/home/user".to_string(), "/home/user/project".to_string()],
         client_side_mode: false,
+        mcp: None,
         compression: None,
         zstd_level: None,
     };
@@ -3023,6 +3079,7 @@ fn test_integration_paths_with_dots_normalized() {
         cache: Default::default(),
         basedirs: None,
         client_side_mode: None,
+        mcp: None,
     };
 
     let file_conf = FileConfig {
@@ -3031,6 +3088,7 @@ fn test_integration_paths_with_dots_normalized() {
         server_startup_timeout_ms: None,
         basedirs: vec!["/home/user/./project/../project".to_string()],
         client_side_mode: false,
+        mcp: None,
         compression: None,
         zstd_level: None,
     };
@@ -3057,6 +3115,7 @@ fn test_integration_windows_mixed_slashes() {
         cache: Default::default(),
         basedirs: None,
         client_side_mode: None,
+        mcp: None,
     };
 
     let file_conf = FileConfig {
@@ -3065,6 +3124,7 @@ fn test_integration_windows_mixed_slashes() {
         server_startup_timeout_ms: None,
         basedirs: vec!["C:\\Users\\test\\project".to_string()],
         client_side_mode: false,
+        mcp: None,
         compression: None,
         zstd_level: None,
     };
@@ -3235,6 +3295,7 @@ fn compression_can_be_configured() {
             server_startup_timeout_ms: None,
             basedirs: vec![],
             client_side_mode: false,
+            mcp: None,
             compression,
             zstd_level,
         };
@@ -3242,6 +3303,7 @@ fn compression_can_be_configured() {
             cache: Default::default(),
             basedirs: None,
             client_side_mode: None,
+            mcp: None,
         };
         Config::from_env_and_file_configs(env_conf, file_conf)
             .unwrap()

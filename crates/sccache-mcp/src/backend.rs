@@ -28,6 +28,15 @@ pub struct DaemonBackend {
 impl DaemonBackend {
     pub fn new() -> Result<Self> {
         let config = sccache::config::Config::load()?;
+        // The daemon refuses too, and it is the authority -- this only turns
+        // "every tool call fails" into one clear line at startup, which is what
+        // an operator who disabled this on a build server should see.
+        if !config.mcp_enabled {
+            anyhow::bail!(
+                "the MCP query surface is disabled on this machine; \
+                 set `mcp = true` in the sccache config or SCCACHE_MCP=true to enable it"
+            );
+        }
         Ok(DaemonBackend {
             daemon: sccache::api::Daemon::from_config(&config),
             config,

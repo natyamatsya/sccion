@@ -95,9 +95,16 @@ extra_hash_files = ["toolchain.lock", "generated/buildinfo.h"]
 # invalidate the project's own entries. The counterpart of
 # SCCACHE_C_CUSTOM_CACHE_BUSTER.
 custom_cache_buster = "v2"
+
+# Refuse to have this checkout's build state answered for over MCP (see
+# docs/MCP.md). Only `false` is honoured: a project may decline, and cannot
+# grant. See below for why this one key is one-directional.
+expose_over_mcp = false
 ```
 
 For each of these, the most specific answer wins: the environment variable for this invocation, then the project file, then the machine-wide config. A file that says nothing about a setting leaves it alone — absent is not the same as `false`.
+
+`expose_over_mcp` is the exception, and deliberately so. Every other key here shapes cache keys, where the rule below is satisfied in both directions. This one governs whether build state can be *read*, so it only satisfies it in the refusing direction: a checkout that could switch the MCP surface **on** would be a way to make a machine start answering questions about itself by being cloned onto it. So `false` is honoured and `true` is ignored, leaving the machine's setting standing. Disabling it machine-wide is `SCCACHE_MCP=false` or `mcp = false` in the config, and that always wins.
 
 Only these keys are honoured, and the file is ignored (with a warning) if it contains anything else. It travels with the repository, so anything it can set is something a repository can set: the test a key has to pass is that the worst a hostile repository could do with it is make its own builds slower or less shared. Settings that could redirect a build — where the cache lives, what the compiler is, which server to talk to — are deliberately not available here, for the same reason `.clang-format` cannot run a command.
 

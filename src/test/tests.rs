@@ -540,6 +540,45 @@ fn test_a_workspace_handle_is_stable_and_scopes_what_it_can_see() {
     child.join().unwrap();
 }
 
+/// A checkout that declines MCP is refused a handle, which closes every tool.
+///
+/// Registration is the single gate on purpose: every other tool needs a handle,
+/// so there is one place to enforce this rather than five, and refusing outright
+/// beats answering emptily -- an empty answer reads as "nothing to report".
+#[test]
+fn test_a_checkout_can_decline_to_be_answered_for_over_mcp() {
+    let f = TestFixture::new();
+    let checkout = f.tempdir.path().join("private");
+    std::fs::create_dir_all(checkout.join(".git")).unwrap();
+    std::fs::write(
+        checkout.join(crate::projectconf::PROJECT_CONF_NAME),
+        "expose_over_mcp = false\n",
+    )
+    .unwrap();
+
+    let (addr, sender, _creator, child) = run_server_thread(f.tempdir.path(), None);
+    let mut conn = connect_to_server(&addr).unwrap();
+
+    let r = conn
+        .request(crate::protocol::Request::RegisterWorkspace {
+            path: checkout.clone().into_os_string(),
+        })
+        .unwrap();
+    match r {
+        crate::protocol::Response::Workspace(Err(msg)) => {
+            assert!(
+                msg.contains("expose_over_mcp"),
+                "the refusal has to say which setting caused it: {msg}"
+            );
+        }
+        other => panic!("a declining checkout must not get a handle: {other:?}"),
+    }
+
+    drop(conn);
+    sender.send(ServerMessage::Shutdown).ok().unwrap();
+    child.join().unwrap();
+}
+
 /// A compilation sccache refuses before parsing used to produce no record at
 /// all. It is the most important kind to record: nothing about it will ever be
 /// cached, so a caller that treats it as an ordinary miss retries forever.
