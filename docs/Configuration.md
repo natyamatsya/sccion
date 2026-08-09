@@ -202,12 +202,27 @@ Note that some env variables may need sccache server restart to take effect.
   (or `off`/`false`/`0`) to store cache entries verbatim. Anything else, or unset,
   keeps zstd at `SCCACHE_CACHE_ZSTD_LEVEL`.
 
-  This trades cache capacity for a cheaper cache hit. Measured on a 1.4 MiB MSVC
-  `/Z7` object: the entry grows from 263 KiB to 1,458 KiB (5.5x), while the
-  server-side work to materialize a hit falls from 5.1 ms to 3.0 ms and
-  end-to-end hit latency from 27.0 ms to 24.5 ms. Whether that shows up in a
-  build's wall clock depends on whether materialization is on its critical path —
-  at high `-j` it usually is not.
+  Per object this trades cache capacity for a cheaper cache hit. Measured on a
+  1.4 MiB MSVC `/Z7` object: the entry grows from 263 KiB to 1,458 KiB (5.5x),
+  while the server-side work to materialize a hit falls from 5.1 ms to 3.0 ms and
+  end-to-end hit latency from 27.0 ms to 24.5 ms.
+
+  **Across a whole build that trade does not survive, and it inverts.** On a
+  2557-unit MSVC + Qt + CMake project, each arm populated from cold into its own
+  cache and then rebuilt warm at 2557/2557 hits:
+
+  | | cold | warm | cache |
+  |---|---|---|---|
+  | `none` | 472.3 s | **121.0 s** | **7,358 MB** |
+  | zstd 3 | 471.8 s | **108.1 s** | **1,996 MB** |
+
+  Compression is 10.7% *faster* warm and 3.69x smaller, and costs nothing on the
+  cold side. A warm build reads the whole cache, and 7.4 GB of reads costs more
+  than 2.0 GB plus the decompression — so the per-object saving is real and the
+  build-level effect is the opposite sign. Prefer the default unless something
+  else argues for `none`; the reason it exists is that a compressed blob shares
+  no extents with the object it expands to, which is what would rule out
+  filesystem-level block cloning.
 
   Both settings are read by the **server**, once, at startup: change either and
   restart it with `sccache --stop-server`. Entries record their own encoding, so
