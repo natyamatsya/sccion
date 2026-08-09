@@ -431,18 +431,8 @@ impl<T: CommandCreatorSync> CompilerHasher<T> for MocHasher {
             // marked uncacheable so nothing is stored under it.
             Err(why) => {
                 debug!("moc: not caching ({why})");
-                let mut m = Digest::new();
-                m.update(manifest_key.as_bytes());
-                m.update(
-                    &std::time::SystemTime::now()
-                        .elapsed()
-                        .unwrap_or_default()
-                        .as_nanos()
-                        .to_le_bytes(),
-                );
-                m.update(&std::process::id().to_le_bytes());
                 return Ok(HashResult {
-                    key: m.finish(),
+                    key: crate::compiler::c::uncacheable_key(&manifest_key),
                     compilation: Box::new(MocCompilation {
                         executable: self.executable.clone(),
                         parsed: self.parsed.clone(),

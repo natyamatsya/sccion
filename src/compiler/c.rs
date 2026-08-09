@@ -157,7 +157,10 @@ pub fn dependency_result_key(
 /// The compilation still has to come back with *a* key -- the caller looks one
 /// up before it is told the result is uncacheable -- and any key derived only
 /// from the compilation itself is a key some other run could legitimately hold.
-fn uncacheable_key(manifest_key: &str) -> String {
+///
+/// `pub(crate)` because moc has the same problem and must not solve it a
+/// second, subtly different way.
+pub(crate) fn uncacheable_key(manifest_key: &str) -> String {
     let mut m = Digest::new();
     m.update(manifest_key.as_bytes());
     m.update(b"uncacheable");
