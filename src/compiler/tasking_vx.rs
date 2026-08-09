@@ -405,8 +405,7 @@ mod test {
         ARGS, Language, OsString, ParsedArguments, PathBuf, dist, generate_compile_commands,
         parse_arguments,
     };
-    use crate::compiler::c::PreprocessorOutput;
-use crate::compiler::c::ArtifactDescriptor;
+    use crate::compiler::c::ArtifactDescriptor;
     use crate::compiler::*;
     use crate::mock_command::*;
     use crate::server;
