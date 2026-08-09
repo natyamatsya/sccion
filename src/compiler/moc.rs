@@ -375,6 +375,7 @@ impl<T: CommandCreatorSync> CompilerHasher<T> for MocHasher {
                             weak_toolchain_key: self.executable_digest.clone(),
                             preprocessor_cache_hit: Some(true),
                             key_components: None,
+                        compiled_for: None,
                         });
                     }
                 }
@@ -455,6 +456,7 @@ impl<T: CommandCreatorSync> CompilerHasher<T> for MocHasher {
                     weak_toolchain_key: self.executable_digest.clone(),
                     preprocessor_cache_hit: Some(false),
                     key_components: None,
+                compiled_for: None,
                 });
             }
         };
@@ -488,6 +490,7 @@ impl<T: CommandCreatorSync> CompilerHasher<T> for MocHasher {
             weak_toolchain_key: self.executable_digest.clone(),
             preprocessor_cache_hit: Some(false),
             key_components,
+            compiled_for: None,
         })
     }
 

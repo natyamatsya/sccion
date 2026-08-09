@@ -14,6 +14,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::time::Instant;
+
 use crate::cache::{FileObjectSource, Storage};
 use crate::compiler::preprocessor_cache::preprocessor_cache_entry_hash_key;
 use crate::compiler::{
@@ -582,6 +584,12 @@ where
             env_vars: command.get_env_vars(),
             cwd: command.get_cwd(),
         };
+        // This *is* the compilation, so this is where its cost has to be
+        // measured. `get_cached_or_compile` times the later
+        // `dist_or_local_compile`, which on this path has nothing left to do --
+        // leaving "Average compiler" reading 0.000 s for every build with
+        // dependency keying on, which is the fork's default.
+        let compile_started = Instant::now();
         let output = match command.run(creator).await {
             Ok(output) => output,
             // A compilation that fails is not a failure of sccache, and must
@@ -593,6 +601,7 @@ where
                 Err(e) => return Err(e),
             },
         };
+        let compiled_for = compile_started.elapsed();
         let produced = AlreadyProduced {
             executable: command.executable.clone(),
             arguments: command.arguments.clone(),
@@ -691,6 +700,8 @@ where
             weak_toolchain_key,
             preprocessor_cache_hit: Some(false),
             key_components: None,
+            // The one path that has already compiled by this point.
+            compiled_for: Some(compiled_for),
         })
     }
 }
@@ -944,6 +955,7 @@ where
                             weak_toolchain_key,
                             preprocessor_cache_hit: Some(true),
                             key_components: None,
+                        compiled_for: None,
                         });
                     } else {
                         debug!("Preprocessor cache miss: {preprocessor_key}");
@@ -1181,6 +1193,7 @@ where
             weak_toolchain_key,
             preprocessor_cache_hit,
             key_components,
+            compiled_for: None,
         })
     }
 

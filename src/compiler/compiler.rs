@@ -672,8 +672,14 @@ where
             out_pretty,
             fmt_duration_as_secs(&start.elapsed())
         );
-        let (key, compilation, weak_toolchain_key, preprocessor_cache_hit, key_components) =
-            match result {
+        let (
+            key,
+            compilation,
+            weak_toolchain_key,
+            preprocessor_cache_hit,
+            key_components,
+            compiled_for,
+        ) = match result {
             Err(e) => {
                 return match e.downcast::<ProcessError>() {
                     Ok(ProcessError(output)) => {
@@ -689,6 +695,7 @@ where
                 weak_toolchain_key,
                 preprocessor_cache_hit,
                 key_components,
+                compiled_for,
             }) => {
                 if let Some(hit) = preprocessor_cache_hit {
                     service.record_preprocessor_cache_lookup(hit).await;
@@ -699,6 +706,7 @@ where
                     weak_toolchain_key,
                     preprocessor_cache_hit,
                     key_components,
+                    compiled_for,
                 )
             }
         };
@@ -1034,7 +1042,13 @@ where
                     out_pretty.clone(),
                 )
                 .await?;
-                let duration_compilation = start.elapsed();
+                // Dependency keying already compiled this translation unit while
+                // working out the key, and the step just timed had nothing left
+                // to do. Without adding that back, the compilation's whole cost
+                // goes unrecorded -- 42 µs charged for 1.34 s of work, and
+                // `Average compiler` reads 0.000 s on the fork's default path.
+                let duration_compilation =
+                    start.elapsed() + compiled_for.unwrap_or_default();
 
                 // The compile has now said whether this compilation could ever
                 // have been cached, which is the last thing the record was
@@ -1495,6 +1509,17 @@ where
     /// `None` is the normal case: filling it walks everything that went into
     /// the key a second time, including the preprocessed text.
     pub key_components: Option<crate::missrecord::KeyComponents>,
+    /// Time already spent compiling while working out the key.
+    ///
+    /// Dependency keying compiles the translation unit *here*, to ask the
+    /// compiler what it read, and keeps the object. The miss path downstream
+    /// then times a step that has nothing left to do, so without this the whole
+    /// cost of the compilation goes unrecorded: measured at 42 µs against 1.34 s
+    /// of real work, and `Average compiler` read 0.000 s for every build in the
+    /// fork's default configuration.
+    ///
+    /// `None` on every path that has not compiled yet, which is the normal one.
+    pub compiled_for: Option<std::time::Duration>,
 }
 
 /// Possible results of parsing compiler arguments.
