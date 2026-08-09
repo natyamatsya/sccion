@@ -1239,10 +1239,31 @@ pub fn strip_basedirs_in_arg<'a>(arg: &'a [u8], basedirs: &[Vec<u8>]) -> Cow<'a,
                 matched = true;
                 i += n.len();
             }
-            None => {
-                out.push(arg[i]);
-                i += 1;
-            }
+            // A basedir carries a trailing separator so that it only ever
+            // matches whole path components -- `/foo/` must not strip `/foobar`.
+            // The side effect is that the basedir *itself* never matches, and
+            // build systems pass exactly that: CMake puts `-I<source dir>` on
+            // every moc command line, naming the checkout root with no trailing
+            // slash. Measured on two worktrees of one Qt project, that single
+            // argument was the whole reason 379 of 462 moc invocations keyed
+            // differently and shared nothing.
+            //
+            // Accept the separator-less form only at the very end of the
+            // argument, where there is no following component for it to run
+            // into -- which is what keeps the boundary rule intact.
+            None => match sorted
+                .iter()
+                .find(|n| n.len() > 1 && haystack[i..] == n[..n.len() - 1])
+            {
+                Some(n) => {
+                    matched = true;
+                    i += n.len() - 1;
+                }
+                None => {
+                    out.push(arg[i]);
+                    i += 1;
+                }
+            },
         }
     }
     if matched {
@@ -1826,6 +1847,29 @@ mod tests {
         let input = b"";
         let output = super::strip_basedirs(input, std::slice::from_ref(&basedir));
         assert_eq!(&*output, input);
+    }
+
+    /// `-I<checkout root>` names the basedir with no trailing separator.
+    ///
+    /// CMake emits it on every moc command line, and it was the single reason
+    /// two worktrees of the same repository keyed 379 of 462 moc invocations
+    /// differently -- everything else on those command lines stripped cleanly.
+    #[test]
+    fn test_strip_basedir_in_arg_when_it_is_the_whole_path() {
+        let basedir = b"/home/user/project/".to_vec();
+        let dirs = std::slice::from_ref(&basedir);
+
+        let out = super::strip_basedirs_in_arg(b"-I/home/user/project", dirs);
+        assert_eq!(&*out, b"-I");
+
+        // The boundary rule still holds: a sibling whose name merely starts
+        // with the basedir must not be touched.
+        let out = super::strip_basedirs_in_arg(b"-I/home/user/project-other", dirs);
+        assert_eq!(&*out, b"-I/home/user/project-other");
+
+        // And the ordinary case is unchanged.
+        let out = super::strip_basedirs_in_arg(b"-I/home/user/project/src", dirs);
+        assert_eq!(&*out, b"-Isrc");
     }
 
     #[test]
