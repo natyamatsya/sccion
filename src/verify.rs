@@ -134,6 +134,45 @@ pub fn worth_comparing(path: &Path) -> bool {
     )
 }
 
+/// Why this compilation was never going to reproduce, when that is known.
+///
+/// A compilation that does not reproduce its own output cannot be verified, and
+/// the advice that used to be given — build with `/Brepro` — is useless to a
+/// build that already does. On one real Windows build **every** sampled hit came
+/// back unverifiable with `/Brepro` already set, and the cause was a different
+/// flag entirely.
+///
+/// `/dynamicdeopt` emits a `.pmd_optdep` section holding per-compilation
+/// identifiers. Measured: the same source compiled twice with the flag produces
+/// objects that differ in that section and in the size of the file; with the
+/// flag removed and nothing else changed, the two objects are byte-identical.
+/// The COFF timestamp differs too, but only as a consequence — under `/Brepro`
+/// it is a hash of the contents.
+///
+/// Naming the flag turns "the compiler is not deterministic" into something the
+/// reader can act on. It does not change the verdict: an unverifiable
+/// compilation stays unverifiable.
+pub fn known_reason_for_irreproducibility(arguments: &[OsString]) -> Option<&'static str> {
+    let has = |needle: &str| {
+        arguments
+            .iter()
+            .any(|a| a.to_string_lossy().to_lowercase().starts_with(needle))
+    };
+    if has("/dynamicdeopt") || has("-dynamicdeopt") {
+        return Some(
+            "/dynamicdeopt writes per-compilation identifiers into .pmd_optdep, so the \
+             object cannot reproduce byte for byte. Verification needs a build without it",
+        );
+    }
+    if !has("/brepro") && !has("-brepro") {
+        return Some(
+            "the object carries a COFF timestamp; build with /Brepro to make \
+             SCCACHE_VERIFY_HITS meaningful",
+        );
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -189,6 +228,32 @@ mod tests {
         assert!(restored.differing().is_empty());
         restored.put_back();
         assert_eq!(std::fs::read(&obj).unwrap(), b"same bytes");
+    }
+
+    /// The advice has to fit the build. Telling a build that already sets
+    /// `/Brepro` to set `/Brepro` is what this replaced, and it was given on
+    /// every sampled hit of a real build whose objects could not reproduce for
+    /// an entirely different reason.
+    #[test]
+    fn an_unverifiable_compilation_names_the_flag_responsible() {
+        let args = |v: &[&str]| v.iter().map(OsString::from).collect::<Vec<_>>();
+
+        let with_deopt = known_reason_for_irreproducibility(&args(&[
+            "/c", "/Z7", "/Brepro", "/dynamicdeopt", "a.cpp",
+        ]))
+        .expect("the flag is present, so the cause is known");
+        assert!(with_deopt.contains(".pmd_optdep"), "{with_deopt}");
+
+        // /Brepro missing is the other knowable cause, and still worth saying.
+        let no_brepro = known_reason_for_irreproducibility(&args(&["/c", "/Z7", "a.cpp"]))
+            .expect("no /Brepro is a knowable cause");
+        assert!(no_brepro.contains("/Brepro"), "{no_brepro}");
+
+        // Both accounted for: nothing to add beyond the generic verdict.
+        assert_eq!(
+            known_reason_for_irreproducibility(&args(&["/c", "/Z7", "/Brepro", "a.cpp"])),
+            None
+        );
     }
 
     /// Dependency files differ between a hit and a fresh compile by design, so

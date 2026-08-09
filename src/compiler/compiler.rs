@@ -953,14 +953,24 @@ where
                                             service.record_miss(alarm, &env_vars);
                                         }
                                     } else {
+                                        // Name the cause when it is known. The
+                                        // advice this used to give -- build with
+                                        // /Brepro -- is useless to a build that
+                                        // already does, which was every sampled
+                                        // hit on the build this was measured on.
+                                        let why = crate::verify::known_reason_for_irreproducibility(
+                                            &command.get_arguments(),
+                                        )
+                                        .unwrap_or(
+                                            "the compiler does not reproduce its own output byte \
+                                             for byte",
+                                        );
                                         warn!(
-                                            "[{}]: {} cannot be verified: the compiler does not \
-                                             reproduce its own output byte for byte, so a \
-                                             difference says nothing about the cache. Build with \
-                                             reproducible output (`/Brepro` for MSVC) to make \
-                                             SCCACHE_VERIFY_HITS meaningful.",
+                                            "[{}]: {} cannot be verified: {}. A difference here \
+                                             says nothing about the cache.",
                                             out_pretty,
                                             differing.len(),
+                                            why,
                                         );
                                     }
                                 }
