@@ -36,6 +36,7 @@ use crate::compiler::{
 };
 use crate::dist;
 use crate::mock_command::CommandCreatorSync;
+use crate::missrecord::KeyComponents;
 use crate::util::{Digest, run_input_output, strip_basedirs_in_arg};
 
 use crate::errors::*;
@@ -245,6 +246,73 @@ pub struct MocHasher {
 }
 
 impl MocHasher {
+    /// The key's parts, for [`crate::missrecord::KeyComponents`].
+    ///
+    /// moc does not build its key the way a C compilation does -- there is no
+    /// preprocessed text, and no environment or working directory in the key at
+    /// all -- so the mapping is stated here rather than guessed at by a reader:
+    ///
+    /// * `compiler` -- the cache format and the moc executable's digest.
+    /// * `arguments` -- the hashed arguments, basedir-stripped.
+    /// * `inputs` -- the source moc read, then everything it reported reading.
+    ///   Both are basedir-stripped, so a difference here between two checkouts
+    ///   means the *content* differs rather than the path.
+    /// * the rest are empty, because moc folds nothing into them. An empty
+    ///   digest is the same on both sides of a comparison, so they can never
+    ///   appear as a spurious difference.
+    ///
+    /// Without this, moc records carried no components at all, and
+    /// `compare_keys` could say nothing about them -- which on a Qt project is
+    /// 460 of 2557 compilations, the single largest group in the cross-worktree
+    /// sharing gap.
+    fn components(
+        &self,
+        cwd: &Path,
+        basedirs: &[Vec<u8>],
+        includes: &[(String, PathBuf)],
+    ) -> KeyComponents {
+        let empty = Digest::new().finish();
+        let compiler = {
+            let mut m = Digest::new();
+            m.update(MOC_CACHE_VERSION);
+            m.update(self.executable_digest.as_bytes());
+            m.finish()
+        };
+        let arguments = {
+            let mut m = Digest::new();
+            for a in &self.parsed.hashed_args {
+                let stripped = strip_basedirs_in_arg(a.as_encoded_bytes(), basedirs);
+                m.update(&(stripped.len() as u64).to_le_bytes());
+                m.update(&stripped);
+            }
+            m.finish()
+        };
+        let inputs = {
+            let mut m = Digest::new();
+            let input = cwd.join(&self.parsed.input);
+            m.update(&strip_basedirs_in_arg(
+                input.as_os_str().as_encoded_bytes(),
+                basedirs,
+            ));
+            for (digest, path) in includes {
+                let stripped =
+                    strip_basedirs_in_arg(path.as_os_str().as_encoded_bytes(), basedirs);
+                m.update(&(stripped.len() as u64).to_le_bytes());
+                m.update(&stripped);
+                m.update(digest.as_bytes());
+            }
+            m.finish()
+        };
+        KeyComponents {
+            compiler,
+            arguments,
+            extra_files: empty.clone(),
+            env: empty.clone(),
+            working_directory: empty,
+            inputs,
+        }
+    }
+
     /// Key for the manifest: identifies *which* compilation this is, before
     /// anything is known about what it reads.
     fn manifest_key(&self, cwd: &Path, basedirs: &[Vec<u8>]) -> String {
@@ -392,6 +460,9 @@ impl<T: CommandCreatorSync> CompilerHasher<T> for MocHasher {
         };
 
         let key = dependency_result_key(&manifest_key, &includes, &basedirs);
+        // Computed here because `includes` is consumed by the manifest below.
+        let key_components = crate::missrecord::trace_components(&env_vars)
+            .then(|| self.components(&cwd, &basedirs, &includes));
 
         if config.use_preprocessor_cache_mode {
             let mut entry = PreprocessorCacheEntry::new();
@@ -416,7 +487,7 @@ impl<T: CommandCreatorSync> CompilerHasher<T> for MocHasher {
             }),
             weak_toolchain_key: self.executable_digest.clone(),
             preprocessor_cache_hit: Some(false),
-            key_components: None,
+            key_components,
         })
     }
 
@@ -545,6 +616,53 @@ mod tests {
 
     fn os(v: &[&str]) -> Vec<OsString> {
         v.iter().map(OsString::from).collect()
+    }
+
+    /// Two checkouts running byte-identical moc command lines -- bar the
+    /// checkout root -- must produce the same key.
+    ///
+    /// Measured on a Qt project built in two worktrees: 522 of the moc
+    /// invocations that missed in both had *identical* argument vectors once
+    /// the root was normalised away, and still keyed differently. So the
+    /// arguments were not the problem; hashing them was.
+    #[test]
+    fn identical_arguments_under_two_checkouts_hash_the_same() {
+        let key_for = |root: &str| {
+            let args: Vec<OsString> = [
+                format!("-I{root}/libraries/dbCommon"),
+                format!("-I{root}/build/sc/src"),
+                "-DQT_CORE_LIB".to_string(),
+                "--output-json".to_string(),
+                "-o".to_string(),
+                format!("{root}/build/sc/src/x_autogen/moc_x.cpp"),
+                format!("{root}/src/x.h"),
+            ]
+            .iter()
+            .map(OsString::from)
+            .collect();
+            let parsed = match parse_arguments(&args) {
+                CompilerArguments::Ok(p) => p,
+                o => panic!("{o:?}"),
+            };
+            let hasher = MocHasher {
+                executable: PathBuf::from("moc"),
+                executable_digest: "digest".to_string(),
+                parsed,
+            };
+            let basedirs = vec![crate::config::normalize_basedir(root).unwrap()];
+            let cwd = PathBuf::from(format!("{root}/build/sc"));
+            (
+                hasher.manifest_key(&cwd, &basedirs),
+                hasher.components(&cwd, &basedirs, &[]),
+            )
+        };
+
+        let (key_a, comp_a) = key_for(if cfg!(windows) { "D:/dev/wt-a" } else { "/dev/wt-a" });
+        let (key_b, comp_b) = key_for(if cfg!(windows) { "D:/dev/wt-b" } else { "/dev/wt-b" });
+
+        assert_eq!(comp_a.arguments, comp_b.arguments, "arguments component");
+        assert_eq!(comp_a.inputs, comp_b.inputs, "inputs component");
+        assert_eq!(key_a, key_b, "manifest key");
     }
 
     #[test]
