@@ -958,7 +958,7 @@ where
                             weak_toolchain_key,
                             preprocessor_cache_hit: Some(true),
                             key_components: None,
-                        compiled_for: None,
+                            compiled_for: None,
                         });
                     } else {
                         debug!("Preprocessor cache miss: {preprocessor_key}");
