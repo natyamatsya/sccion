@@ -435,7 +435,10 @@ pub fn check(config: &Config, cwd: &Path) -> EnvReport {
         compression,
         preprocessor_cache_mode,
         preprocessor_cache_settings,
-        defender: defender_report(),
+        // The report gathered above, not a second `defender_report()`: each
+        // call shells out to PowerShell, and two calls can disagree with the
+        // findings that were derived from the first.
+        defender,
         findings: findings.0,
     }
 }
