@@ -59,6 +59,7 @@ mod protocol;
 pub mod server;
 #[doc(hidden)]
 pub mod util;
+pub mod verify;
 
 use std::env;
 

@@ -242,6 +242,29 @@ Note that some env variables may need sccache server restart to take effect.
   printed only when there is more than nothing to say. At most 64 callers are
   tracked separately; the rest share an `<other>` bucket, so the totals stay
   right even when the detail is lost.
+* `SCCACHE_VERIFY_HITS` set to a fraction (`0.02` for one hit in fifty) recompiles
+  that share of cache *hits* and compares the result with what the cache served.
+  Off by default.
+
+  This is the only check for a **wrong hit**. Every other diagnostic looks at
+  misses, because a miss costs time; a wrong hit costs correctness, and a short
+  dependency list produces one rather than a miss. Sampling rather than checking
+  everything is the point — verifying every hit means compiling everything,
+  which is what the cache exists to avoid.
+
+  **The build always keeps what the cache gave it**, whatever the check finds.
+  A diagnostic that substituted a freshly built object would make a build depend
+  on whether sampling happened to select it.
+
+  A mismatch is not reported until sccache has established that the compiler
+  reproduces *its own* output, by compiling a second time. On Windows a COFF
+  object carries a timestamp unless the build asks for reproducibility, so both
+  MSVC and clang fail that test by default and every sampled hit would otherwise
+  look wrong. When they fail it sccache says so and accuses nothing; build with
+  `/Brepro` (MSVC) or `-Brepro` (clang-cl) to make the check meaningful.
+
+  Mismatches are recorded with the classification `wrong_hit` and reported over
+  [MCP](MCP.md) like any other finding.
 * `SCCACHE_TRACE_COMPONENTS` set to `1` records what each cache key was computed
   *from* — compiler, arguments, extra files, environment, working directory and
   the inputs — each as its own digest. A key is one opaque string, so two keys
@@ -281,7 +304,7 @@ Note that some env variables may need sccache server restart to take effect.
 
   | # | Column | Notes |
   |---|---|---|
-  | 1 | classification | `cold`, `read_error`, `timed_out`, `forced_recache`, `forced_no_cache`, `uncacheable:<reason>`, or `hit` under `SCCACHE_TRACE_ALL` |
+  | 1 | classification | `cold`, `read_error`, `timed_out`, `forced_recache`, `forced_no_cache`, `uncacheable:<reason>`, `hit` under `SCCACHE_TRACE_ALL`, or `wrong_hit` |
   | 2 | preprocessor cache mode | `direct-hit`, `direct-miss`, `direct-off` |
   | 3 | cache key | `-` when the compilation was refused before one could be computed |
   | 4 | output | usually a basename; the compiler's own name when the arguments were never parsed |

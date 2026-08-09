@@ -753,6 +753,11 @@ where
         // translation unit. It is built here because `cwd`, `arguments` and
         // `storage` are all consumed below.
         let mut pending: Option<MissRecord> = None;
+        // Built here for the same reason as `pending`: everything it needs is
+        // consumed below, and whether it is wanted is only known afterwards.
+        let verify_record = crate::verify::rate(&env_vars)
+            .is_some()
+            .then(|| miss.record(Classification::Hit));
 
         let lookup = match cache_status.await {
             (Ok(Ok(Cache::Hit(mut entry))), duration) => {
@@ -867,6 +872,119 @@ where
 
         match lookup {
             CacheLookupResult::Success(compile_result, output) => {
+                // Was the cache's answer the one the compiler would have given?
+                //
+                // Nothing else in sccache asks. Every other diagnostic looks at
+                // misses, because a miss costs time; a wrong hit costs
+                // correctness, and the dependency-file machinery is built to
+                // avoid exactly this without anything checking that it does.
+                //
+                // This is the one place the miss branch's values can be moved:
+                // the two arms are exclusive, so `compilation`, `creator`,
+                // `dist_client` and `cwd` are ours here and the compiler knows
+                // it. That is why the check lives here rather than beside the
+                // hit itself.
+                if matches!(compile_result, CompileResult::CacheHit(..))
+                    && let Some(rate) = crate::verify::rate(&env_vars)
+                    && crate::verify::sample(rate)
+                {
+                    let watched: Vec<PathBuf> = outputs
+                        .iter()
+                        .map(|o| o.path.clone())
+                        .filter(|p| crate::verify::worth_comparing(p))
+                        .collect();
+                    let cached = crate::verify::Restored::take(watched);
+
+                    // The command is generated from a *borrow*, and running it
+                    // takes one too, so the compilation can be run more than
+                    // once. That matters below.
+                    let mut transformer = dist::PathTransformer::new();
+                    let generated = compilation.generate_compile_commands(&mut transformer, true);
+
+                    match generated {
+                        Ok((command, _, _)) => match command.execute(service, &creator).await {
+                            Ok(first) if first.status.success() => {
+                                let differing = cached.differing();
+                                if differing.is_empty() {
+                                    debug!("[{}]: verified hit", out_pretty);
+                                } else {
+                                    // A difference is not yet an accusation.
+                                    // On Windows a COFF object carries a
+                                    // timestamp unless the build asks for
+                                    // reproducibility, so *both* MSVC and clang
+                                    // fail to reproduce their own output and
+                                    // every sampled hit would look wrong. An
+                                    // alarm that always fires is worse than no
+                                    // alarm, so compile once more and ask
+                                    // whether the compiler agrees with itself.
+                                    let fresh = crate::verify::Restored::take(
+                                        differing.iter().cloned(),
+                                    );
+                                    // The wait is not padding. A COFF
+                                    // timestamp has one-second granularity, so
+                                    // two compiles run back to back carry the
+                                    // *same* stamp and a non-reproducible
+                                    // compiler looks reproducible -- biasing
+                                    // the probe towards accusing the cache,
+                                    // which is the one direction it must not
+                                    // fail in. Crossing a second boundary is
+                                    // what makes the answer mean anything.
+                                    tokio::time::sleep(Duration::from_millis(1100)).await;
+                                    let reproducible =
+                                        match command.execute(service, &creator).await {
+                                            Ok(second) if second.status.success() => {
+                                                fresh.differing().is_empty()
+                                            }
+                                            // Could not tell; say so rather
+                                            // than accuse.
+                                            _ => false,
+                                        };
+                                    if reproducible {
+                                        error!(
+                                            "[{}]: THE CACHE RETURNED THE WRONG OBJECT. The \
+                                             compiler reproduces its own output, and it does \
+                                             not match what the cache served for: {:?}",
+                                            out_pretty, differing
+                                        );
+                                        if let Some(alarm) = verify_record.map(|mut r| {
+                                            r.classification = Classification::WrongHit;
+                                            r
+                                        }) {
+                                            service.record_miss(alarm, &env_vars);
+                                        }
+                                    } else {
+                                        warn!(
+                                            "[{}]: {} cannot be verified: the compiler does not \
+                                             reproduce its own output byte for byte, so a \
+                                             difference says nothing about the cache. Build with \
+                                             reproducible output (`/Brepro` for MSVC) to make \
+                                             SCCACHE_VERIFY_HITS meaningful.",
+                                            out_pretty,
+                                            differing.len(),
+                                        );
+                                    }
+                                }
+                            }
+                            // A compilation that fails here says nothing about
+                            // the cache: it is the same source that just built.
+                            Ok(result) => debug!(
+                                "[{}]: verification recompile failed ({:?}); not a cache verdict",
+                                out_pretty,
+                                result.status.code()
+                            ),
+                            Err(e) => {
+                                debug!("[{}]: verification recompile errored: {e}", out_pretty);
+                            }
+                        },
+                        Err(e) => debug!("[{}]: cannot rebuild to verify: {e}", out_pretty),
+                    }
+
+                    // Whatever was found, the build gets back exactly what the
+                    // cache gave it. A diagnostic that substituted a freshly
+                    // built object would make a build depend on whether
+                    // sampling happened to pick it.
+                    cached.put_back();
+                }
                 Ok::<_, Error>((compile_result, output))
             }
             CacheLookupResult::Miss(miss_type) => {

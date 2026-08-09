@@ -115,6 +115,12 @@ pub enum Classification {
     ForcedRecache,
     /// The caller asked for the result not to be cached.
     ForcedNoCache,
+    /// The cache answered with something the compiler would not have produced.
+    ///
+    /// The one classification that is an alarm rather than an observation:
+    /// every other kind of miss costs time, and this costs correctness. Only
+    /// produced by `SCCACHE_VERIFY_HITS`.
+    WrongHit,
     /// This compilation can never be cached, for the reason named. Retrying it
     /// unchanged reaches the same verdict, which is what separates this from
     /// every other variant.
@@ -126,6 +132,7 @@ impl Classification {
     pub fn as_token(&self) -> String {
         match self {
             Classification::Hit => "hit".into(),
+            Classification::WrongHit => "wrong_hit".into(),
             Classification::Cold => "cold".into(),
             Classification::ReadError => "read_error".into(),
             Classification::TimedOut => "timed_out".into(),
