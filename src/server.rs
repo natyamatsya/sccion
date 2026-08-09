@@ -1705,8 +1705,8 @@ where
             }
         }
 
-        let force_recache = env_vars.iter().any(|(k, _v)| k == "SCCACHE_RECACHE");
-        let force_no_cache = env_vars.iter().any(|(k, _v)| k == "SCCACHE_NO_CACHE");
+        let force_recache = cache_control_flag_set(&env_vars, "SCCACHE_RECACHE");
+        let force_no_cache = cache_control_flag_set(&env_vars, "SCCACHE_NO_CACHE");
 
         let cache_control = if force_no_cache {
             CacheControl::ForceNoCache
@@ -2871,9 +2871,36 @@ fn waits_until_zero() {
     assert_eq!(wait.now_or_never(), Some(()));
 }
 
+/// Whether a cache-control variable counts as set for this compilation.
+///
+/// Present but empty means not set. Several ways of "unsetting" a variable
+/// leave it defined with an empty value -- PowerShell's `$env:X = ""` is one,
+/// and it reaches the child as `X=` -- and under a presence-only test that
+/// silently discards the whole cache's value for the run, with nothing in the
+/// output to say why every compilation missed. Every other flag the fork reads
+/// already treats empty as off; these two were the exception.
+fn cache_control_flag_set(env_vars: &[(OsString, OsString)], name: &str) -> bool {
+    env_vars.iter().any(|(k, v)| k == name && !v.is_empty())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An empty value must not force a recache.
+    ///
+    /// This cost a 16-minute two-worktree measurement that reported 0% sharing:
+    /// the harness "cleared" `SCCACHE_RECACHE` by assigning an empty string,
+    /// which left it defined, and every compilation was forced to miss.
+    #[test]
+    fn an_empty_cache_control_variable_is_not_set() {
+        let env = |v: &str| vec![(OsString::from("SCCACHE_RECACHE"), OsString::from(v))];
+
+        assert!(!cache_control_flag_set(&env(""), "SCCACHE_RECACHE"));
+        assert!(cache_control_flag_set(&env("1"), "SCCACHE_RECACHE"));
+        assert!(cache_control_flag_set(&env("anything"), "SCCACHE_RECACHE"));
+        assert!(!cache_control_flag_set(&[], "SCCACHE_RECACHE"));
+    }
 
     struct StringWriter {
         buffer: String,
