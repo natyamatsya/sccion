@@ -219,10 +219,23 @@ Note that some env variables may need sccache server restart to take effect.
   Compression is 10.7% *faster* warm and 3.69x smaller, and costs nothing on the
   cold side. A warm build reads the whole cache, and 7.4 GB of reads costs more
   than 2.0 GB plus the decompression — so the per-object saving is real and the
-  build-level effect is the opposite sign. Prefer the default unless something
-  else argues for `none`; the reason it exists is that a compressed blob shares
-  no extents with the object it expands to, which is what would rule out
-  filesystem-level block cloning.
+  build-level effect is the opposite sign.
+
+  Under `none` on a volume that supports it, cache hits materialize by
+  filesystem block cloning — the object's extents are shared out of the entry
+  instead of written (`--show-stats` reports it as "Objects block-cloned"; a
+  compressed blob shares no extents with what it expands to, which is why this
+  exists only under `none`). Measured on the same build, cloning recovers most
+  of the copying penalty but not all of it:
+
+  | | warm | cache |
+  |---|---|---|
+  | `none`, copied | 121.0 s | 7,358 MB |
+  | `none`, cloned | 112.9 s | 7,372 MB |
+  | zstd 3 | **108.1 s** | **1,996 MB** |
+
+  So prefer the default. `none` is for measurements that need byte-stable
+  on-disk entries, and it now costs less than it used to.
 
   Both settings are read by the **server**, once, at startup: change either and
   restart it with `sccache --stop-server`. Entries record their own encoding, so
