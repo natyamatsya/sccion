@@ -514,7 +514,6 @@ impl EnvReport {
 mod tests {
     use super::*;
 
-    #[test]
     /// Advice that cannot be carried out is worse than no advice: it sends
     /// someone to run a command that reports success and changes nothing.
     #[test]
