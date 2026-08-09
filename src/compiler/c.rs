@@ -1720,6 +1720,10 @@ impl<T: CommandCreatorSync, I: CCompilerImpl> Compilation<T> for CCompilation<I>
         )
     }
 
+    fn produced_during_hashing(&self) -> bool {
+        self.already_produced.is_some()
+    }
+
     #[cfg(feature = "dist-client")]
     fn into_dist_packagers(
         self: Box<Self>,

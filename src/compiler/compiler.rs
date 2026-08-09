@@ -892,7 +892,14 @@ where
                 // `dist_client` and `cwd` are ours here and the compiler knows
                 // it. That is why the check lives here rather than beside the
                 // hit itself.
+                // A compilation that already ran during hashing is excluded:
+                // its "recompile" would be an `AlreadyProduced` replay that
+                // writes nothing, so the comparison below would hold the
+                // cached bytes up against themselves and call the hit
+                // verified. Better to say nothing than to vouch falsely --
+                // this is the one diagnostic whose word is the product.
                 if matches!(compile_result, CompileResult::CacheHit(..))
+                    && !compilation.produced_during_hashing()
                     && let Some(rate) = crate::verify::rate(&env_vars)
                     && crate::verify::sample(rate)
                 {
@@ -1452,6 +1459,17 @@ where
 
     fn is_locally_preprocessed(&self) -> bool {
         true
+    }
+
+    /// Whether the compiler already ran while the key was being computed, so
+    /// that the command from [`Compilation::generate_compile_commands`] only
+    /// *replays* that run's output rather than compiling again.
+    ///
+    /// `SCCACHE_VERIFY_HITS` has to know: executing a replay writes nothing,
+    /// so comparing the outputs afterwards compares the cached bytes with
+    /// themselves and reports "verified" without having verified anything.
+    fn produced_during_hashing(&self) -> bool {
+        false
     }
 
     /// Returns an iterator over the results of this compilation.

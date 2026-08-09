@@ -566,6 +566,10 @@ impl<T: CommandCreatorSync> Compilation<T> for MocCompilation {
         ))
     }
 
+    fn produced_during_hashing(&self) -> bool {
+        self.already_produced
+    }
+
     #[cfg(feature = "dist-client")]
     fn into_dist_packagers(
         self: Box<Self>,
