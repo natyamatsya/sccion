@@ -33,6 +33,35 @@ use zip::{CompressionMethod, ZipArchive, ZipWriter};
 /// still be read, without a format version or a cache-invalidating key change.
 const UNCOMPRESSED_MARKER: u8 = 0x00;
 
+/// Zip member name prefix for objects stored clone-ready.
+///
+/// A clone-ready payload is the object's bytes verbatim -- no
+/// [`UNCOMPRESSED_MARKER`] -- because the marker is what makes cloning
+/// impossible: shifting a region by one byte means its source and destination
+/// can never both be cluster-aligned. With no marker to dispatch on, the format
+/// has to be carried by the member's *name* instead, which is also what lets
+/// both layouts coexist in one cache.
+const RAW_PREFIX: &str = "raw/";
+
+/// Alignment of a clone-ready payload within the entry file.
+///
+/// `FSCTL_DUPLICATE_EXTENTS_TO_FILE` addresses whole clusters, so the payload
+/// must start on a cluster boundary of the volume the entry lands on. 4096 is
+/// the cluster size ReFS and Dev Drive format with by default; a volume using
+/// 64K clusters will see these offsets as misaligned and fall back to copying,
+/// which is correct just slower. The write side cannot know the destination
+/// volume's geometry -- entries are built in memory and may be backfilled from
+/// remote storage onto any disk.
+const CLONE_ALIGNMENT: u16 = 4096;
+
+/// Below this, the clone-ready layout is not used.
+///
+/// Alignment costs up to `CLONE_ALIGNMENT - 1` bytes of padding per member, and
+/// the clone itself is refused below `MIN_CLONE_CLUSTERS` anyway (see
+/// `blockclone`), so small payloads -- stdout, stderr, dependency files --
+/// would pay the padding for a fast path they can never take.
+const RAW_THRESHOLD: u64 = 16 * 1024;
+
 /// How object payloads are stored inside a cache entry.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ObjectEncoding {
@@ -151,6 +180,12 @@ impl<T: Read + Seek + Send> ReadSeek for T {}
 /// Data stored in the compiler cache.
 pub struct CacheRead {
     zip: ZipArchive<Box<dyn ReadSeek>>,
+    /// Where this entry lives on disk, when the backend can say.
+    ///
+    /// Only a local file can donate extents, so this is what decides whether
+    /// materialization may clone instead of copy. Remote backends leave it
+    /// `None` and nothing changes for them.
+    path: Option<PathBuf>,
 }
 
 /// Represents a failure to decompress stored object data.
@@ -173,7 +208,18 @@ impl CacheRead {
     {
         let z = ZipArchive::new(Box::new(reader) as Box<dyn ReadSeek>)
             .context("Failed to parse cache entry")?;
-        Ok(CacheRead { zip: z })
+        Ok(CacheRead { zip: z, path: None })
+    }
+
+    /// As [`CacheRead::from`], additionally remembering where the entry lives
+    /// on disk so materialization may clone objects out of it.
+    pub fn from_file_at<R>(reader: R, path: PathBuf) -> Result<CacheRead>
+    where
+        R: ReadSeek + 'static,
+    {
+        let mut read = Self::from(reader)?;
+        read.path = Some(path);
+        Ok(read)
     }
 
     /// Get an object from this cache entry at `name` and write it to `to`.
@@ -182,6 +228,16 @@ impl CacheRead {
     where
         T: Write,
     {
+        // Clone-ready members carry the bytes verbatim under a prefixed name;
+        // streaming them out is always available, cloning never required.
+        if let Ok(mut raw) = self.zip.by_name(&format!("{RAW_PREFIX}{name}")) {
+            if raw.compression() != CompressionMethod::Stored {
+                bail!(DecompressionFailure);
+            }
+            let mode = raw.unix_mode();
+            std::io::copy(&mut raw, to).or(Err(DecompressionFailure))?;
+            return Ok(mode);
+        }
         let mut file = self.zip.by_name(name).or(Err(DecompressionFailure))?;
         if file.compression() != CompressionMethod::Stored {
             bail!(DecompressionFailure);
@@ -225,15 +281,40 @@ impl CacheRead {
         bytes
     }
 
+    /// Where the clone-ready member for `name` sits inside the entry file.
+    ///
+    /// `None` unless everything cloning needs is true at once: the entry has an
+    /// on-disk path, the member exists, it is stored (not deflated), and its
+    /// payload begins on a [`CLONE_ALIGNMENT`] boundary. The last check matters
+    /// because an entry may have been written by a build that did not align --
+    /// offsets must be proven, never assumed, or the clone would hand the
+    /// compiler a file of shifted garbage.
+    fn raw_member_span(&mut self, name: &str) -> Option<(u64, u64, Option<u32>)> {
+        self.path.as_ref()?;
+        let member = self.zip.by_name(&format!("{RAW_PREFIX}{name}")).ok()?;
+        if member.compression() != CompressionMethod::Stored {
+            return None;
+        }
+        if member.data_start() % u64::from(CLONE_ALIGNMENT) != 0 {
+            return None;
+        }
+        Some((member.data_start(), member.size(), member.unix_mode()))
+    }
+
+    /// Returns how many objects were materialized by cloning rather than
+    /// copying. Callers that report statistics should pass it on: a silent
+    /// fallback to copying is otherwise indistinguishable from the fast path
+    /// working, which is how a fast path quietly dies.
     pub async fn extract_objects<T>(
         mut self,
         objects: T,
         pool: &tokio::runtime::Handle,
-    ) -> Result<()>
+    ) -> Result<u64>
     where
         T: IntoIterator<Item = FileObjectSource> + Send + Sync + 'static,
     {
         pool.spawn_blocking(move || {
+            let mut cloned: u64 = 0;
             for FileObjectSource {
                 key,
                 path,
@@ -261,6 +342,35 @@ impl CacheRead {
                 // happening in parallel don't see a partially-written file.
                 match (NamedTempFile::new_in(dir), optional) {
                     (Ok(mut tmp), _) => {
+                        // Clone-ready member plus an on-disk entry: share the
+                        // extents instead of copying the bytes. Any refusal
+                        // falls through to the streaming path below -- after
+                        // resetting the temp file, which a part-way clone may
+                        // have grown.
+                        if let Some((offset, len, mode)) = self.raw_member_span(&key) {
+                            match crate::blockclone::clone_region_into(
+                                self.path.as_deref().expect("span implies a path"),
+                                offset,
+                                len,
+                                tmp.as_file(),
+                            ) {
+                                Ok(()) => {
+                                    tmp.persist(&path)?;
+                                    if let Some(mode) = mode {
+                                        set_file_mode(path.as_path(), mode)?;
+                                    }
+                                    cloned += 1;
+                                    continue;
+                                }
+                                Err(reason) => {
+                                    trace!(
+                                        "cache_io: not cloning {}: {reason}",
+                                        path.display()
+                                    );
+                                    tmp.as_file().set_len(0)?;
+                                }
+                            }
+                        }
                         match (self.get_object(&key, &mut tmp), optional) {
                             (Ok(mode), _) => {
                                 tmp.persist(&path)?;
@@ -292,7 +402,7 @@ impl CacheRead {
                     (Err(_), true) => continue,
                 }
             }
-            Ok(())
+            Ok(cloned)
         })
         .await?
     }
@@ -365,26 +475,62 @@ impl CacheWrite {
     where
         T: Read,
     {
+        self.put_object_with_encoding(name, from, mode, *OBJECT_ENCODING)
+    }
+
+    /// As [`CacheWrite::put_object`], with the encoding stated by the caller.
+    ///
+    /// The split exists so tests can exercise every layout without fighting
+    /// over [`OBJECT_ENCODING`], which resolves once per process.
+    fn put_object_with_encoding<T>(
+        &mut self,
+        name: &str,
+        from: &mut T,
+        mode: Option<u32>,
+        encoding: ObjectEncoding,
+    ) -> Result<()>
+    where
+        T: Read,
+    {
         // The zip compression method is always "stored"; what varies is what we
-        // store inside the member -- a zstd frame, or a marker byte followed by
-        // the bytes verbatim. See `ObjectEncoding`.
+        // store inside the member -- a zstd frame, a marker byte followed by
+        // the bytes verbatim, or (clone-ready) the bytes alone under a prefixed
+        // name. See `ObjectEncoding` and `RAW_PREFIX`.
         let opts = FileOptions::default().compression_method(CompressionMethod::Stored);
         let opts = if let Some(mode) = mode {
             opts.unix_permissions(mode)
         } else {
             opts
         };
-        self.zip
-            .start_file(name, opts)
-            .context("Failed to start cache entry object")?;
 
-        match *OBJECT_ENCODING {
+        match encoding {
             ObjectEncoding::Zstd(level) => {
+                self.zip
+                    .start_file(name, opts)
+                    .context("Failed to start cache entry object")?;
                 zstd::stream::copy_encode(from, &mut self.zip, level)?;
             }
             ObjectEncoding::Uncompressed => {
-                self.zip.write_all(&[UNCOMPRESSED_MARKER])?;
-                std::io::copy(from, &mut self.zip)?;
+                // Payloads big enough to clone go in clone-ready: verbatim
+                // bytes, no marker, aligned so a hit can donate the extents
+                // instead of copying them. Size is only learnable by reading,
+                // so read up to the threshold first and decide then.
+                let mut head = Vec::with_capacity(RAW_THRESHOLD as usize + 1);
+                from.take(RAW_THRESHOLD + 1).read_to_end(&mut head)?;
+                if head.len() as u64 > RAW_THRESHOLD {
+                    self.zip
+                        .start_file_aligned(format!("{RAW_PREFIX}{name}"), opts, CLONE_ALIGNMENT)
+                        .context("Failed to start clone-ready cache entry object")?;
+                    self.zip.write_all(&head)?;
+                    std::io::copy(from, &mut self.zip)?;
+                } else {
+                    // Too small to clone: the ordinary marker layout.
+                    self.zip
+                        .start_file(name, opts)
+                        .context("Failed to start cache entry object")?;
+                    self.zip.write_all(&[UNCOMPRESSED_MARKER])?;
+                    self.zip.write_all(&head)?;
+                }
             }
         }
         Ok(())
@@ -423,6 +569,203 @@ impl Default for CacheWrite {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A payload the raw-layout threshold considers worth cloning.
+    fn big_payload() -> Vec<u8> {
+        (0..(RAW_THRESHOLD as u32 * 4))
+            .map(|i| (i.wrapping_mul(2654435761) >> 11) as u8)
+            .collect()
+    }
+
+    fn entry_with(name: &str, payload: &[u8], encoding: ObjectEncoding) -> Vec<u8> {
+        let mut w = CacheWrite::new();
+        w.put_object_with_encoding(name, &mut Cursor::new(payload), None, encoding)
+            .unwrap();
+        w.finish().unwrap()
+    }
+
+    fn read_back(entry: &[u8], name: &str) -> Vec<u8> {
+        let mut r = CacheRead::from(Cursor::new(entry.to_vec())).unwrap();
+        let mut out = Vec::new();
+        r.get_object(name, &mut out).unwrap();
+        out
+    }
+
+    /// The clone-ready layout must hold the payload aligned and verbatim --
+    /// aligned because `FSCTL_DUPLICATE_EXTENTS_TO_FILE` addresses whole
+    /// clusters, verbatim because the cloned region reaches the compiler
+    /// without any decoding step that could strip a marker.
+    #[test]
+    fn a_large_uncompressed_object_is_stored_clone_ready() {
+        let payload = big_payload();
+        let entry = entry_with("obj", &payload, ObjectEncoding::Uncompressed);
+
+        let mut zip = ZipArchive::new(Cursor::new(entry.clone())).unwrap();
+        let member = zip.by_name("raw/obj").expect("clone-ready member");
+        assert_eq!(
+            member.data_start() % u64::from(CLONE_ALIGNMENT),
+            0,
+            "payload must start on a cluster boundary"
+        );
+        assert_eq!(member.size(), payload.len() as u64, "no marker, no padding");
+        let start = member.data_start() as usize;
+        drop(member);
+        assert_eq!(
+            &entry[start..start + payload.len()],
+            &payload[..],
+            "the region a clone would share must be the object bytes themselves"
+        );
+
+        // And the ordinary read path must still produce them.
+        assert_eq!(read_back(&entry, "obj"), payload);
+    }
+
+    /// Small payloads must not pay the alignment padding: stdout, stderr and
+    /// dependency files would bloat every entry for a fast path they can never
+    /// take (the clone itself refuses below a few clusters).
+    #[test]
+    fn a_small_uncompressed_object_keeps_the_marker_layout() {
+        let payload = b"warning: something minor".to_vec();
+        let entry = entry_with("stderr", &payload, ObjectEncoding::Uncompressed);
+
+        let mut zip = ZipArchive::new(Cursor::new(entry.clone())).unwrap();
+        assert!(zip.by_name("raw/stderr").is_err(), "no clone-ready member");
+        drop(zip.by_name("stderr").expect("marker-layout member"));
+        assert_eq!(read_back(&entry, "stderr"), payload);
+    }
+
+    #[test]
+    fn zstd_entries_are_unchanged_by_the_clone_layout() {
+        let payload = big_payload();
+        let entry = entry_with("obj", &payload, ObjectEncoding::Zstd(3));
+
+        let mut zip = ZipArchive::new(Cursor::new(entry.clone())).unwrap();
+        assert!(zip.by_name("raw/obj").is_err());
+        assert_eq!(read_back(&entry, "obj"), payload);
+    }
+
+    /// Alignment is proven per member, never assumed from the entry having a
+    /// path: an entry written by a build that did not align must fall back to
+    /// streaming, not clone a shifted region into the compiler's output.
+    #[test]
+    fn an_unaligned_raw_member_is_not_offered_for_cloning() {
+        // A raw/ member written *without* alignment, as a non-aligning writer
+        // would: manual zip construction, ordinary start_file.
+        let payload = big_payload();
+        let mut zip = ZipWriter::new(Cursor::new(Vec::new()));
+        let opts = FileOptions::default().compression_method(CompressionMethod::Stored);
+        zip.start_file("raw/obj", opts).unwrap();
+        zip.write_all(&payload).unwrap();
+        let entry = zip.finish().unwrap().into_inner();
+
+        let dir = tempfile::tempdir().unwrap();
+        let on_disk = dir.path().join("entry");
+        std::fs::write(&on_disk, &entry).unwrap();
+
+        let mut aligned_read =
+            CacheRead::from_file_at(Cursor::new(entry.clone()), on_disk).unwrap();
+        // data_start is 30 + name for this hand-built zip: unaligned.
+        assert!(
+            aligned_read.raw_member_span("obj").is_none(),
+            "an unaligned member must not be offered for cloning"
+        );
+
+        // Without a path there is nothing to clone from, aligned or not.
+        let aligned_entry = entry_with("obj", &payload, ObjectEncoding::Uncompressed);
+        let mut pathless = CacheRead::from(Cursor::new(aligned_entry)).unwrap();
+        assert!(pathless.raw_member_span("obj").is_none());
+
+        // And the same bytes remain readable the ordinary way regardless.
+        assert_eq!(read_back(&entry, "obj"), payload);
+    }
+
+    /// The whole point, end to end: an on-disk entry with an aligned member
+    /// names the exact span the writer laid down.
+    #[test]
+    fn an_aligned_raw_member_names_its_span() {
+        let payload = big_payload();
+        let entry = entry_with("obj", &payload, ObjectEncoding::Uncompressed);
+        let dir = tempfile::tempdir().unwrap();
+        let on_disk = dir.path().join("entry");
+        std::fs::write(&on_disk, &entry).unwrap();
+
+        let mut read = CacheRead::from_file_at(Cursor::new(entry.clone()), on_disk).unwrap();
+        let (offset, len, _mode) = read.raw_member_span("obj").expect("aligned, on disk");
+        assert_eq!(offset % u64::from(CLONE_ALIGNMENT), 0);
+        assert_eq!(len, payload.len() as u64);
+        assert_eq!(&entry[offset as usize..offset as usize + len as usize], &payload[..]);
+    }
+
+    /// The full hit path on a clone-capable volume: the extracted object's
+    /// physical clusters must be the entry's own, and the count must say so.
+    ///
+    /// Gated the same way as the blockclone tests: cloning needs a filesystem
+    /// that supports it, and silently passing on NTFS would assert nothing.
+    #[cfg(windows)]
+    #[test]
+    fn extraction_clones_from_an_aligned_entry() {
+        let Some(root) = std::env::var_os("SCCACHE_TEST_CLONE_DIR") else {
+            eprintln!("skipping: set SCCACHE_TEST_CLONE_DIR to a clone-capable volume");
+            return;
+        };
+        let dir = PathBuf::from(root).join(format!("sccache-io-clone-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let payload = big_payload();
+        let entry = entry_with("obj", &payload, ObjectEncoding::Uncompressed);
+        let on_disk = dir.join("entry");
+        std::fs::write(&on_disk, &entry).unwrap();
+
+        let read = CacheRead::from_file_at(Cursor::new(entry), on_disk.clone()).unwrap();
+        let out = dir.join("restored.obj");
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let cloned = runtime
+            .block_on(read.extract_objects(
+                vec![FileObjectSource {
+                    key: "obj".to_string(),
+                    path: out.clone(),
+                    optional: false,
+                }],
+                runtime.handle(),
+            ))
+            .unwrap();
+
+        assert_eq!(std::fs::read(&out).unwrap(), payload, "bytes must survive");
+        if cloned == 0 {
+            // The volume declined (non-ReFS, 64K clusters, ...). The fallback
+            // already proved itself above; just say so and stop.
+            eprintln!("skipping extent check: volume declined to clone");
+            let _ = std::fs::remove_dir_all(&dir);
+            return;
+        }
+        assert_eq!(cloned, 1, "the one object must report as cloned");
+        let src_extents = crate::blockclone::extent_lcns(&on_disk).unwrap();
+        let dst_extents = crate::blockclone::extent_lcns(&out).unwrap();
+        assert!(
+            !dst_extents.is_empty(),
+            "restored object should have extents"
+        );
+        // The destination's clusters must appear within the entry's runs: the
+        // entry is larger (zip headers, central directory), so equality is not
+        // expected -- containment of the first physical cluster is the proof.
+        let dst_first_lcn = dst_extents[0].1;
+        let mut prev_vcn = 0i64;
+        let shared = src_extents.iter().any(|&(next_vcn, lcn)| {
+            let run_len = next_vcn - prev_vcn;
+            prev_vcn = next_vcn;
+            lcn >= 0 && dst_first_lcn >= lcn && dst_first_lcn < lcn + run_len
+        });
+        assert!(
+            shared,
+            "restored object's first cluster {dst_first_lcn} not within the \
+             entry's physical runs {src_extents:?} -- the bytes were copied, \
+             not cloned"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[cfg(unix)]
     #[test]

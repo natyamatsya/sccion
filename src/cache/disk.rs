@@ -109,12 +109,9 @@ impl Storage for DiskCache {
 
         self.pool
             .spawn_blocking(move || {
-                let io = match lru
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .get_or_init()?
-                    .get(&path)
-                {
+                let mut lru = lru.lock().unwrap_or_else(|e| e.into_inner());
+                let cache = lru.get_or_init()?;
+                let io = match cache.get(&path) {
                     Ok(f) => f,
                     Err(LruError::FileNotInCache) => {
                         trace!("DiskCache::get({}): FileNotInCache", key);
@@ -126,7 +123,12 @@ impl Storage for DiskCache {
                     }
                     Err(_) => unreachable!(),
                 };
-                let hit = CacheRead::from(io)?;
+                // The entry's on-disk location, which is what lets
+                // materialization clone objects out of it instead of copying.
+                let hit = match cache.get_abs_path(&path) {
+                    Some(abs) => CacheRead::from_file_at(io, abs)?,
+                    None => CacheRead::from(io)?,
+                };
                 Ok(Cache::Hit(hit))
             })
             .await?

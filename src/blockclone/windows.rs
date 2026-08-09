@@ -348,6 +348,143 @@ fn set_end_of_file(file: &File, end: i64) -> Result<(), CloneError> {
     Ok(())
 }
 
+/// Clone `len` bytes at `src_offset` inside `src` into the start of `dst`.
+///
+/// This is what materializing a cache hit needs: the object lives at an offset
+/// inside the entry's zip archive, not at the start of a file of its own.
+/// `FSCTL_DUPLICATE_EXTENTS_TO_FILE` addresses regions, so the whole-file
+/// restriction of [`clone_whole_file`] was never the ioctl's -- only the API's.
+///
+/// The offset must be cluster-aligned; the writer aligns object payloads for
+/// exactly this purpose (see `cache_io.rs`). The *length* need not be: whole
+/// clusters are cloned and the sub-cluster tail is copied through the handle,
+/// which costs one small write against the syscalls the clone already spent.
+///
+/// Takes an open handle for the destination rather than a path, unlike
+/// [`clone_whole_file`]: the caller owns a just-created temp file it will
+/// atomically persist afterwards, and making this function create the file
+/// would force the caller to name temp files itself. The mod-level comment
+/// about path-based APIs is about macOS `clonefile`, which has no region form
+/// at all -- a region API is per-platform by nature.
+pub fn clone_region_into(
+    src: &Path,
+    src_offset: u64,
+    len: u64,
+    dst: &File,
+) -> Result<(), CloneError> {
+    let source = OpenOptions::new()
+        .read(true)
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+        .open(src)?;
+
+    let src_serial = volume_serial(&source)?;
+    let (can_clone, cluster_size, algorithm) = caps_for(&source, src_serial)?;
+    if !can_clone {
+        return Err(CloneError::Unsupported);
+    }
+    if src_offset % cluster_size != 0 {
+        // The writer aligns to 4096; a volume with larger clusters (ReFS also
+        // ships 64K) sees a misaligned offset and must copy instead.
+        return Err(CloneError::Refused(format!(
+            "offset {src_offset} not aligned to the {cluster_size}-byte cluster"
+        )));
+    }
+    if len < MIN_CLONE_CLUSTERS * cluster_size {
+        return Err(CloneError::TooSmall);
+    }
+    if volume_serial(dst)? != src_serial {
+        return Err(CloneError::DifferentVolume);
+    }
+
+    // Only whole clusters can be duplicated mid-file; the tail is written.
+    let aligned = (len / cluster_size) * cluster_size;
+
+    // Integrity streams must match the source's and can only be set while the
+    // destination is empty.
+    if algorithm != 0 {
+        let mut set = FSCTL_SET_INTEGRITY_INFORMATION_BUFFER {
+            ChecksumAlgorithm: algorithm,
+            Reserved: 0,
+            Flags: 0,
+        };
+        let mut returned: u32 = 0;
+        // SAFETY: input buffer is a correctly sized, initialized struct of the
+        // type this control code documents; no output buffer is required.
+        let ok = unsafe {
+            DeviceIoControl(
+                dst.as_raw_handle() as HANDLE,
+                FSCTL_SET_INTEGRITY_INFORMATION,
+                (&mut set as *mut FSCTL_SET_INTEGRITY_INFORMATION_BUFFER).cast(),
+                std::mem::size_of::<FSCTL_SET_INTEGRITY_INFORMATION_BUFFER>() as u32,
+                std::ptr::null_mut(),
+                0,
+                &mut returned,
+                std::ptr::null_mut(),
+            )
+        };
+        if ok == 0 {
+            return io_err("FSCTL_SET_INTEGRITY_INFORMATION");
+        }
+    }
+
+    set_end_of_file(dst, aligned as i64)?;
+
+    let mut done: u64 = 0;
+    while done < aligned {
+        let count = (aligned - done).min(MAX_CHUNK as u64) as i64;
+        let mut request = DUPLICATE_EXTENTS_DATA {
+            FileHandle: source.as_raw_handle() as HANDLE,
+            SourceFileOffset: (src_offset + done) as i64,
+            TargetFileOffset: done as i64,
+            ByteCount: count,
+        };
+        let mut returned: u32 = 0;
+        // SAFETY: the request struct is fully initialized and holds a handle
+        // that outlives the call; the control code takes no output buffer.
+        let ok = unsafe {
+            DeviceIoControl(
+                dst.as_raw_handle() as HANDLE,
+                FSCTL_DUPLICATE_EXTENTS_TO_FILE,
+                (&mut request as *mut DUPLICATE_EXTENTS_DATA).cast(),
+                std::mem::size_of::<DUPLICATE_EXTENTS_DATA>() as u32,
+                std::ptr::null_mut(),
+                0,
+                &mut returned,
+                std::ptr::null_mut(),
+            )
+        };
+        if ok == 0 {
+            let e = std::io::Error::last_os_error();
+            const ERROR_BLOCK_TOO_MANY_REFERENCES: i32 = 347;
+            const ERROR_SHARING_VIOLATION: i32 = 32;
+            match e.raw_os_error() {
+                Some(ERROR_BLOCK_TOO_MANY_REFERENCES) | Some(ERROR_SHARING_VIOLATION) => {}
+                _ => poison(src_serial),
+            }
+            debug!("blockclone: FSCTL_DUPLICATE_EXTENTS_TO_FILE (region) failed: {e}");
+            return Err(CloneError::Refused(e.to_string()));
+        }
+        done += count as u64;
+    }
+
+    // The sub-cluster tail, by hand. Positional I/O rather than seeking, so
+    // the caller's cursor is left where it found it (at 0, on a fresh temp).
+    if len > aligned {
+        use std::os::windows::fs::FileExt;
+        let mut tail = vec![0u8; (len - aligned) as usize];
+        let read = source.seek_read(&mut tail, src_offset + aligned)?;
+        if read as u64 != len - aligned {
+            return Err(CloneError::Io(std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                "cache entry ended inside an object payload",
+            )));
+        }
+        dst.seek_write(&tail, aligned)?;
+    }
+
+    Ok(())
+}
+
 /// Physical cluster runs backing a file, used by tests to prove that a clone
 /// shares storage rather than merely producing identical bytes.
 #[cfg(test)]

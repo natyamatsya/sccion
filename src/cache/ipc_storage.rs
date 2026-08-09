@@ -77,7 +77,9 @@ impl Storage for IpcStorage {
             GetPathResult::Found(path) => {
                 let file = std::fs::File::open(&path)
                     .with_context(|| format!("IpcStorage::get: open {}", path.display()))?;
-                match CacheRead::from(file) {
+                // Client-side mode materializes in the client, and it holds the
+                // entry's real path -- so it can clone exactly like the daemon.
+                match CacheRead::from_file_at(file, path) {
                     Ok(entry) => Ok(Cache::Hit(entry)),
                     Err(_) => Ok(Cache::Miss),
                 }

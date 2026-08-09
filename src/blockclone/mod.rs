@@ -22,7 +22,11 @@ use std::path::Path;
 mod windows;
 
 #[cfg(windows)]
-pub use windows::{clone_whole_file, volume_supports_cloning};
+pub use windows::{clone_region_into, clone_whole_file, volume_supports_cloning};
+
+/// For tests that must prove storage is *shared*, not merely equal.
+#[cfg(all(test, windows))]
+pub(crate) use windows::extent_lcns;
 
 /// Why a clone did not happen.
 ///
@@ -68,6 +72,19 @@ impl From<std::io::Error> for CloneError {
 
 #[cfg(not(windows))]
 pub fn clone_whole_file(_src: &Path, _dst: &Path) -> Result<(), CloneError> {
+    Err(CloneError::Unsupported)
+}
+
+/// See the Windows implementation; nothing else has one yet. A reflink-capable
+/// Unix (btrfs, XFS) would implement this with `copy_file_range`, which shares
+/// extents on those filesystems when the ranges are aligned.
+#[cfg(not(windows))]
+pub fn clone_region_into(
+    _src: &Path,
+    _src_offset: u64,
+    _len: u64,
+    _dst: &std::fs::File,
+) -> Result<(), CloneError> {
     Err(CloneError::Unsupported)
 }
 

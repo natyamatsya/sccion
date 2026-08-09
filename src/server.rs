@@ -1789,12 +1789,13 @@ where
 
                             stats.cache_errors.increment(&kind, &lang);
                         }
-                        CompileResult::CacheHit(fetch, materialize) => {
+                        CompileResult::CacheHit(fetch, materialize, cloned) => {
                             debug!("[{}]: compile result: cache hit", out_pretty);
 
                             stats.cache_hits.increment(&kind, &lang);
                             stats.cache_read_hit_duration += fetch;
                             stats.cache_materialize_duration += materialize;
+                            stats.objects_cloned += cloned;
                             if let Some(entry) = stats.agent_entry(agent.as_deref()) {
                                 entry.cache_hits += 1;
                             }
@@ -2052,6 +2053,11 @@ pub struct ServerStats {
     /// The total time spent materializing cache hits: decompressing the entry
     /// and writing out its object files.
     pub cache_materialize_duration: Duration,
+    /// How many outputs were materialized by filesystem block cloning rather
+    /// than by writing the bytes. Zero on any volume that cannot clone; the
+    /// point of counting is that a silent fallback to copying is otherwise
+    /// indistinguishable from the fast path working.
+    pub objects_cloned: u64,
     /// The number of compilations performed.
     pub compilations: u64,
     /// The total time spent compiling.
@@ -2159,6 +2165,7 @@ impl std::ops::AddAssign for ServerStats {
         self.cache_write_duration += rhs.cache_write_duration;
         self.cache_read_hit_duration += rhs.cache_read_hit_duration;
         self.cache_materialize_duration += rhs.cache_materialize_duration;
+        self.objects_cloned += rhs.objects_cloned;
         self.compilations += rhs.compilations;
         self.compiler_write_duration += rhs.compiler_write_duration;
         self.compile_fails += rhs.compile_fails;
@@ -2227,6 +2234,7 @@ impl Default for ServerStats {
             cache_write_duration: Duration::new(0, 0),
             cache_read_hit_duration: Duration::new(0, 0),
             cache_materialize_duration: Duration::new(0, 0),
+            objects_cloned: u64::default(),
             compilations: u64::default(),
             compiler_write_duration: Duration::new(0, 0),
             compile_fails: u64::default(),
@@ -2381,6 +2389,7 @@ impl ServerStats {
             self.cache_hits.all(),
             "Average cache materialize"
         );
+        set_stat!(stats_vec, self.objects_cloned, "Objects block-cloned");
         set_stat!(
             stats_vec,
             self.dist_errors,

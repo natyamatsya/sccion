@@ -807,7 +807,7 @@ where
                 // larger, and folding them together hid it completely.
                 let materialize_start = Instant::now();
                 match entry.extract_objects(filtered_outputs, &pool).await {
-                    Ok(()) => {
+                    Ok(cloned) => {
                         // A hit is normally not worth a record -- a warm build
                         // would fill the ring with 2,557 of them and push out
                         // everything that explains anything. Under trace-all it
@@ -816,7 +816,8 @@ where
                         if missrecord::trace_all(&env_vars) {
                             service.record_miss(miss.record(Classification::Hit), &env_vars);
                         }
-                        let hit = CompileResult::CacheHit(duration, materialize_start.elapsed());
+                        let hit =
+                            CompileResult::CacheHit(duration, materialize_start.elapsed(), cloned);
                         Ok(CacheLookupResult::Success(hit, output))
                     }
                     Err(e) => {
@@ -1610,8 +1611,11 @@ pub enum CompileResult {
     ///
     /// Kept apart because they answer different questions -- fetching is bounded
     /// by the cache backend, materializing by decompression and the output
-    /// filesystem, and only the latter is what block cloning would remove.
-    CacheHit(Duration, Duration),
+    /// filesystem, and only the latter is what block cloning removes. The count
+    /// is how many outputs were materialized by cloning: the fast path must be
+    /// observable, or a fallback to copying is indistinguishable from it
+    /// working.
+    CacheHit(Duration, Duration, u64),
     /// Result was not found in cache.
     ///
     /// The `CacheWriteFuture` will resolve when the result is finished
@@ -1644,9 +1648,9 @@ impl fmt::Debug for CompileResult {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match *self {
             CompileResult::Error => write!(f, "CompileResult::Error"),
-            CompileResult::CacheHit(ref fetch, ref materialize) => write!(
+            CompileResult::CacheHit(ref fetch, ref materialize, ref cloned) => write!(
                 f,
-                "CompileResult::CacheHit(fetch: {fetch:?}, materialize: {materialize:?})"
+                "CompileResult::CacheHit(fetch: {fetch:?}, materialize: {materialize:?}, cloned: {cloned})"
             ),
             CompileResult::CacheMiss(ref m, ref dt, ref d, _) => {
                 write!(f, "CompileResult::CacheMiss({:?}, {:?}, {:?}, _)", d, m, dt)
@@ -3122,7 +3126,7 @@ LLVM version: 6.0",
         // Ensure that the object file was created.
         assert!(fs::metadata(&obj).map(|m| m.len() > 0).unwrap());
         assert_eq!(
-            CompileResult::CacheHit(Duration::new(0, 0), Duration::new(0, 0)),
+            CompileResult::CacheHit(Duration::new(0, 0), Duration::new(0, 0), 0),
             cached
         );
         assert_eq!(exit_status(0), res.status);
@@ -3255,7 +3259,7 @@ LLVM version: 6.0",
         // Ensure that the object file was created.
         assert!(fs::metadata(&obj).map(|m| m.len() > 0).unwrap());
         assert_eq!(
-            CompileResult::CacheHit(Duration::new(0, 0), Duration::new(0, 0)),
+            CompileResult::CacheHit(Duration::new(0, 0), Duration::new(0, 0), 0),
             cached
         );
         assert_eq!(exit_status(0), res.status);
@@ -3431,7 +3435,7 @@ LLVM version: 6.0",
             ))
             .unwrap();
         match cached {
-            CompileResult::CacheHit(fetch, _materialize) => {
+            CompileResult::CacheHit(fetch, _materialize, _cloned) => {
                 // The delay is injected into the storage backend, so it lands in
                 // the fetch half rather than in materialization.
                 assert!(fetch >= storage_delay);
