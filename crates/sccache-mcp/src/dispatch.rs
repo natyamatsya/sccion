@@ -301,15 +301,23 @@ fn tools_call(params: &Value, backend: &dyn Backend) -> Result<Value, (i64, Stri
         }
         "explain_miss" => {
             let handle = handle()?;
-            let limit = args
-                .get("limit")
-                .and_then(Value::as_u64)
-                .unwrap_or(50)
-                .min(1000) as usize;
+            // Bounded by the daemon's ring rather than by an invented number:
+            // there can never be more than that, so asking for the maximum is
+            // guaranteed to be a complete answer. The previous `.min(1000)`
+            // silently truncated a request for 4096 to 1000, and the analysis
+            // that hit it only noticed because the counts came back suspiciously
+            // round.
+            let requested = args.get("limit").and_then(Value::as_u64).unwrap_or(50);
+            let limit = requested.min(sccache::api::MAX_MISS_RECORDS as u64) as usize;
             let needle = args.get("output").and_then(Value::as_str);
             let records = backend
                 .miss_records(Some(&handle), limit)
                 .map_err(handle_error)?;
+            // Whether the *fetch* was cut short, decided before any filtering:
+            // a needle that matches few records would otherwise make a truncated
+            // fetch look like a complete answer, which is the failure this field
+            // exists to prevent.
+            let truncated = records.len() == limit && limit < sccache::api::MAX_MISS_RECORDS;
             let records: Vec<_> = records
                 .into_iter()
                 .filter(|r| match needle {
@@ -322,6 +330,9 @@ fn tools_call(params: &Value, backend: &dyn Backend) -> Result<Value, (i64, Stri
             Ok(envelope::tool_result(
                 json!({
                     "misses": serde_json::to_value(&records).unwrap_or_default(),
+                    "returned": records.len(),
+                    "limitApplied": limit,
+                    "truncated": truncated,
                     "note": "`uncacheable` means retrying will reach the same verdict; \
                              every other classification may succeed once the cache warms.",
                 }),

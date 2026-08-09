@@ -48,7 +48,7 @@ use serde::{Deserialize, Serialize};
 /// all of them". Sizing knob and file sink would be two ways to say one thing.
 /// At roughly 300 bytes a record this is about a megabyte, and it covers a cold
 /// build of a 2,500 translation unit project with room to spare.
-const RING_CAPACITY: usize = 4096;
+pub const RING_CAPACITY: usize = 4096;
 
 /// The variable naming a file every record is also appended to.
 pub const MISS_LOG_VAR: &str = "SCCACHE_MISS_LOG";
