@@ -481,7 +481,7 @@ impl<T: CommandCreatorSync, I: CCompilerImpl> Compiler<T> for CCompiler<I> {
             CompilerArguments::Ok(mut args) => {
                 // Handle SCCACHE_EXTRAFILES
                 for (k, v) in env_vars.iter() {
-                    if k.as_os_str() == OsStr::new("SCCACHE_EXTRAFILES") {
+                    if crate::envvar::matches(k.as_os_str(), "SCCION_EXTRAFILES") {
                         args.extra_hash_files.extend(std::env::split_paths(&v));
                     }
                 }
@@ -824,7 +824,7 @@ where
             let declined = env_vars
                 .iter()
                 .find_map(|(key, val)| {
-                    (key == "SCCACHE_DIRECT")
+                    crate::envvar::matches(key, "SCCION_DIRECT")
                         .then(|| val.to_str())
                         .flatten()
                         .map(|val| matches!(val.to_lowercase().as_str(), "false" | "off" | "0"))
@@ -861,7 +861,7 @@ where
         let mut use_dependency_keying = use_preprocessor_cache_mode && !may_dist;
         if use_dependency_keying {
             let from_env = env_vars.iter().find_map(|(key, val)| {
-                (key == "SCCACHE_DEPEND")
+                crate::envvar::matches(key, "SCCION_DEPEND")
                     .then(|| val.to_str())
                     .flatten()
                     .map(|val| !matches!(val.to_lowercase().as_str(), "false" | "off" | "0"))
@@ -1994,6 +1994,13 @@ static CACHED_ENV_VARS: LazyLock<HashSet<&'static OsStr>> = LazyLock::new(|| {
         // serving as a way for the user to factor custom data into the hash.
         // One can set it to different values for different invocations
         // to prevent cache reuse between them.
+        //
+        // Both spellings are honoured, and unlike everywhere else they are not
+        // interchangeable: the name is hashed along with the value, so moving a
+        // buster from one spelling to the other busts the cache once. For a
+        // variable whose entire purpose is to bust the cache, that is the least
+        // surprising behaviour available.
+        "SCCION_C_CUSTOM_CACHE_BUSTER",
         "SCCACHE_C_CUSTOM_CACHE_BUSTER",
         "MACOSX_DEPLOYMENT_TARGET",
         "IPHONEOS_DEPLOYMENT_TARGET",

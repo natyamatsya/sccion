@@ -387,8 +387,8 @@ pub fn check(config: &Config, cwd: &Path) -> EnvReport {
     // Storage encoding, as this process sees it. The server reads its own
     // environment at startup, so a running server may disagree -- said plainly
     // rather than implied.
-    let compression = match std::env::var("SCCACHE_CACHE_COMPRESSION") {
-        Ok(v)
+    let compression = match crate::envvar::var("SCCION_CACHE_COMPRESSION") {
+        Some(v)
             if matches!(
                 v.trim().to_ascii_lowercase().as_str(),
                 "none" | "off" | "false" | "0"
@@ -396,18 +396,18 @@ pub fn check(config: &Config, cwd: &Path) -> EnvReport {
         {
             "none".to_string()
         }
-        Ok(_) => format!(
+        Some(_) => format!(
             "zstd level {}",
-            std::env::var("SCCACHE_CACHE_ZSTD_LEVEL").unwrap_or_else(|_| "3".into())
+            crate::envvar::var("SCCION_CACHE_ZSTD_LEVEL").unwrap_or_else(|| "3".into())
         ),
         // Nothing in the environment: the config file decides, and reporting
         // the default here would contradict what the server is actually doing.
-        Err(_) => match config.object_encoding {
+        None => match config.object_encoding {
             Some(crate::cache::ObjectEncoding::Uncompressed) => "none".to_string(),
             Some(crate::cache::ObjectEncoding::Zstd(level)) => format!("zstd level {level}"),
             None => format!(
                 "zstd level {}",
-                std::env::var("SCCACHE_CACHE_ZSTD_LEVEL").unwrap_or_else(|_| "3".into())
+                crate::envvar::var("SCCION_CACHE_ZSTD_LEVEL").unwrap_or_else(|| "3".into())
             ),
         },
     };

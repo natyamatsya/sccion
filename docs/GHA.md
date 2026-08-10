@@ -1,8 +1,8 @@
 # GitHub Actions
 
-To use the [GitHub Actions cache](https://docs.github.com/en/actions/using-workflows/caching-dependencies-to-speed-up-workflows), you need to set `SCCACHE_GHA_ENABLED` to `on` to enable it.
+To use the [GitHub Actions cache](https://docs.github.com/en/actions/using-workflows/caching-dependencies-to-speed-up-workflows), you need to set `SCCION_GHA_ENABLED` to `on` to enable it.
 
-By changing `SCCACHE_GHA_VERSION`, we can purge all the cache.
+By changing `SCCION_GHA_VERSION`, we can purge all the cache.
 
 This cache type will need tokens like `ACTIONS_RESULTS_URL` and `ACTIONS_RUNTIME_TOKEN` to work. You can set these environmental variables using the following step in a GitHub Actions workflow.
 
@@ -15,7 +15,7 @@ This cache type will need tokens like `ACTIONS_RESULTS_URL` and `ACTIONS_RUNTIME
       core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '');
 ```
 
-The `SCCACHE_GHA_RW_MODE` environment variable can be set to `READ_ONLY` to make sccion use this backend in read-only mode. The default is `READ_WRITE`.
+The `SCCION_GHA_RW_MODE` environment variable can be set to `READ_ONLY` to make sccion use this backend in read-only mode. The default is `READ_WRITE`.
 
 ## Behavior
 

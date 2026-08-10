@@ -18,7 +18,7 @@ compile to the same bytes twice — and it is what lets a build's objects be
 compared at all. It is not sufficient on its own: on one real build only one
 sampled object in eight reproduced byte for byte even with `/Brepro` set, so
 something else in the toolchain still varies. That caps how much
-[`SCCACHE_VERIFY_HITS`](Configuration.md) can check, and it is a reason to treat
+[`SCCION_VERIFY_HITS`](Configuration.md) can check, and it is a reason to treat
 "cannot be verified" as an ordinary answer rather than a warning.
 
 `sccion --check-env` reports both, along with the rest of the machine's

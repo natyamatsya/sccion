@@ -102,7 +102,7 @@ pub fn set_configured_encoding(encoding: ObjectEncoding) {
 /// The environment wins over the config file: the file is the answer for this
 /// machine, the environment is the answer for this run of it.
 static OBJECT_ENCODING: std::sync::LazyLock<ObjectEncoding> = std::sync::LazyLock::new(|| {
-    let uncompressed = std::env::var("SCCACHE_CACHE_COMPRESSION").ok().map(|v| {
+    let uncompressed = crate::envvar::var("SCCION_CACHE_COMPRESSION").map(|v| {
         let v = v.trim().to_ascii_lowercase();
         v == "none" || v == "off" || v == "false" || v == "0"
     });
@@ -117,8 +117,7 @@ static OBJECT_ENCODING: std::sync::LazyLock<ObjectEncoding> = std::sync::LazyLoc
             }
         }
     }
-    let level = std::env::var("SCCACHE_CACHE_ZSTD_LEVEL")
-        .ok()
+    let level = crate::envvar::var("SCCION_CACHE_ZSTD_LEVEL")
         .and_then(|value| value.parse::<i32>().ok())
         .or_else(|| match CONFIGURED_ENCODING.get() {
             Some(ObjectEncoding::Zstd(level)) => Some(*level),
@@ -704,7 +703,7 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn extraction_clones_from_an_aligned_entry() {
-        let Some(root) = std::env::var_os("SCCACHE_TEST_CLONE_DIR") else {
+        let Some(root) = crate::envvar::var_os("SCCION_TEST_CLONE_DIR") else {
             eprintln!("skipping: set SCCACHE_TEST_CLONE_DIR to a clone-capable volume");
             return;
         };

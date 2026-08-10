@@ -33,11 +33,13 @@ transport layer encryption, and sandboxed compiler execution on build servers.
 See [the distributed quickstart](docs/DistributedQuickstart.md) guide for more
 information.
 
-> **The environment is still `SCCACHE_*`.** Every variable, the configuration
-> file's location, the cache directory and the `.sccache.toml` project file keep
-> the names they had. A rename that moved your cache or stopped reading your
-> environment would be a rename that broke your build. Only the binaries changed
-> name: `sccion`, `sccion-dist` and `sccion-mcp`.
+> **`SCCACHE_*` still works.** The documentation below spells every setting
+> `SCCION_*`, and every one of them is also read under its `SCCACHE_*` name,
+> meaning exactly the same thing. `SCCION_` wins if both are set, and a
+> disagreement between them is logged rather than settled in silence. The
+> configuration file's location, the cache directory and the `.sccache.toml`
+> project file keep their names outright. Nothing you have configured needs
+> changing to run `sccion` instead of `sccache`.
 
 ---
 
@@ -141,11 +143,11 @@ If you don't [specify otherwise](#storage-options), sccion will use a local disk
 
 sccion works using a client-server model, where the server runs locally on the same machine as the client. The client-server model allows the server to be more efficient by keeping some state in memory. The sccion command will spawn a server process if one is not already running, or you can run `sccion --start-server` to start the background server process without performing any compilation.
 
-By default sccion server will listen on `127.0.0.1:4226`, you can specify environment variable `SCCACHE_SERVER_PORT` to use a different port or `SCCACHE_SERVER_UDS` to listen on unix domain socket. Abstract unix socket is also supported as long as the path is escaped following the [format](https://doc.rust-lang.org/std/ascii/fn.escape_default.html). For example:
+By default sccion server will listen on `127.0.0.1:4226`, you can specify environment variable `SCCION_SERVER_PORT` to use a different port or `SCCION_SERVER_UDS` to listen on unix domain socket. Abstract unix socket is also supported as long as the path is escaped following the [format](https://doc.rust-lang.org/std/ascii/fn.escape_default.html). For example:
 
 ```
-% env SCCACHE_SERVER_UDS=$HOME/sccion.sock sccion --start-server # unix socket
-% env SCCACHE_SERVER_UDS=\\x00sccion.sock sccion --start-server # abstract unix socket
+% env SCCION_SERVER_UDS=$HOME/sccion.sock sccion --start-server # unix socket
+% env SCCION_SERVER_UDS=\\x00sccion.sock sccion --start-server # abstract unix socket
 ```
 
 You can run `sccion --stop-server` to terminate the server. It will also terminate after (by default) 10 minutes of inactivity.
@@ -176,7 +178,7 @@ elseif(CMAKE_BUILD_TYPE STREQUAL "RelWithDebInfo")
 endif()
 ```
 
-By default, sccion will fail your build if it fails to successfully communicate with its associated server. To have sccion instead gracefully failover to the local compiler without stopping, set the environment variable `SCCACHE_IGNORE_SERVER_IO_ERROR=1`.
+By default, sccion will fail your build if it fails to successfully communicate with its associated server. To have sccion instead gracefully failover to the local compiler without stopping, set the environment variable `SCCION_IGNORE_SERVER_IO_ERROR=1`.
 
 **For versions of cmake 3.25 and later**, to compile with MSVC, you have to use the new `CMAKE_MSVC_DEBUG_INFORMATION_FORMAT` option, meant to configure the `-Z7` flag.  Additionally, you must set the cmake policy number 0141 to the NEW setting:
 ```cmake
@@ -257,7 +259,7 @@ Separating caches between invocations
 
 In situations where several different compilation invocations
 should not reuse the cached results from each other,
-one can set `SCCACHE_C_CUSTOM_CACHE_BUSTER` to a unique value
+one can set `SCCION_C_CUSTOM_CACHE_BUSTER` to a unique value
 that'll be mixed into the hash.
 `MACOSX_DEPLOYMENT_TARGET` and `IPHONEOS_DEPLOYMENT_TARGET` variables
 already exhibit such reuse-suppression behaviour.
@@ -268,24 +270,24 @@ There are currently no such variables for compiling Rust.
 Overwriting the cache
 ---------------------
 
-In situations where the cache contains broken build artifacts, it can be necessary to overwrite the contents in the cache. That can be achieved by setting the `SCCACHE_RECACHE` environment variable.
+In situations where the cache contains broken build artifacts, it can be necessary to overwrite the contents in the cache. That can be achieved by setting the `SCCION_RECACHE` environment variable.
 
 ---
 
 Debugging
 ---------
 
-You can set the `SCCACHE_ERROR_LOG` environment variable to a path and set `SCCACHE_LOG` to get the server process to redirect its logging there (including the output of unhandled panics, since the server sets `RUST_BACKTRACE=1` internally).
+You can set the `SCCION_ERROR_LOG` environment variable to a path and set `SCCION_LOG` to get the server process to redirect its logging there (including the output of unhandled panics, since the server sets `RUST_BACKTRACE=1` internally).
 
-    SCCACHE_ERROR_LOG=/tmp/sccion_log.txt SCCACHE_LOG=debug sccion
+    SCCION_ERROR_LOG=/tmp/sccion_log.txt SCCION_LOG=debug sccion
 
 You can also set these environment variables for your build system, for example
 
-    SCCACHE_ERROR_LOG=/tmp/sccion_log.txt SCCACHE_LOG=debug cmake --build /path/to/cmake/build/directory
+    SCCION_ERROR_LOG=/tmp/sccion_log.txt SCCION_LOG=debug cmake --build /path/to/cmake/build/directory
 
-Alternatively, if you are compiling locally, you can run the server manually in foreground mode by running `SCCACHE_START_SERVER=1 SCCACHE_NO_DAEMON=1 sccion`, and send logging to stderr by setting the [`SCCACHE_LOG` environment variable](https://docs.rs/env_logger/0.7.1/env_logger/#enabling-logging) for example. This method is not suitable for CI services because you need to compile in another shell at the same time.
+Alternatively, if you are compiling locally, you can run the server manually in foreground mode by running `SCCION_START_SERVER=1 SCCION_NO_DAEMON=1 sccion`, and send logging to stderr by setting the [`SCCION_LOG` environment variable](https://docs.rs/env_logger/0.7.1/env_logger/#enabling-logging) for example. This method is not suitable for CI services because you need to compile in another shell at the same time.
 
-    SCCACHE_LOG=debug SCCACHE_START_SERVER=1 SCCACHE_NO_DAEMON=1 sccion
+    SCCION_LOG=debug SCCION_START_SERVER=1 SCCION_NO_DAEMON=1 sccion
 
 ---
 
@@ -298,19 +300,19 @@ This is most useful when using sccion for Rust compilation, as rustc supports us
 
 ---
 
-Normalizing Paths with `SCCACHE_BASEDIRS`
+Normalizing Paths with `SCCION_BASEDIRS`
 -----------------------------------------
 
-By default, sccion requires absolute paths to match for cache hits. To enable cache sharing across different build directories, you can set `SCCACHE_BASEDIRS` to strip a base directory from paths before hashing:
+By default, sccion requires absolute paths to match for cache hits. To enable cache sharing across different build directories, you can set `SCCION_BASEDIRS` to strip a base directory from paths before hashing:
 
 ```bash
-export SCCACHE_BASEDIRS=/home/user/project
+export SCCION_BASEDIRS=/home/user/project
 ```
 
 You can also specify multiple base directories by separating them by `;` on Windows hosts and by `:` on any other operating system. When multiple directories are provided, the longest matching prefix is used:
 
 ```bash
-export SCCACHE_BASEDIRS="/home/user/project:/home/user/workspace"
+export SCCION_BASEDIRS="/home/user/project:/home/user/workspace"
 ```
 
 Path matching is **case-insensitive** on Windows and **case-sensitive** on other operating systems.
@@ -340,7 +342,7 @@ Known Caveats
 
 ### General
 
-* By default, absolute paths to files must match to get a cache hit. To work around this, use `SCCACHE_BASEDIRS` (see above) to normalize paths before hashing.
+* By default, absolute paths to files must match to get a cache hit. To work around this, use `SCCION_BASEDIRS` (see above) to normalize paths before hashing.
 
 ### Rust
 
@@ -408,12 +410,13 @@ sccache contributors. In summary, sccion adds:
 * **Windows and MSVC work** — see [docs/Windows.md](docs/Windows.md).
 * **Measurement** — see [docs/Benchmarks.md](docs/Benchmarks.md).
 
-**Names.** The binaries are `sccion`, `sccion-dist` and `sccion-mcp`. The
-`SCCACHE_*` environment variables, the configuration file's location, the cache
-directory and the `.sccache.toml` project file deliberately keep their upstream
-names, so a working sccache setup keeps working. sccion is not affiliated with
-or endorsed by Mozilla, and the Mozilla name and sccache trade marks are used
-here only to identify the work this one is derived from.
+**Names.** The binaries are `sccion`, `sccion-dist` and `sccion-mcp`. Settings
+are spelled `SCCION_*` and are read under `SCCACHE_*` as well; the configuration
+file's location, the cache directory and the `.sccache.toml` project file keep
+their upstream names outright. An sccache setup keeps working unchanged. sccion
+is not affiliated with or endorsed by Mozilla, and the Mozilla name and the
+sccache trade marks are used here only to identify the work this one is derived
+from.
 
 Storage Options
 ---------------

@@ -22,7 +22,7 @@ use std::ffi::{OsStr, OsString};
 use std::path::Path;
 
 /// What a caller sets to name itself.
-pub const AGENT_ID_VAR: &str = "SCCACHE_AGENT_ID";
+pub const AGENT_ID_VAR: &str = "SCCION_AGENT_ID";
 
 /// Who to attribute a compilation in `cwd` to.
 ///
@@ -35,7 +35,7 @@ pub const AGENT_ID_VAR: &str = "SCCACHE_AGENT_ID";
 pub fn identity(env_vars: &[(OsString, OsString)], cwd: &Path) -> Option<String> {
     let named = env_vars
         .iter()
-        .find(|(k, _)| k == OsStr::new(AGENT_ID_VAR))
+        .find(|(k, _)| crate::envvar::matches(k, AGENT_ID_VAR))
         .map(|(_, v)| v.to_string_lossy().into_owned())
         .filter(|v| !v.is_empty());
     named.or_else(|| workspace(cwd))

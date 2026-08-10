@@ -80,9 +80,9 @@ If any level fails, the error is logged but the write succeeds if at least one l
 
 **Solution**: Add Redis or Memcached as L1
 ```bash
-SCCACHE_MULTILEVEL_CHAIN="disk,redis"
-SCCACHE_DIR="/tmp/sccion"
-SCCACHE_REDIS_ENDPOINT="redis://cache.internal:6379"
+SCCION_MULTILEVEL_CHAIN="disk,redis"
+SCCION_DIR="/tmp/sccion"
+SCCION_REDIS_ENDPOINT="redis://cache.internal:6379"
 ```
 
 **Result**: Fast local hits when available, team-shared cache otherwise.
@@ -93,7 +93,7 @@ SCCACHE_REDIS_ENDPOINT="redis://cache.internal:6379"
 
 **Solution**: Multi-tier hierarchy
 ```bash
-SCCACHE_MULTILEVEL_CHAIN="disk,redis,s3"
+SCCION_MULTILEVEL_CHAIN="disk,redis,s3"
 ```
 
 - L0: Local disk (instant)
@@ -108,10 +108,10 @@ SCCACHE_MULTILEVEL_CHAIN="disk,redis,s3"
 
 **Solution**: Disk + cloud storage
 ```bash
-SCCACHE_MULTILEVEL_CHAIN="disk,s3"
-SCCACHE_DIR="$HOME/.cache/sccion"
-SCCACHE_BUCKET="my-personal-sccion"
-SCCACHE_CACHE_SIZE="5G"  # Keep disk small
+SCCION_MULTILEVEL_CHAIN="disk,s3"
+SCCION_DIR="$HOME/.cache/sccion"
+SCCION_BUCKET="my-personal-sccion"
+SCCION_CACHE_SIZE="5G"  # Keep disk small
 ```
 
 **Result**: Unlimited cloud storage, fast local hits.
@@ -120,10 +120,10 @@ SCCACHE_CACHE_SIZE="5G"  # Keep disk small
 
 ### Via Environment Variables
 
-The primary configuration is `SCCACHE_MULTILEVEL_CHAIN`:
+The primary configuration is `SCCION_MULTILEVEL_CHAIN`:
 
 ```bash
-export SCCACHE_MULTILEVEL_CHAIN="disk,redis,s3"
+export SCCION_MULTILEVEL_CHAIN="disk,redis,s3"
 ```
 
 **Format**: Comma-separated list of cache backend names
@@ -132,7 +132,7 @@ export SCCACHE_MULTILEVEL_CHAIN="disk,redis,s3"
 
 ### Write Error Policy Configuration
 
-Control how sccion handles write failures across cache levels using `SCCACHE_MULTILEVEL_WRITE_ERROR_POLICY`:
+Control how sccion handles write failures across cache levels using `SCCION_MULTILEVEL_WRITE_ERROR_POLICY`:
 
 **Available policies**:
 - **`ignore`** - Never fail on write errors, log warnings only (most permissive)
@@ -145,33 +145,33 @@ Control how sccion handles write failures across cache levels using `SCCACHE_MUL
 
 **Example 1: Default Behavior (l0 policy)**
 ```bash
-export SCCACHE_MULTILEVEL_CHAIN="disk,redis,s3"
-export SCCACHE_MULTILEVEL_WRITE_ERROR_POLICY="l0"  # or omit, it's the default
+export SCCION_MULTILEVEL_CHAIN="disk,redis,s3"
+export SCCION_MULTILEVEL_WRITE_ERROR_POLICY="l0"  # or omit, it's the default
 ```
 Compilation succeeds if disk write succeeds. Redis/S3 failures are logged but don't block compilation. Ensures local cache is always populated. **Best for most use cases.**
 
 **Example 2: Best Effort (ignore policy)**
 ```bash
-export SCCACHE_MULTILEVEL_CHAIN="disk,redis,s3"
-export SCCACHE_MULTILEVEL_WRITE_ERROR_POLICY="ignore"
+export SCCION_MULTILEVEL_CHAIN="disk,redis,s3"
+export SCCION_MULTILEVEL_WRITE_ERROR_POLICY="ignore"
 ```
 Compilation always succeeds, even if all writes fail. Write failures are logged as warnings. **Best for unstable cache backends** where you don't want cache issues blocking builds.
 
 **Example 3: Strict Consistency (all policy)**
 ```bash
-export SCCACHE_MULTILEVEL_CHAIN="disk,redis,s3"
-export SCCACHE_MULTILEVEL_WRITE_ERROR_POLICY="all"
+export SCCION_MULTILEVEL_CHAIN="disk,redis,s3"
+export SCCION_MULTILEVEL_WRITE_ERROR_POLICY="all"
 ```
 Compilation succeeds only if all read-write levels succeed. Any write failure fails the compilation. **Best for critical environments** where cache consistency is mandatory.
 
 #### Read-Only Levels
 
-Any level configured as read-only (e.g., `SCCACHE_LOCAL_RW_MODE=READ_ONLY`) is automatically skipped during writes, regardless of write policy:
+Any level configured as read-only (e.g., `SCCION_LOCAL_RW_MODE=READ_ONLY`) is automatically skipped during writes, regardless of write policy:
 
 ```bash
-export SCCACHE_MULTILEVEL_CHAIN="disk,redis"
-export SCCACHE_MULTILEVEL_WRITE_ERROR_POLICY="all"
-export SCCACHE_LOCAL_RW_MODE="READ_ONLY"  # Disk is read-only
+export SCCION_MULTILEVEL_CHAIN="disk,redis"
+export SCCION_MULTILEVEL_WRITE_ERROR_POLICY="all"
+export SCCION_LOCAL_RW_MODE="READ_ONLY"  # Disk is read-only
 # Compilation succeeds if Redis write succeeds (disk is skipped)
 ```
 
@@ -179,21 +179,21 @@ export SCCACHE_LOCAL_RW_MODE="READ_ONLY"  # Disk is read-only
 
 ```bash
 # Multi-level configuration
-export SCCACHE_MULTILEVEL_CHAIN="disk,redis,s3"
-export SCCACHE_MULTILEVEL_WRITE_ERROR_POLICY="l0"  # Default: fail only if disk fails
+export SCCION_MULTILEVEL_CHAIN="disk,redis,s3"
+export SCCION_MULTILEVEL_WRITE_ERROR_POLICY="l0"  # Default: fail only if disk fails
 
 # Level 0: Disk cache
-export SCCACHE_DIR="/var/cache/sccion"
-export SCCACHE_CACHE_SIZE="10G"
+export SCCION_DIR="/var/cache/sccion"
+export SCCION_CACHE_SIZE="10G"
 
 # Level 1: Redis cache
-export SCCACHE_REDIS_ENDPOINT="redis://localhost:6379"
-export SCCACHE_REDIS_EXPIRATION="86400"  # 24 hours
+export SCCION_REDIS_ENDPOINT="redis://localhost:6379"
+export SCCION_REDIS_EXPIRATION="86400"  # 24 hours
 
 # Level 2: S3 cache
-export SCCACHE_BUCKET="my-sccion-bucket"
-export SCCACHE_REGION="us-east-1"
-export SCCACHE_S3_USE_SSL="true"
+export SCCION_BUCKET="my-sccion-bucket"
+export SCCION_REGION="us-east-1"
+export SCCION_S3_USE_SSL="true"
 ```
 
 ### Via Configuration File
@@ -220,11 +220,11 @@ use_ssl = true
 
 ### Single Level (No Multi-Level)
 
-If `SCCACHE_MULTILEVEL_CHAIN` is not set, sccion uses the first configured cache backend (legacy behavior):
+If `SCCION_MULTILEVEL_CHAIN` is not set, sccion uses the first configured cache backend (legacy behavior):
 
 ```bash
 # Just uses disk (backwards compatible)
-export SCCACHE_DIR="/tmp/cache"
+export SCCION_DIR="/tmp/cache"
 ```
 
 ## Best Practices

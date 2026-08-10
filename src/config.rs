@@ -926,8 +926,15 @@ pub struct EnvConfig {
     mcp: Option<bool>,
 }
 
+/// The single point every configuration setting is read through.
+///
+/// It goes via [`crate::envvar`], so all of them accept the `SCCACHE_` spelling
+/// as well as the `SCCION_` one. Reading `env::var` directly here was what made
+/// the rename look correct and behave otherwise: the names at the call sites
+/// changed, the lookup did not, and every setting anyone had already configured
+/// silently stopped being found.
 fn string_from_env_var(env_var_name: &str) -> Option<String> {
-    env::var(env_var_name).ok().filter(|s| !s.is_empty())
+    crate::envvar::var(env_var_name).filter(|s| !s.is_empty())
 }
 
 fn key_prefix_from_env_var(env_var_name: &str) -> String {
@@ -944,7 +951,10 @@ fn cache_mode_from_env_var(env_var_name: &str) -> Option<CacheModeConfig> {
         "READ_ONLY" => Some(CacheModeConfig::ReadOnly),
         "READ_WRITE" => Some(CacheModeConfig::ReadWrite),
         _ => {
-            warn!("{} must be 'READ_ONLY' or 'READ_WRITE'", env_var_name);
+            warn!(
+                "{} must be 'READ_ONLY' or 'READ_WRITE'",
+                crate::envvar::name_in_use(env_var_name)
+            );
             None
         }
     })
@@ -958,7 +968,12 @@ where
 
     value
         .parse::<A>()
-        .map_err(|err| anyhow!("{env_var_name} value is invalid: {err:?}"))
+        .map_err(|err| {
+            anyhow!(
+                "{} value is invalid: {err:?}",
+                crate::envvar::name_in_use(env_var_name)
+            )
+        })
         .into()
 }
 
@@ -969,7 +984,7 @@ fn bool_from_env_var(env_var_name: &str) -> Result<Option<bool>> {
             "false" | "off" | "0" => Ok(false),
             _ => bail!(
                 "{} must be 'true', 'on', '1', 'false', 'off' or '0'.",
-                env_var_name
+                crate::envvar::name_in_use(env_var_name)
             ),
         })
         .transpose()
@@ -977,20 +992,20 @@ fn bool_from_env_var(env_var_name: &str) -> Result<Option<bool>> {
 
 fn config_from_env() -> Result<EnvConfig> {
     // ======= AWS =======
-    let s3 = if let Some(bucket) = string_from_env_var("SCCACHE_BUCKET") {
-        let region = string_from_env_var("SCCACHE_REGION");
-        let no_credentials = bool_from_env_var("SCCACHE_S3_NO_CREDENTIALS")?.unwrap_or(false);
-        let use_ssl = bool_from_env_var("SCCACHE_S3_USE_SSL")?;
-        let server_side_encryption = bool_from_env_var("SCCACHE_S3_SERVER_SIDE_ENCRYPTION")?;
+    let s3 = if let Some(bucket) = string_from_env_var("SCCION_BUCKET") {
+        let region = string_from_env_var("SCCION_REGION");
+        let no_credentials = bool_from_env_var("SCCION_S3_NO_CREDENTIALS")?.unwrap_or(false);
+        let use_ssl = bool_from_env_var("SCCION_S3_USE_SSL")?;
+        let server_side_encryption = bool_from_env_var("SCCION_S3_SERVER_SIDE_ENCRYPTION")?;
         let server_side_encryption_aws_kms =
-            bool_from_env_var("SCCACHE_S3_SERVER_SIDE_ENCRYPTION_AWS_KMS")?;
+            bool_from_env_var("SCCION_S3_SERVER_SIDE_ENCRYPTION_AWS_KMS")?;
         let server_side_encryption_kms_key_id =
-            string_from_env_var("SCCACHE_S3_SERVER_SIDE_ENCRYPTION_KMS_KEY_ID");
-        let endpoint = string_from_env_var("SCCACHE_ENDPOINT");
-        let key_prefix = key_prefix_from_env_var("SCCACHE_S3_KEY_PREFIX");
-        let enable_virtual_host_style = bool_from_env_var("SCCACHE_S3_ENABLE_VIRTUAL_HOST_STYLE")?;
+            string_from_env_var("SCCION_S3_SERVER_SIDE_ENCRYPTION_KMS_KEY_ID");
+        let endpoint = string_from_env_var("SCCION_ENDPOINT");
+        let key_prefix = key_prefix_from_env_var("SCCION_S3_KEY_PREFIX");
+        let enable_virtual_host_style = bool_from_env_var("SCCION_S3_ENABLE_VIRTUAL_HOST_STYLE")?;
         let rw_mode =
-            cache_mode_from_env_var("SCCACHE_S3_RW_MODE").unwrap_or(CacheModeConfig::ReadWrite);
+            cache_mode_from_env_var("SCCION_S3_RW_MODE").unwrap_or(CacheModeConfig::ReadWrite);
 
         Some(S3CacheConfig {
             bucket,
@@ -1018,27 +1033,27 @@ fn config_from_env() -> Result<EnvConfig> {
 
     // ======= redis =======
     let redis = match (
-        string_from_env_var("SCCACHE_REDIS"),
-        string_from_env_var("SCCACHE_REDIS_ENDPOINT"),
-        string_from_env_var("SCCACHE_REDIS_CLUSTER_ENDPOINTS"),
+        string_from_env_var("SCCION_REDIS"),
+        string_from_env_var("SCCION_REDIS_ENDPOINT"),
+        string_from_env_var("SCCION_REDIS_CLUSTER_ENDPOINTS"),
     ) {
         (None, None, None) => None,
         (url, endpoint, cluster_endpoints) => {
-            let db = number_from_env_var("SCCACHE_REDIS_DB")
+            let db = number_from_env_var("SCCION_REDIS_DB")
                 .transpose()?
                 .unwrap_or(DEFAULT_REDIS_DB);
 
-            let username = string_from_env_var("SCCACHE_REDIS_USERNAME");
-            let password = string_from_env_var("SCCACHE_REDIS_PASSWORD");
+            let username = string_from_env_var("SCCION_REDIS_USERNAME");
+            let password = string_from_env_var("SCCION_REDIS_PASSWORD");
 
-            let ttl = number_from_env_var("SCCACHE_REDIS_EXPIRATION")
-                .or_else(|| number_from_env_var("SCCACHE_REDIS_TTL"))
+            let ttl = number_from_env_var("SCCION_REDIS_EXPIRATION")
+                .or_else(|| number_from_env_var("SCCION_REDIS_TTL"))
                 .transpose()?
                 .unwrap_or(DEFAULT_REDIS_CACHE_TTL);
 
-            let key_prefix = key_prefix_from_env_var("SCCACHE_REDIS_KEY_PREFIX");
+            let key_prefix = key_prefix_from_env_var("SCCION_REDIS_KEY_PREFIX");
 
-            let rw_mode = cache_mode_from_env_var("SCCACHE_REDIS_RW_MODE")
+            let rw_mode = cache_mode_from_env_var("SCCION_REDIS_RW_MODE")
                 .unwrap_or(CacheModeConfig::ReadWrite);
 
             Some(RedisCacheConfig {
@@ -1055,26 +1070,26 @@ fn config_from_env() -> Result<EnvConfig> {
         }
     };
 
-    if env::var_os("SCCACHE_REDIS_EXPIRATION").is_some()
-        && env::var_os("SCCACHE_REDIS_TTL").is_some()
+    if crate::envvar::var_os("SCCION_REDIS_EXPIRATION").is_some()
+        && crate::envvar::var_os("SCCION_REDIS_TTL").is_some()
     {
         bail!("You mustn't set both SCCACHE_REDIS_EXPIRATION and SCCACHE_REDIS_TTL. Use only one.");
     }
 
     // ======= memcached =======
-    let memcached = if let Some(url) = string_from_env_var("SCCACHE_MEMCACHED")
-        .or_else(|| string_from_env_var("SCCACHE_MEMCACHED_ENDPOINT"))
+    let memcached = if let Some(url) = string_from_env_var("SCCION_MEMCACHED")
+        .or_else(|| string_from_env_var("SCCION_MEMCACHED_ENDPOINT"))
     {
-        let username = string_from_env_var("SCCACHE_MEMCACHED_USERNAME");
-        let password = string_from_env_var("SCCACHE_MEMCACHED_PASSWORD");
+        let username = string_from_env_var("SCCION_MEMCACHED_USERNAME");
+        let password = string_from_env_var("SCCION_MEMCACHED_PASSWORD");
 
-        let expiration = number_from_env_var("SCCACHE_MEMCACHED_EXPIRATION")
+        let expiration = number_from_env_var("SCCION_MEMCACHED_EXPIRATION")
             .transpose()?
             .unwrap_or(DEFAULT_MEMCACHED_CACHE_EXPIRATION);
 
-        let key_prefix = key_prefix_from_env_var("SCCACHE_MEMCACHED_KEY_PREFIX");
+        let key_prefix = key_prefix_from_env_var("SCCION_MEMCACHED_KEY_PREFIX");
 
-        let rw_mode = cache_mode_from_env_var("SCCACHE_MEMCACHED_RW_MODE")
+        let rw_mode = cache_mode_from_env_var("SCCION_MEMCACHED_RW_MODE")
             .unwrap_or(CacheModeConfig::ReadWrite);
 
         Some(MemcachedCacheConfig {
@@ -1089,8 +1104,8 @@ fn config_from_env() -> Result<EnvConfig> {
         None
     };
 
-    if env::var_os("SCCACHE_MEMCACHED").is_some()
-        && env::var_os("SCCACHE_MEMCACHED_ENDPOINT").is_some()
+    if crate::envvar::var_os("SCCION_MEMCACHED").is_some()
+        && crate::envvar::var_os("SCCION_MEMCACHED_ENDPOINT").is_some()
     {
         bail!(
             "You mustn't set both SCCACHE_MEMCACHED and SCCACHE_MEMCACHED_ENDPOINT. Please, use only SCCACHE_MEMCACHED_ENDPOINT."
@@ -1098,30 +1113,30 @@ fn config_from_env() -> Result<EnvConfig> {
     }
 
     // ======= GCP/GCS =======
-    if (string_from_env_var("SCCACHE_GCS_CREDENTIALS_URL").is_some()
-        || string_from_env_var("SCCACHE_GCS_OAUTH_URL").is_some()
-        || string_from_env_var("SCCACHE_GCS_KEY_PATH").is_some())
-        && string_from_env_var("SCCACHE_GCS_BUCKET").is_none()
+    if (string_from_env_var("SCCION_GCS_CREDENTIALS_URL").is_some()
+        || string_from_env_var("SCCION_GCS_OAUTH_URL").is_some()
+        || string_from_env_var("SCCION_GCS_KEY_PATH").is_some())
+        && string_from_env_var("SCCION_GCS_BUCKET").is_none()
     {
         bail!(
             "If setting GCS credentials, SCCACHE_GCS_BUCKET and an auth mechanism need to be set."
         );
     }
 
-    let gcs = string_from_env_var("SCCACHE_GCS_BUCKET").map(|bucket| {
-        let key_prefix = key_prefix_from_env_var("SCCACHE_GCS_KEY_PREFIX");
+    let gcs = string_from_env_var("SCCION_GCS_BUCKET").map(|bucket| {
+        let key_prefix = key_prefix_from_env_var("SCCION_GCS_KEY_PREFIX");
 
-        if string_from_env_var("SCCACHE_GCS_OAUTH_URL").is_some() {
+        if string_from_env_var("SCCION_GCS_OAUTH_URL").is_some() {
             eprintln!("SCCACHE_GCS_OAUTH_URL has been deprecated");
             eprintln!("if you intend to use vm metadata for auth, please set correct service account instead");
         }
 
-        let credential_url = string_from_env_var("SCCACHE_GCS_CREDENTIALS_URL");
+        let credential_url = string_from_env_var("SCCION_GCS_CREDENTIALS_URL");
 
-        let cred_path = string_from_env_var("SCCACHE_GCS_KEY_PATH");
-        let service_account = string_from_env_var("SCCACHE_GCS_SERVICE_ACCOUNT");
+        let cred_path = string_from_env_var("SCCION_GCS_KEY_PATH");
+        let service_account = string_from_env_var("SCCION_GCS_SERVICE_ACCOUNT");
 
-        let rw_mode = cache_mode_from_env_var("SCCACHE_GCS_RW_MODE").unwrap_or_else(|| {
+        let rw_mode = cache_mode_from_env_var("SCCION_GCS_RW_MODE").unwrap_or_else(|| {
             warn!("No valid SCCACHE_GCS_RW_MODE value was found -- defaulting to READ_ONLY.");
             CacheModeConfig::ReadOnly
         });
@@ -1138,8 +1153,8 @@ fn config_from_env() -> Result<EnvConfig> {
 
     // ======= GHA =======
     let gha_rw_mode: CacheModeConfig =
-        cache_mode_from_env_var("SCCACHE_GHA_RW_MODE").unwrap_or(CacheModeConfig::ReadWrite);
-    let gha = if let Some(version) = string_from_env_var("SCCACHE_GHA_VERSION") {
+        cache_mode_from_env_var("SCCION_GHA_RW_MODE").unwrap_or(CacheModeConfig::ReadWrite);
+    let gha = if let Some(version) = string_from_env_var("SCCION_GHA_VERSION") {
         // If SCCACHE_GHA_VERSION has been set, we don't need to check
         // SCCACHE_GHA_ENABLED's value anymore.
         Some(GHACacheConfig {
@@ -1147,7 +1162,7 @@ fn config_from_env() -> Result<EnvConfig> {
             version,
             rw_mode: gha_rw_mode,
         })
-    } else if bool_from_env_var("SCCACHE_GHA_ENABLED")?.unwrap_or(false) {
+    } else if bool_from_env_var("SCCION_GHA_ENABLED")?.unwrap_or(false) {
         // If only SCCACHE_GHA_ENABLED has been set to the true value, enable with
         // default version.
         Some(GHACacheConfig {
@@ -1161,12 +1176,12 @@ fn config_from_env() -> Result<EnvConfig> {
 
     // ======= Azure =======
     let azure = if let (Some(connection_string), Some(container)) = (
-        string_from_env_var("SCCACHE_AZURE_CONNECTION_STRING"),
-        string_from_env_var("SCCACHE_AZURE_BLOB_CONTAINER"),
+        string_from_env_var("SCCION_AZURE_CONNECTION_STRING"),
+        string_from_env_var("SCCION_AZURE_BLOB_CONTAINER"),
     ) {
-        let key_prefix = key_prefix_from_env_var("SCCACHE_AZURE_KEY_PREFIX");
+        let key_prefix = key_prefix_from_env_var("SCCION_AZURE_KEY_PREFIX");
         let rw_mode =
-            cache_mode_from_env_var("SCCACHE_AZURE_RW_MODE").unwrap_or(CacheModeConfig::ReadWrite);
+            cache_mode_from_env_var("SCCION_AZURE_RW_MODE").unwrap_or(CacheModeConfig::ReadWrite);
 
         Some(AzureCacheConfig {
             connection_string,
@@ -1179,13 +1194,13 @@ fn config_from_env() -> Result<EnvConfig> {
     };
 
     // ======= WebDAV =======
-    let webdav = if let Some(endpoint) = string_from_env_var("SCCACHE_WEBDAV_ENDPOINT") {
-        let key_prefix = key_prefix_from_env_var("SCCACHE_WEBDAV_KEY_PREFIX");
-        let username = string_from_env_var("SCCACHE_WEBDAV_USERNAME");
-        let password = string_from_env_var("SCCACHE_WEBDAV_PASSWORD");
-        let token = string_from_env_var("SCCACHE_WEBDAV_TOKEN");
+    let webdav = if let Some(endpoint) = string_from_env_var("SCCION_WEBDAV_ENDPOINT") {
+        let key_prefix = key_prefix_from_env_var("SCCION_WEBDAV_KEY_PREFIX");
+        let username = string_from_env_var("SCCION_WEBDAV_USERNAME");
+        let password = string_from_env_var("SCCION_WEBDAV_PASSWORD");
+        let token = string_from_env_var("SCCION_WEBDAV_TOKEN");
         let rw_mode =
-            cache_mode_from_env_var("SCCACHE_WEBDAV_RW_MODE").unwrap_or(CacheModeConfig::ReadWrite);
+            cache_mode_from_env_var("SCCION_WEBDAV_RW_MODE").unwrap_or(CacheModeConfig::ReadWrite);
 
         Some(WebdavCacheConfig {
             endpoint,
@@ -1200,14 +1215,14 @@ fn config_from_env() -> Result<EnvConfig> {
     };
 
     // ======= OSS =======
-    let oss = if let Some(bucket) = string_from_env_var("SCCACHE_OSS_BUCKET") {
-        let endpoint = string_from_env_var("SCCACHE_OSS_ENDPOINT");
-        let key_prefix = key_prefix_from_env_var("SCCACHE_OSS_KEY_PREFIX");
+    let oss = if let Some(bucket) = string_from_env_var("SCCION_OSS_BUCKET") {
+        let endpoint = string_from_env_var("SCCION_OSS_ENDPOINT");
+        let key_prefix = key_prefix_from_env_var("SCCION_OSS_KEY_PREFIX");
 
-        let no_credentials = bool_from_env_var("SCCACHE_OSS_NO_CREDENTIALS")?.unwrap_or(false);
+        let no_credentials = bool_from_env_var("SCCION_OSS_NO_CREDENTIALS")?.unwrap_or(false);
 
         let rw_mode =
-            cache_mode_from_env_var("SCCACHE_OSS_RW_MODE").unwrap_or(CacheModeConfig::ReadWrite);
+            cache_mode_from_env_var("SCCION_OSS_RW_MODE").unwrap_or(CacheModeConfig::ReadWrite);
 
         Some(OSSCacheConfig {
             bucket,
@@ -1231,12 +1246,12 @@ fn config_from_env() -> Result<EnvConfig> {
     }
 
     // ======= COS =======
-    let cos = if let Some(bucket) = string_from_env_var("SCCACHE_COS_BUCKET") {
-        let endpoint = string_from_env_var("SCCACHE_COS_ENDPOINT");
-        let key_prefix = key_prefix_from_env_var("SCCACHE_COS_KEY_PREFIX");
+    let cos = if let Some(bucket) = string_from_env_var("SCCION_COS_BUCKET") {
+        let endpoint = string_from_env_var("SCCION_COS_ENDPOINT");
+        let key_prefix = key_prefix_from_env_var("SCCION_COS_KEY_PREFIX");
 
         let rw_mode =
-            cache_mode_from_env_var("SCCACHE_COS_RW_MODE").unwrap_or(CacheModeConfig::ReadWrite);
+            cache_mode_from_env_var("SCCION_COS_RW_MODE").unwrap_or(CacheModeConfig::ReadWrite);
 
         Some(COSCacheConfig {
             bucket,
@@ -1249,11 +1264,11 @@ fn config_from_env() -> Result<EnvConfig> {
     };
 
     // ======= Local =======
-    let disk_dir = env::var_os("SCCACHE_DIR").map(PathBuf::from);
-    let disk_sz = string_from_env_var("SCCACHE_CACHE_SIZE").and_then(|v| parse_size(&v));
+    let disk_dir = crate::envvar::var_os("SCCION_DIR").map(PathBuf::from);
+    let disk_sz = string_from_env_var("SCCION_CACHE_SIZE").and_then(|v| parse_size(&v));
 
     let mut preprocessor_mode_config = PreprocessorCacheModeConfig::activated();
-    let preprocessor_mode_overridden = if let Some(value) = bool_from_env_var("SCCACHE_DIRECT")? {
+    let preprocessor_mode_overridden = if let Some(value) = bool_from_env_var("SCCION_DIRECT")? {
         preprocessor_mode_config.use_preprocessor_cache_mode = value;
         true
     } else {
@@ -1261,7 +1276,7 @@ fn config_from_env() -> Result<EnvConfig> {
     };
 
     let (disk_rw_mode, disk_rw_mode_overridden) =
-        match cache_mode_from_env_var("SCCACHE_LOCAL_RW_MODE") {
+        match cache_mode_from_env_var("SCCION_LOCAL_RW_MODE") {
             Some(mode) => (mode, true),
             _ => (CacheModeConfig::ReadWrite, false),
         };
@@ -1282,10 +1297,10 @@ fn config_from_env() -> Result<EnvConfig> {
     };
 
     // Parse multi-level cache configuration
-    let multilevel = if let Some(chain_str) = string_from_env_var("SCCACHE_MULTILEVEL_CHAIN") {
+    let multilevel = if let Some(chain_str) = string_from_env_var("SCCION_MULTILEVEL_CHAIN") {
         let chain: Vec<String> = chain_str.split(',').map(|s| s.trim().to_string()).collect();
 
-        let write_error_policy = string_from_env_var("SCCACHE_MULTILEVEL_WRITE_ERROR_POLICY")
+        let write_error_policy = string_from_env_var("SCCION_MULTILEVEL_WRITE_ERROR_POLICY")
             .and_then(|s| s.parse::<WriteErrorPolicy>().ok())
             .unwrap_or_default();
 
@@ -1318,7 +1333,7 @@ fn config_from_env() -> Result<EnvConfig> {
     let split_symbol = ';';
     #[cfg(not(target_os = "windows"))]
     let split_symbol = ':';
-    let basedirs = env::var_os("SCCACHE_BASEDIRS").map(|s| {
+    let basedirs = crate::envvar::var_os("SCCION_BASEDIRS").map(|s| {
         s.to_string_lossy()
             .split(split_symbol)
             .filter(|s| !s.is_empty())
@@ -1326,8 +1341,8 @@ fn config_from_env() -> Result<EnvConfig> {
             .collect()
     });
 
-    let client_side_mode = bool_from_env_var("SCCACHE_CLIENT_SIDE")?;
-    let mcp = bool_from_env_var("SCCACHE_MCP")?;
+    let client_side_mode = bool_from_env_var("SCCION_CLIENT_SIDE")?;
+    let mcp = bool_from_env_var("SCCION_MCP")?;
 
     Ok(EnvConfig {
         cache,
@@ -1447,7 +1462,7 @@ impl Config {
             // SCCACHE_ERROR_LOG; Even if SCCACHE_ERROR_LOG was handled, there would
             // be write races from multiple processes. Until those are addressed, we
             // can't leave the client mode enabled alongside logging.
-            && std::env::var_os(crate::LOGGING_ENV).is_none()
+            && crate::envvar::var_os(crate::LOGGING_ENV).is_none()
             // Client-side mode is also not compatible with distributed compilation.
             && dist.scheduler_url.is_none();
 

@@ -100,7 +100,7 @@ stderr) and the exit code travel back to the CLI.
       C-->>B: exit code + outputs
 ```
 
-### Client-side mode (`SCCACHE_CLIENT_SIDE`)
+### Client-side mode (`SCCION_CLIENT_SIDE`)
 
 The compile pipeline runs **in the CLI process itself**; the daemon is used only
 as a shared gateway to the storage backend (and as a place to aggregate stats).
@@ -160,12 +160,12 @@ are exchanged with `StorageGetPreprocessorEntry` / `StoragePutPreprocessorEntry`
 Because each CLI process accumulates its own statistics, it flushes them to the
 daemon with `RecordStats` before exiting.
 
-Client-side mode is enabled with the `SCCACHE_CLIENT_SIDE` environment variable
+Client-side mode is enabled with the `SCCION_CLIENT_SIDE` environment variable
 (or the `client_side_mode` config key). It is expected to become the only
 supported configuration in the future, with server-side mode eventually
 removed. It is currently mutually exclusive with:
 
-- **error logging** (`SCCACHE_ERROR_LOG`): the client always logs to stderr, and
+- **error logging** (`SCCION_ERROR_LOG`): the client always logs to stderr, and
   multiple concurrent CLI processes would race on the log file, and
 - **distributed compilation** (a configured scheduler URL).
 

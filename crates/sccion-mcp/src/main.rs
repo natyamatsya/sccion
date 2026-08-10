@@ -35,8 +35,8 @@ fn main() -> Result<()> {
     // own migration guidance is "use stderr", so there is nothing to add on the
     // protocol side -- but there does have to be something, or a failure here
     // is a bare error code with no way to find out more.
-    if std::env::var(sccion::LOGGING_ENV).is_ok() {
-        let _ = env_logger::Builder::from_env(sccion::LOGGING_ENV)
+    if sccion::envvar::var(sccion::LOGGING_ENV).is_some() {
+        let _ = env_logger::Builder::from_env(sccion::envvar::logging_var())
             .target(env_logger::Target::Stderr)
             .try_init();
     }

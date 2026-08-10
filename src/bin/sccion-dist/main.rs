@@ -315,11 +315,11 @@ fn run(command: Command) -> Result<i32> {
 }
 
 fn init_logging() {
-    if env::var(sccache::LOGGING_ENV).is_ok() {
-        let mut builder = env_logger::Builder::from_env(sccache::LOGGING_ENV);
+    if sccion::envvar::var(sccion::LOGGING_ENV).is_some() {
+        let mut builder = env_logger::Builder::from_env(sccion::envvar::logging_var());
 
         // Enable millisecond precision timestamps if SCCACHE_LOG_MILLIS is set
-        if env::var("SCCACHE_LOG_MILLIS").is_ok() {
+        if crate::envvar::var("SCCION_LOG_MILLIS").is_some() {
             builder.format_timestamp_millis();
         }
 

@@ -54,13 +54,12 @@ const SERVER_STARTUP_TIMEOUT: Duration = Duration::from_millis(10000);
 /// Get the port on which the server should listen.
 pub(crate) fn get_addr() -> crate::net::SocketAddr {
     #[cfg(unix)]
-    if let Ok(addr) = env::var("SCCACHE_SERVER_UDS")
+    if let Some(addr) = crate::envvar::var("SCCION_SERVER_UDS")
         && let Ok(uds) = crate::net::SocketAddr::parse_uds(&addr)
     {
         return uds;
     }
-    let port = env::var("SCCACHE_SERVER_PORT")
-        .ok()
+    let port = crate::envvar::var("SCCION_SERVER_PORT")
         .and_then(|s| s.parse().ok())
         .unwrap_or(DEFAULT_PORT);
     crate::net::SocketAddr::with_port(port)
@@ -68,9 +67,9 @@ pub(crate) fn get_addr() -> crate::net::SocketAddr {
 
 /// Check if ignoring all response errors
 fn ignore_all_server_io_errors() -> bool {
-    match env::var("SCCACHE_IGNORE_SERVER_IO_ERROR") {
-        Ok(ignore_server_error) => ignore_server_error == "1",
-        Err(_) => false,
+    match crate::envvar::var("SCCION_IGNORE_SERVER_IO_ERROR") {
+        Some(ignore_server_error) => ignore_server_error == "1",
+        None => false,
     }
 }
 
@@ -109,7 +108,7 @@ fn run_server_process(startup_timeout: Option<Duration>) -> Result<ServerStartup
 
     let _child = process::Command::new(&exe_path)
         .current_dir(workdir)
-        .env("SCCACHE_START_SERVER", "1")
+        .env("SCCION_START_SERVER", "1")
         .env("SCCACHE_STARTUP_NOTIFY", &socket_path)
         .env("RUST_BACKTRACE", "1")
         // The daemon is always a storage proxy; it never runs in client-side
@@ -156,8 +155,8 @@ fn redirect_stderr(f: File) {
 /// Create the log file and return an error if cannot be created
 fn create_error_log() -> Result<File> {
     trace!("Create the log file");
-    let name = match env::var("SCCACHE_ERROR_LOG") {
-        Ok(filename) if !filename.is_empty() => filename,
+    let name = match crate::envvar::var("SCCION_ERROR_LOG") {
+        Some(filename) if !filename.is_empty() => filename,
         _ => {
             bail!("Cannot read variable 'SCCACHE_ERROR_LOG'");
         }
@@ -209,7 +208,7 @@ fn run_server_process(startup_timeout: Option<Duration>) -> Result<ServerStartup
     let mut envp = {
         let mut v = vec![];
         let extra_vars = vec![
-            (OsString::from("SCCACHE_START_SERVER"), OsString::from("1")),
+            (OsString::from("SCCION_START_SERVER"), OsString::from("1")),
             (
                 OsString::from("SCCACHE_STARTUP_NOTIFY"),
                 OsString::from(&pipe_name),
@@ -742,7 +741,7 @@ pub fn run_command(cmd: Command) -> Result<i32> {
         }
         Command::InternalStartServer => {
             trace!("Command::InternalStartServer");
-            if env::var("SCCACHE_ERROR_LOG").is_ok() {
+            if crate::envvar::var("SCCION_ERROR_LOG").is_some() {
                 let f = create_error_log()?;
                 // Can't report failure here, we're already daemonized.
                 daemonize()?;

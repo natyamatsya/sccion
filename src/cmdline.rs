@@ -22,7 +22,7 @@ use std::path::PathBuf;
 use std::str::FromStr;
 use which::which_in;
 
-const ENV_VAR_INTERNAL_START_SERVER: &str = "SCCACHE_START_SERVER";
+const ENV_VAR_INTERNAL_START_SERVER: &str = "SCCION_START_SERVER";
 
 #[derive(Debug, Clone, ValueEnum, Default)]
 pub enum StatsFormat {
@@ -198,7 +198,8 @@ pub fn try_parse() -> Result<Command> {
     let cwd = env::current_dir().context("sccion: Couldn't determine current working directory")?;
 
     // We only care if it's `1`
-    let internal_start_server = env::var(ENV_VAR_INTERNAL_START_SERVER).as_deref() == Ok("1");
+    let internal_start_server =
+        crate::envvar::var(ENV_VAR_INTERNAL_START_SERVER).as_deref() == Some("1");
     let mut args: Vec<_> = env::args_os().collect();
 
     if !internal_start_server {

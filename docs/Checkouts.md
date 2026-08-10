@@ -96,11 +96,11 @@ executable, to make the custom command re-run.
 
 ## When a checkout is not sharing
 
-`SCCACHE_TRACE_COMPONENTS=1` breaks every computed key into its parts —
+`SCCION_TRACE_COMPONENTS=1` breaks every computed key into its parts —
 compiler, arguments, extra files, environment, working directory, inputs — and
 records them with the miss. `compare_keys` then names which part differs between
 two checkouts, rather than leaving the whole key as one opaque digest. See
-[the MCP surface](MCP.md#maintaining-the-cache-itself); `SCCACHE_MISS_LOG` gives
+[the MCP surface](MCP.md#maintaining-the-cache-itself); `SCCION_MISS_LOG` gives
 the same records as a file for a build that wants all of them.
 
 The component that differs is usually the answer on its own. `arguments` means a

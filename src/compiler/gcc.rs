@@ -388,7 +388,7 @@ where
     // unless it happened to be the shell that started the server.
     let dont_cache_multiarch = !env_vars
         .iter()
-        .any(|(k, _)| k.as_os_str() == OsStr::new("SCCACHE_CACHE_MULTIARCH"));
+        .any(|(k, _)| crate::envvar::matches(k.as_os_str(), "SCCION_CACHE_MULTIARCH"));
 
     // Custom iterator to expand `@` arguments which stand for reading a file
     // and interpreting it as a list of more arguments.

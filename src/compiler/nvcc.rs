@@ -1325,7 +1325,7 @@ where
                                 cwd.to_owned(),
                                 env_vars
                                     .iter()
-                                    .chain([("SCCACHE_DIRECT".into(), "false".into())].iter())
+                                    .chain([("SCCION_DIRECT".into(), "false".into())].iter())
                                     .cloned()
                                     .collect::<Vec<_>>(),
                             )

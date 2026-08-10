@@ -537,7 +537,7 @@ mod tests {
     fn scratch_dir() -> Option<std::path::PathBuf> {
         // Opt in explicitly: cloning needs a filesystem that supports it, and a
         // test that silently passes on NTFS would assert nothing.
-        let root = std::env::var_os("SCCACHE_TEST_CLONE_DIR")?;
+        let root = crate::envvar::var_os("SCCION_TEST_CLONE_DIR")?;
         let dir = std::path::PathBuf::from(root).join(format!(
             "sccache-clone-test-{}-{}",
             std::process::id(),

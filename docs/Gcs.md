@@ -1,25 +1,25 @@
 # Google Cloud Storage
 
 To use [Google Cloud Storage](https://cloud.google.com/storage/), you need to set
-the `SCCACHE_GCS_BUCKET` environment variable to the name of the GCS bucket.
+the `SCCION_GCS_BUCKET` environment variable to the name of the GCS bucket.
 
-By default, SCCACHE on GCS will be read-only. To change this, set `SCCACHE_GCS_RW_MODE`
+By default, SCCACHE on GCS will be read-only. To change this, set `SCCION_GCS_RW_MODE`
 to either `READ_ONLY` or `READ_WRITE`.
 
 You can also define a prefix that will be prepended to the keys of all cache objects
 created and read within the GCS bucket, effectively creating a scope. To do that
-use the `SCCACHE_GCS_KEY_PREFIX` environment variable. This can be useful when
+use the `SCCION_GCS_KEY_PREFIX` environment variable. This can be useful when
 sharing a bucket with another application.
 
 ## Credentials
 
 Sccion is able to load credentials from various sources. Including:
 
-- User Input: If `SCCACHE_GCS_KEY_PATH` has been set, we will load from this file
+- User Input: If `SCCION_GCS_KEY_PATH` has been set, we will load from this file
   first.
   - Service accounts JSONs
   - External accounts JSONs
-- [Task Cluster](https://taskcluster.net/): If `SCCACHE_GCS_CREDENTIALS_URL` has
+- [Task Cluster](https://taskcluster.net/): If `SCCION_GCS_CREDENTIALS_URL` has
   been set, we will load token from this url first.
 - Static: `GOOGLE_APPLICATION_CREDENTIALS`
 - Well-known locations:
@@ -34,7 +34,7 @@ Sccion is able to load credentials from various sources. Including:
 To create such account, in GCP, go in `APIs and Services` => `Cloud Storage` =>
 `Create credentials` => `Service account`. Then, once created, click on the account
 then `Keys` => `Add key` => `Create new key`. Select the JSON format and here it
-is. This JSON file is what `SCCACHE_GCS_KEY_PATH` expects.
+is. This JSON file is what `SCCION_GCS_KEY_PATH` expects.
 
 The service account needs `Storage Object Admin` permissions on the bucket
 (otherwise, sccion will fail with a simple `Permission denied`).
@@ -47,7 +47,7 @@ to create a temporary service account grant without having to share a service ac
 JSON, which can be pretty powerful. An example on how to create such accounts is
 [Google's guide on how to use it with Github].
 
-After generating the external account JSON file, you may pass its path to `SCCACHE_GCS_KEY_PATH`.
+After generating the external account JSON file, you may pass its path to `SCCION_GCS_KEY_PATH`.
 
 Service accounts used by the pool must have `Storage Object Admin` permissions on
 bucket as well.
@@ -57,8 +57,8 @@ bucket as well.
 To verify that it works, run:
 
 ```
-export SCCACHE_GCS_BUCKET=<bucket name in GCP>
-export SCCACHE_GCS_KEY_PATH=secret-gcp-storage.json
+export SCCION_GCS_BUCKET=<bucket name in GCP>
+export SCCION_GCS_KEY_PATH=secret-gcp-storage.json
 ./sccion --show-stats
 # you should see
 [...]
@@ -67,7 +67,7 @@ Cache location                  GCS, bucket: Bucket(name=<bucket name in GCP>), 
 
 ## Deprecation
 
-`SCCACHE_GCS_OAUTH_URL` have been deprecated and not supported, please use `SCCACHE_GCS_SERVICE_ACCOUNT` instead.
+`SCCION_GCS_OAUTH_URL` have been deprecated and not supported, please use `SCCION_GCS_SERVICE_ACCOUNT` instead.
 
 [Workload Identity Pool and Workload Identity Provider]: https://cloud.google.com/iam/docs/manage-workload-identity-pools-providers
 [Google's guide on how to use it with Github]: https://cloud.google.com/blog/products/identity-security/enabling-keyless-authentication-from-github-actions

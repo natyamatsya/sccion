@@ -7,7 +7,7 @@ Before building, you need to run the daemon outside of Xcode. This needs to be d
 
 You can do this in another terminal windows by calling
 ```sh
-SCCACHE_LOG=info SCCACHE_START_SERVER=1 SCCACHE_NO_DAEMON=1 sccion
+SCCION_LOG=info SCCION_START_SERVER=1 SCCION_NO_DAEMON=1 sccion
 ```
 
 Or by setting it up in a `launchd` configuration, perhaps as `~/Library/LaunchAgents/sccion.plist` (note the paths in the plist):
@@ -24,13 +24,13 @@ Or by setting it up in a `launchd` configuration, perhaps as `~/Library/LaunchAg
     </array>
     <key>EnvironmentVariables</key>
     <dict>
-        <key>SCCACHE_START_SERVER</key>
+        <key>SCCION_START_SERVER</key>
         <string>1</string>
-        <key>SCCACHE_NO_DAEMON</key>
+        <key>SCCION_NO_DAEMON</key>
         <string>1</string>
-        <key>SCCACHE_IDLE_TIMEOUT</key>
+        <key>SCCION_IDLE_TIMEOUT</key>
         <string>0</string>
-        <key>SCCACHE_LOG</key>
+        <key>SCCION_LOG</key>
         <string>info</string>
     </dict>
 

@@ -27,7 +27,7 @@ use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 
 /// The rate at which cache hits are verified, as a fraction.
-pub const VERIFY_HITS_VAR: &str = "SCCACHE_VERIFY_HITS";
+pub const VERIFY_HITS_VAR: &str = "SCCION_VERIFY_HITS";
 
 /// How often to verify, from the compilation's environment.
 ///
@@ -37,7 +37,7 @@ pub const VERIFY_HITS_VAR: &str = "SCCACHE_VERIFY_HITS";
 pub fn rate(env_vars: &[(OsString, OsString)]) -> Option<f64> {
     let raw = env_vars
         .iter()
-        .find(|(k, _)| k == OsStr::new(VERIFY_HITS_VAR))
+        .find(|(k, _)| crate::envvar::matches(k, VERIFY_HITS_VAR))
         .map(|(_, v)| v.to_string_lossy().into_owned())?;
     match raw.trim().parse::<f64>() {
         Ok(r) if r > 0.0 => Some(r.min(1.0)),

@@ -101,8 +101,7 @@ pub enum ServerStartup {
 /// Get the time the server should idle for before shutting down, in seconds.
 fn get_idle_timeout() -> u64 {
     // A value of 0 disables idle shutdown entirely.
-    env::var("SCCACHE_IDLE_TIMEOUT")
-        .ok()
+    crate::envvar::var("SCCION_IDLE_TIMEOUT")
         .and_then(|s| s.parse().ok())
         .unwrap_or(DEFAULT_IDLE_TIMEOUT)
 }
@@ -442,8 +441,7 @@ thread_local! {
 /// the daemon does not know the latter.
 #[cfg(windows)]
 fn pipe_instances() -> usize {
-    std::env::var("SCCACHE_SERVER_PIPE_INSTANCES")
-        .ok()
+    crate::envvar::var("SCCION_SERVER_PIPE_INSTANCES")
         .and_then(|v| v.parse().ok())
         .unwrap_or_else(|| util::num_cpus().clamp(4, 32))
 }
@@ -476,7 +474,7 @@ pub fn start_server(config: &Config, addr: &crate::net::SocketAddr) -> Result<()
     let pool = runtime.handle().clone();
     let dist_client = DistClientContainer::new(config, &pool);
 
-    let notify = env::var_os("SCCACHE_STARTUP_NOTIFY");
+    let notify = crate::envvar::var_os("SCCION_STARTUP_NOTIFY");
 
     let raw_storage = match storage_from_config(config, &pool) {
         Ok(storage) => storage,
@@ -1157,7 +1155,7 @@ where
         T: AsyncRead + AsyncWrite + Unpin + Send + 'static,
     {
         let mut builder = length_delimited::Builder::new();
-        if let Ok(max_frame_length_str) = env::var("SCCACHE_MAX_FRAME_LENGTH") {
+        if let Some(max_frame_length_str) = crate::envvar::var("SCCION_MAX_FRAME_LENGTH") {
             if let Ok(max_frame_length) = max_frame_length_str.parse::<usize>() {
                 builder.max_frame_length(max_frame_length);
             } else {

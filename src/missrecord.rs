@@ -51,13 +51,13 @@ use serde::{Deserialize, Serialize};
 pub const RING_CAPACITY: usize = 4096;
 
 /// The variable naming a file every record is also appended to.
-pub const MISS_LOG_VAR: &str = "SCCACHE_MISS_LOG";
+pub const MISS_LOG_VAR: &str = "SCCION_MISS_LOG";
 
 /// Ask for [`KeyComponents`] on every record.
-pub const TRACE_COMPONENTS_VAR: &str = "SCCACHE_TRACE_COMPONENTS";
+pub const TRACE_COMPONENTS_VAR: &str = "SCCION_TRACE_COMPONENTS";
 
 /// Record cache *hits* as well as misses.
-pub const TRACE_ALL_VAR: &str = "SCCACHE_TRACE_ALL";
+pub const TRACE_ALL_VAR: &str = "SCCION_TRACE_ALL";
 
 /// Whether hits are recorded too.
 ///
@@ -76,7 +76,7 @@ pub fn trace_all(env_vars: &[(OsString, OsString)]) -> bool {
 fn flag(env_vars: &[(OsString, OsString)], name: &str) -> bool {
     env_vars
         .iter()
-        .find(|(k, _)| k == OsStr::new(name))
+        .find(|(k, _)| crate::envvar::matches(k, name))
         .map(|(_, v)| {
             let v = v.to_string_lossy().to_lowercase();
             matches!(v.as_str(), "1" | "true" | "on")
@@ -424,7 +424,7 @@ impl MissLog {
 pub fn sink_from_env(env_vars: &[(OsString, OsString)]) -> Option<PathBuf> {
     env_vars
         .iter()
-        .find(|(k, _)| k == OsStr::new(MISS_LOG_VAR))
+        .find(|(k, _)| crate::envvar::matches(k, MISS_LOG_VAR))
         .map(|(_, v)| PathBuf::from(v))
         .filter(|p| !p.as_os_str().is_empty())
 }

@@ -368,7 +368,7 @@ mod tests {
     /// missing and quietly make every lookup a miss.
     #[test]
     fn real_dep_file_prerequisites_all_exist() {
-        let Some(path) = std::env::var_os("SCCACHE_TEST_DEPFILE") else {
+        let Some(path) = crate::envvar::var_os("SCCION_TEST_DEPFILE") else {
             eprintln!("skipping: set SCCACHE_TEST_DEPFILE to check a real dep file");
             return;
         };

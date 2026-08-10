@@ -307,7 +307,7 @@ fn test_miss_log_comes_from_the_compilation_environment() {
 
     let miss_log = f.tempdir.path().join("misses.tsv");
     assert!(
-        std::env::var_os("SCCACHE_MISS_LOG").is_none(),
+        crate::envvar::var_os("SCCION_MISS_LOG").is_none(),
         "this test is only meaningful while the daemon's own environment is silent"
     );
 

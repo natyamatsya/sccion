@@ -40,7 +40,7 @@ surface is only a way to read build state:
 mcp = false
 ```
 ```
-SCCACHE_MCP=false     # outranks the config file, so a CI job needs no edit
+SCCION_MCP=false     # outranks the config file, so a CI job needs no edit
 ```
 
 Read by the server at startup like the cache settings, so restart it with
@@ -73,7 +73,7 @@ sccion-mcp
 ```
 
 Reads line-delimited JSON-RPC on stdin, writes responses on stdout, logs to
-stderr under `SCCACHE_LOG`. It needs a running daemon and will not start one:
+stderr under `SCCION_LOG`. It needs a running daemon and will not start one:
 starting a daemon in order to ask it for statistics reports the statistics of
 the daemon just started, which is a confident zero rather than an answer.
 
@@ -147,7 +147,7 @@ compare_keys(handle_a, handle_b, "src/foo.c")
   -> sameKey: false, differingComponents: ["inputs"]
 ```
 
-Both builds must have run with `SCCACHE_TRACE_COMPONENTS=1`. The answer is a
+Both builds must have run with `SCCION_TRACE_COMPONENTS=1`. The answer is a
 list rather than a single name because an empty list with two different keys is
 itself informative: the difference is in something not broken out as a
 component.
@@ -155,7 +155,7 @@ component.
 Records are history, not state, so the reply carries each side's sequence number
 and classification. Only misses are recorded by default, so a workspace whose
 last build *hit* offers its previous record and the comparison quietly spans two
-moments; `SCCACHE_TRACE_ALL=1` records hits too and removes the ambiguity.
+moments; `SCCION_TRACE_ALL=1` records hits too and removes the ambiguity.
 
 `uncacheable_summary` groups the permanent failures by reason with counts and
 examples. "141 permanent misses" is a fact about a build, and reading it out of

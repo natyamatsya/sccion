@@ -46,6 +46,7 @@ mod commands;
 mod compiler;
 pub mod config;
 pub mod dist;
+pub mod envvar;
 mod jobserver;
 #[cfg(windows)]
 pub mod pipe;
@@ -71,7 +72,7 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// Used to denote the environment variable that controls
 /// logging for sccion, and sccion-dist.
-pub const LOGGING_ENV: &str = "SCCACHE_LOG";
+pub const LOGGING_ENV: &str = "SCCION_LOG";
 
 pub fn main() {
     init_logging();
@@ -104,11 +105,11 @@ pub fn main() {
 }
 
 fn init_logging() {
-    if env::var(LOGGING_ENV).is_ok() {
-        let mut builder = env_logger::Builder::from_env(LOGGING_ENV);
+    if crate::envvar::var(LOGGING_ENV).is_some() {
+        let mut builder = env_logger::Builder::from_env(crate::envvar::logging_var());
 
         // Enable millisecond precision timestamps if SCCACHE_LOG_MILLIS is set
-        if env::var("SCCACHE_LOG_MILLIS").is_ok() {
+        if crate::envvar::var("SCCION_LOG_MILLIS").is_some() {
             builder.format_timestamp_millis();
         }
 

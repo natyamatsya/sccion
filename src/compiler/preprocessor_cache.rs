@@ -618,6 +618,13 @@ static CACHED_ENV_VARS: LazyLock<HashSet<&'static OsStr>> = LazyLock::new(|| {
         // serving as a way for the user to factor custom data into the hash.
         // One can set it to different values for different invocations
         // to prevent cache reuse between them.
+        //
+        // Both spellings are honoured, and unlike everywhere else they are not
+        // interchangeable: the name is hashed along with the value, so moving a
+        // buster from one spelling to the other busts the cache once. For a
+        // variable whose entire purpose is to bust the cache, that is the least
+        // surprising behaviour available.
+        "SCCION_C_CUSTOM_CACHE_BUSTER",
         "SCCACHE_C_CUSTOM_CACHE_BUSTER",
         "CPATH",
         "C_INCLUDE_PATH",

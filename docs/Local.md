@@ -1,8 +1,8 @@
 # Local
 
-sccion defaults to using local disk storage. You can set the `SCCACHE_DIR` environment variable to change the disk cache location. By default it will use a sensible location for the current platform: `~/.cache/sccion` on Linux, `%LOCALAPPDATA%\Mozilla\sccion` on Windows, and `~/Library/Caches/Mozilla.sccache` on MacOS.
+sccion defaults to using local disk storage. You can set the `SCCION_DIR` environment variable to change the disk cache location. By default it will use a sensible location for the current platform: `~/.cache/sccion` on Linux, `%LOCALAPPDATA%\Mozilla\sccion` on Windows, and `~/Library/Caches/Mozilla.sccache` on MacOS.
 
-The default cache size is 10 gigabytes. To change this, set `SCCACHE_CACHE_SIZE`, for example `SCCACHE_CACHE_SIZE="1G"`.
+The default cache size is 10 gigabytes. To change this, set `SCCION_CACHE_SIZE`, for example `SCCION_CACHE_SIZE="1G"`.
 
 The local storage only supports a single sccion server at a time. Multiple concurrent servers will race and cause spurious build failures.
 
@@ -39,7 +39,7 @@ The preprocessor cache may silently produce stale results in any of the followin
 
 Configuration options and their default values:
 
-- `use_preprocessor_cache_mode`: `true`. Whether to use preprocessor cache mode. This can be overridden for an sccion invocation by setting the environment variable `SCCACHE_DIRECT` to `true`/`on`/`1` or `false`/`off`/`0`.
+- `use_preprocessor_cache_mode`: `true`. Whether to use preprocessor cache mode. This can be overridden for an sccion invocation by setting the environment variable `SCCION_DIRECT` to `true`/`on`/`1` or `false`/`off`/`0`.
 - `file_stat_matches`: `false`. If false, only compare header files by hashing their contents. If true, will use size + ctime + mtime to check whether a file has changed. See other flags below for more control over this behavior.
 - `use_ctime_for_stat`: `true`. If true, uses the ctime (file status change on UNIX, creation time on Windows) to check that a file has/hasn't changed. Can be useful to disable when backdating modification times in a controlled manner.
 
@@ -59,7 +59,7 @@ Configuration options and their default values:
 
   So: leave it on if you build one checkout repeatedly, and set it to `false` — in the config, or in a `.sccache.toml` committed to a project that does otherwise — if you routinely build fresh checkouts or worktrees against a shared cache.
 
-  Whether it pays off is a property of the project rather than of the machine, so it can also be set in a committed `.sccache.toml` (see [Project configuration](#project-configuration)). It is asked for in order of how specific the answer is: the environment variable `SCCACHE_DEPEND` (`true`/`on`/`1` or `false`/`off`/`0`) for this invocation, then the project file, then this setting.
+  Whether it pays off is a property of the project rather than of the machine, so it can also be set in a committed `.sccache.toml` (see [Project configuration](#project-configuration)). It is asked for in order of how specific the answer is: the environment variable `SCCION_DEPEND` (`true`/`on`/`1` or `false`/`off`/`0`) for this invocation, then the project file, then this setting.
 
 See where to write the config in [the configuration doc](Configuration.md).
 
@@ -82,18 +82,18 @@ use_dependency_keying = true
 # Decline preprocessor cache mode for this project. `true` only means "no
 # objection": whether the mode is available at all depends on the cache
 # backend, which a checkout does not get to assert. The counterpart of
-# SCCACHE_DIRECT.
+# SCCION_DIRECT.
 use_preprocessor_cache_mode = false
 
 # Files every compilation in this tree depends on but does not include -- a
 # toolchain manifest, a generated config header. Their contents go into every
-# cache key. The counterpart of SCCACHE_EXTRAFILES, named by the repository
+# cache key. The counterpart of SCCION_EXTRAFILES, named by the repository
 # that knows about them rather than by whoever remembered to export it.
 extra_hash_files = ["toolchain.lock", "generated/buildinfo.h"]
 
 # An arbitrary string folded into every cache key from this tree. Change it to
 # invalidate the project's own entries. The counterpart of
-# SCCACHE_C_CUSTOM_CACHE_BUSTER.
+# SCCION_C_CUSTOM_CACHE_BUSTER.
 custom_cache_buster = "v2"
 
 # Refuse to have this checkout's build state answered for over MCP (see
@@ -104,7 +104,7 @@ expose_over_mcp = false
 
 For each of these, the most specific answer wins: the environment variable for this invocation, then the project file, then the machine-wide config. A file that says nothing about a setting leaves it alone — absent is not the same as `false`.
 
-`expose_over_mcp` is the exception, and deliberately so. Every other key here shapes cache keys, where the rule below is satisfied in both directions. This one governs whether build state can be *read*, so it only satisfies it in the refusing direction: a checkout that could switch the MCP surface **on** would be a way to make a machine start answering questions about itself by being cloned onto it. So `false` is honoured and `true` is ignored, leaving the machine's setting standing. Disabling it machine-wide is `SCCACHE_MCP=false` or `mcp = false` in the config, and that always wins.
+`expose_over_mcp` is the exception, and deliberately so. Every other key here shapes cache keys, where the rule below is satisfied in both directions. This one governs whether build state can be *read*, so it only satisfies it in the refusing direction: a checkout that could switch the MCP surface **on** would be a way to make a machine start answering questions about itself by being cloned onto it. So `false` is honoured and `true` is ignored, leaving the machine's setting standing. Disabling it machine-wide is `SCCION_MCP=false` or `mcp = false` in the config, and that always wins.
 
 Only these keys are honoured, and the file is ignored (with a warning) if it contains anything else. It travels with the repository, so anything it can set is something a repository can set: the test a key has to pass is that the worst a hostile repository could do with it is make its own builds slower or less shared. Settings that could redirect a build — where the cache lives, what the compiler is, which server to talk to — are deliberately not available here, for the same reason `.clang-format` cannot run a command.
 
@@ -116,7 +116,7 @@ A malformed file does not fail the build. The checkout root is still used as a b
 
 ## Read-only cache mode
 
-By default, the local cache operates in read/write mode. The `SCCACHE_LOCAL_RW_MODE` environment variable can be set to `READ_ONLY` (or `READ_WRITE`) to modify this behavior.
+By default, the local cache operates in read/write mode. The `SCCION_LOCAL_RW_MODE` environment variable can be set to `READ_ONLY` (or `READ_WRITE`) to modify this behavior.
 
 You can use read-only mode to prevent sccion from writing new cache items to the disk. This can be useful, for example, if you want to use items that have already been cached, but not add new ones to the cache. 
 

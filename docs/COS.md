@@ -1,12 +1,12 @@
 # COS
 
-If you want to use _Tencent Cloud Object Storage_ (aka COS) for the sccion cache, you need to set the `SCCACHE_COS_BUCKET` environment variable to the name of the COS bucket to use.
+If you want to use _Tencent Cloud Object Storage_ (aka COS) for the sccion cache, you need to set the `SCCION_COS_BUCKET` environment variable to the name of the COS bucket to use.
 
-You **must** specify the endpoint URL using the `SCCACHE_COS_ENDPOINT` environment variable. More details are at [COS endpoints](https://www.tencentcloud.com/document/product/436/6224).
+You **must** specify the endpoint URL using the `SCCION_COS_ENDPOINT` environment variable. More details are at [COS endpoints](https://www.tencentcloud.com/document/product/436/6224).
 
-You can also define a prefix that will be prepended to the keys of all cache objects created and read within the COS bucket, effectively creating a scope. To do that use the `SCCACHE_COS_KEY_PREFIX` environment variable. This can be useful when sharing a bucket with another application.
+You can also define a prefix that will be prepended to the keys of all cache objects created and read within the COS bucket, effectively creating a scope. To do that use the `SCCION_COS_KEY_PREFIX` environment variable. This can be useful when sharing a bucket with another application.
 
-The `SCCACHE_COS_RW_MODE` environment variable can be set to `READ_ONLY` to make sccion use this backend in read-only mode. The default is `READ_WRITE`.
+The `SCCION_COS_RW_MODE` environment variable can be set to `READ_ONLY` to make sccion use this backend in read-only mode. The default is `READ_WRITE`.
 
 ## Credentials
 
