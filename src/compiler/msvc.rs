@@ -1935,18 +1935,28 @@ mod test {
         assert_eq!(ovec!["/dynamicdeopt"], common_args);
 
         // -Fo naming a directory: the alt object follows the object there.
-        let args = ovec!["-c", "foo.c", "/Foout\\", "/dynamicdeopt"];
-        let ParsedArguments { outputs, .. } = match parse_arguments(args) {
-            CompilerArguments::Ok(args) => args,
-            o => panic!("Got unexpected parse result: {:?}", o),
-        };
-        assert_eq!(
-            Some(&ArtifactDescriptor {
-                path: PathBuf::from("out\\foo.alt.obj"),
-                optional: false
-            }),
-            outputs.get("alt_obj")
-        );
+        //
+        // Windows only, and not for want of trying to keep it portable: the
+        // directory form is a trailing separator, so the assertion is about how
+        // a path is joined, and `Path::join` answers differently off Windows.
+        // Spelling it with the platform separator would keep the test green
+        // while asserting something that cannot happen -- /dynamicdeopt is a
+        // cl.exe flag, and cl.exe does not run here.
+        #[cfg(windows)]
+        {
+            let args = ovec!["-c", "foo.c", "/Foout\\", "/dynamicdeopt"];
+            let ParsedArguments { outputs, .. } = match parse_arguments(args) {
+                CompilerArguments::Ok(args) => args,
+                o => panic!("Got unexpected parse result: {:?}", o),
+            };
+            assert_eq!(
+                Some(&ArtifactDescriptor {
+                    path: PathBuf::from("out\\foo.alt.obj"),
+                    optional: false
+                }),
+                outputs.get("alt_obj")
+            );
+        }
 
         // Without the flag there is no such artifact.
         let args = ovec!["-c", "foo.c", "/Fofoo.obj"];

@@ -3075,7 +3075,7 @@ mod test {
 mod dependency_keying_test {
     use super::*;
     use crate::compiler::msvc::Msvc;
-    use crate::mock_command::{MockChild, MockCommandCreator, exit_status};
+    use crate::mock_command::{ExitStatusValue, MockChild, MockCommandCreator, exit_status};
     use crate::test::mock_storage::MockStorage;
     use crate::test::utils::*;
     use std::sync::Mutex;
@@ -3102,7 +3102,7 @@ mod dependency_keying_test {
     fn mock_compiler(
         seen: Arc<Mutex<Vec<OsString>>>,
         report: Option<Vec<PathBuf>>,
-        status: u32,
+        status: ExitStatusValue,
     ) -> impl Fn(&[OsString]) -> Result<MockChild> + Send + 'static {
         let body = report.map(|includes| {
             let includes: Vec<_> = includes
@@ -3124,7 +3124,7 @@ mod dependency_keying_test {
     fn mock_compiler_raw(
         seen: Arc<Mutex<Vec<OsString>>>,
         report: Option<String>,
-        status: u32,
+        status: ExitStatusValue,
     ) -> impl Fn(&[OsString]) -> Result<MockChild> + Send + 'static {
         move |args: &[OsString]| {
             *seen.lock().unwrap() = args.to_vec();
@@ -3159,7 +3159,7 @@ mod dependency_keying_test {
 
     /// Hash one compilation with dependency keying on, and report everything
     /// worth asserting about it.
-    fn run(cwd: &Path, arguments: &[OsString], report: Option<Vec<PathBuf>>, status: u32) -> Run {
+    fn run(cwd: &Path, arguments: &[OsString], report: Option<Vec<PathBuf>>, status: ExitStatusValue) -> Run {
         run_with(cwd, arguments, report, status, Some(true))
     }
 
@@ -3260,7 +3260,7 @@ mod dependency_keying_test {
         cwd: &Path,
         arguments: &[OsString],
         report: Option<Vec<PathBuf>>,
-        status: u32,
+        status: ExitStatusValue,
         depend: Option<bool>,
     ) -> Run {
         run_full(cwd, arguments, report, status, depend, false)
@@ -3271,7 +3271,7 @@ mod dependency_keying_test {
         cwd: &Path,
         arguments: &[OsString],
         report: Option<Vec<PathBuf>>,
-        status: u32,
+        status: ExitStatusValue,
         depend: Option<bool>,
         machine: bool,
     ) -> Run {
@@ -3282,7 +3282,7 @@ mod dependency_keying_test {
     }
 
     /// As [`run`], with a compiler whose report is written verbatim.
-    fn run_raw(cwd: &Path, arguments: &[OsString], report: Option<&str>, status: u32) -> Run {
+    fn run_raw(cwd: &Path, arguments: &[OsString], report: Option<&str>, status: ExitStatusValue) -> Run {
         let seen = Arc::new(Mutex::new(Vec::new()));
         let creator = new_creator();
         next_command_calls(

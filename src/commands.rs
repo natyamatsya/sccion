@@ -1050,14 +1050,17 @@ mod test {
 
     #[test]
     fn test_is_msvc_like() {
-        for exe in [
-            "cl.exe",
-            "CL.EXE",
-            r"C:\Program Files\MSVC\bin\Hostx64\x64\cl.exe",
-            "clang-cl.exe",
-            "clang-cl",
-            "cl",
-        ] {
+        for exe in ["cl.exe", "CL.EXE", "clang-cl.exe", "clang-cl", "cl"] {
+            assert!(is_msvc_like(Path::new(exe)), "expected MSVC-like: {exe}");
+        }
+
+        // A full path, which is what a build system actually passes. Only
+        // Windows splits it: elsewhere a backslash is an ordinary character in
+        // a filename, so the whole string is the stem and the answer is
+        // rightly no.
+        #[cfg(windows)]
+        {
+            let exe = r"C:\Program Files\MSVC\bin\Hostx64\x64\cl.exe";
             assert!(is_msvc_like(Path::new(exe)), "expected MSVC-like: {exe}");
         }
 

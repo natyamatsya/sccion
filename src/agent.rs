@@ -131,21 +131,23 @@ mod tests {
         std::fs::create_dir_all(wt.join("src")).unwrap();
         std::fs::write(wt.join(".git"), "gitdir: elsewhere").unwrap();
 
-        let with_slashes = PathBuf::from(wt.join("src").to_string_lossy().replace('\\', "/"));
-        let with_backslashes =
-            PathBuf::from(wt.join("build").to_string_lossy().replace('/', "\\"));
-        // The test is only meaningful if the two really do differ.
-        if cfg!(windows) {
-            assert_ne!(
-                with_slashes.to_string_lossy().contains('/'),
-                with_backslashes.to_string_lossy().contains('/'),
-                "the fixture must actually use two different separators"
-            );
-        }
+        // Two directories inside one checkout are one workspace everywhere. On
+        // Windows the callers also disagree about the separator, which is the
+        // sharper form of the same hazard and the one that shipped broken --
+        // mangling separators off Windows only produces a path that names
+        // nothing, so the fixture would be testing the fixture.
+        let (a, b) = if cfg!(windows) {
+            (
+                PathBuf::from(wt.join("src").to_string_lossy().replace('\\', "/")),
+                PathBuf::from(wt.join("build").to_string_lossy().replace('/', "\\")),
+            )
+        } else {
+            (wt.join("src"), wt.join("build"))
+        };
 
         assert_eq!(
-            workspace(&with_slashes),
-            workspace(&with_backslashes),
+            workspace(&a),
+            workspace(&b),
             "the same checkout, spelled two ways, is one workspace"
         );
     }
