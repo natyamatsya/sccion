@@ -875,8 +875,10 @@ mod tests {
             path: "D:/wt".into(),
             root: Some("D:\\".into()),
             filesystem: "ReFS".into(),
-            dev_drive: "trusted".into(),
+            dev_drive: Some("trusted".into()),
             supports_block_cloning: true,
+            case_sensitive: Some(true),
+            spotlight_indexed: None,
         };
         sccion::api::EnvReport {
             sccion_version: "test".into(),
@@ -896,7 +898,7 @@ mod tests {
                 note: None,
             },
             preprocessor_cache_settings: vec![],
-            defender: Default::default(),
+            defender: None,
             findings: vec![],
         }
     }

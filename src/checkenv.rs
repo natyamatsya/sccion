@@ -51,11 +51,22 @@ pub struct Finding {
 #[derive(Debug, Clone, Serialize)]
 pub struct VolumeReport {
     pub path: String,
+    /// The volume this path is on: a mount point on Unix, a drive root on
+    /// Windows. `None` only when it genuinely could not be determined.
     pub root: Option<String>,
     pub filesystem: String,
     /// `trusted`, `no`, or `unknown (needs elevation)` -- never guessed.
-    pub dev_drive: String,
+    ///
+    /// `None` off Windows, where the concept does not exist. Reporting
+    /// `unknown` there implied the question was open when it was not asked.
+    pub dev_drive: Option<String>,
     pub supports_block_cloning: bool,
+    /// Whether the volume distinguishes `Foo` from `foo`. `None` when it could
+    /// not be probed.
+    pub case_sensitive: Option<bool>,
+    /// Whether Spotlight indexes this volume. macOS only; `None` elsewhere and
+    /// when `mdutil` could not answer.
+    pub spotlight_indexed: Option<bool>,
 }
 
 /// Which layer supplied a setting's value.
@@ -159,7 +170,8 @@ pub struct EnvReport {
     pub project_config: Option<String>,
     pub preprocessor_cache_mode: Setting,
     pub preprocessor_cache_settings: Vec<Setting>,
-    pub defender: DefenderReport,
+    /// `None` off Windows, where there is no Defender to report on.
+    pub defender: Option<DefenderReport>,
     pub findings: Vec<Finding>,
 }
 
@@ -174,6 +186,34 @@ pub struct DefenderReport {
     /// failing, so this decides whether recommending `Add-MpPreference` is
     /// useful advice or a wild goose chase.
     pub tamper_protected: Option<bool>,
+}
+
+impl VolumeReport {
+    /// The volume in one line, naming only what this platform actually has.
+    ///
+    /// Every optional field is omitted rather than printed as `unknown` or
+    /// `n/a`: a row that always appears and never says anything trains people
+    /// to stop reading the rows that do.
+    pub fn describe(&self) -> String {
+        let mut facts = vec![self.filesystem.clone()];
+        if let Some(state) = &self.dev_drive {
+            facts.push(format!("dev drive: {state}"));
+        }
+        if self.supports_block_cloning {
+            facts.push("block cloning".into());
+        }
+        if self.case_sensitive == Some(false) {
+            facts.push("folds case".into());
+        }
+        if self.spotlight_indexed == Some(true) {
+            facts.push("spotlight on".into());
+        }
+        format!(
+            "{} ({})",
+            self.root.clone().unwrap_or_else(|| "?".into()),
+            facts.join(", ")
+        )
+    }
 }
 
 struct Findings(Vec<Finding>);
@@ -215,7 +255,7 @@ fn exclusion_remedy(tamper_protected: Option<bool>) -> &'static str {
 /// the origin is reported as `environment` rather than folded silently into
 /// the value.
 fn bool_from_env(name: &str) -> Option<bool> {
-    std::env::var(name).ok().map(|v| {
+    crate::envvar::var(name).map(|v| {
         !matches!(
             v.trim().to_ascii_lowercase().as_str(),
             "false" | "off" | "0"
@@ -223,12 +263,94 @@ fn bool_from_env(name: &str) -> Option<bool> {
     })
 }
 
+/// The nearest ancestor of `path` that exists, including `path` itself.
+///
+/// The cache directory may not have been created yet on a fresh machine, and
+/// "which volume will it land on" is a perfectly answerable question -- the
+/// answer is its parent's. Returning `None` there would have made every check
+/// below say `unknown` for the one case where someone most wants an answer.
+fn nearest_existing(path: &Path) -> Option<&Path> {
+    let mut here = path;
+    loop {
+        if here.exists() {
+            return Some(here);
+        }
+        here = here.parent()?;
+    }
+}
+
+#[cfg(windows)]
 fn volume_root(path: &Path) -> Option<String> {
     let s = path.to_string_lossy().replace('/', "\\");
     let s = s.strip_prefix(r"\\?\").unwrap_or(&s).to_string();
     let b = s.as_bytes();
     (b.len() >= 2 && b[1] == b':' && (b[0] as char).is_ascii_alphabetic())
         .then(|| format!("{}:\\", (b[0] as char).to_ascii_uppercase()))
+}
+
+/// The mount point a path sits on.
+///
+/// This is what `volume_root` always meant; it just could not say it anywhere
+/// but Windows, where a drive letter *is* the volume. Returning `None` for
+/// every POSIX path made `same_volume` false by construction, so a correctly
+/// configured Mac was warned that its cache and build tree were on different
+/// volumes. A diagnostic that cries wolf on a correct machine is worse than no
+/// diagnostic.
+///
+/// Taken from `statfs` where it is available, because that is the same source
+/// `df` reports from and it distinguishes volumes that share a device number.
+/// On macOS `/` and `/System/Volumes/Data` are two APFS volumes presented under
+/// one synthesized root: `stat` gives them the same `st_dev`, and only `statfs`
+/// tells them apart.
+#[cfg(all(
+    unix,
+    any(target_os = "macos", target_os = "ios", target_os = "freebsd")
+))]
+fn volume_root(path: &Path) -> Option<String> {
+    statfs_of(path).map(|s| {
+        // SAFETY: `f_mntonname` is a NUL-terminated C string filled by the
+        // kernel, and the cast is between signed and unsigned char.
+        let raw = unsafe { std::ffi::CStr::from_ptr(s.f_mntonname.as_ptr()) };
+        raw.to_string_lossy().into_owned()
+    })
+}
+
+/// As above, for platforms without `f_mntonname`.
+///
+/// Walks up until the device number changes, which is what a mount point *is*
+/// and needs no mount table to find.
+#[cfg(all(
+    unix,
+    not(any(target_os = "macos", target_os = "ios", target_os = "freebsd"))
+))]
+fn volume_root(path: &Path) -> Option<String> {
+    use std::os::unix::fs::MetadataExt;
+    let start = nearest_existing(path)?;
+    let dev = std::fs::metadata(start).ok()?.dev();
+    let mut here = start.to_path_buf();
+    while let Some(parent) = here.parent() {
+        match std::fs::metadata(parent) {
+            Ok(m) if m.dev() == dev => here = parent.to_path_buf(),
+            _ => break,
+        }
+    }
+    Some(here.to_string_lossy().into_owned())
+}
+
+/// `statfs` for the nearest existing ancestor of `path`.
+#[cfg(all(
+    unix,
+    any(target_os = "macos", target_os = "ios", target_os = "freebsd")
+))]
+fn statfs_of(path: &Path) -> Option<libc::statfs> {
+    use std::os::unix::ffi::OsStrExt;
+    let target = nearest_existing(path)?;
+    let c_path = std::ffi::CString::new(target.as_os_str().as_bytes()).ok()?;
+    let mut buf: libc::statfs = unsafe { std::mem::zeroed() };
+    // SAFETY: `c_path` is NUL-terminated and outlives the call; `buf` is a
+    // correctly sized, writable `statfs`.
+    let rc = unsafe { libc::statfs(c_path.as_ptr(), &mut buf) };
+    (rc == 0).then_some(buf)
 }
 
 #[cfg(windows)]
@@ -257,9 +379,148 @@ fn filesystem_name(root: &str) -> String {
     String::from_utf16_lossy(&name[..end])
 }
 
-#[cfg(not(windows))]
-fn filesystem_name(_root: &str) -> String {
-    "n/a".into()
+/// The filesystem's own name for itself, e.g. `apfs`.
+#[cfg(all(
+    unix,
+    any(target_os = "macos", target_os = "ios", target_os = "freebsd")
+))]
+fn filesystem_name(path: &Path) -> String {
+    let Some(s) = statfs_of(path) else {
+        return "unknown".into();
+    };
+    // SAFETY: `f_fstypename` is a NUL-terminated C string filled by the kernel.
+    let raw = unsafe { std::ffi::CStr::from_ptr(s.f_fstypename.as_ptr()) };
+    match raw.to_string_lossy() {
+        name if name.is_empty() => "unknown".into(),
+        name => name.into_owned(),
+    }
+}
+
+/// As above, from `statfs`'s magic number.
+///
+/// Linux reports a constant rather than a name, so this is a lookup and it is
+/// deliberately short: the ones a build tree or a cache plausibly sits on. An
+/// unrecognised filesystem is reported as its magic rather than as `unknown`,
+/// so that the number can be looked up instead of the check simply going quiet.
+#[cfg(target_os = "linux")]
+fn filesystem_name(path: &Path) -> String {
+    use std::os::unix::ffi::OsStrExt;
+    let Some(target) = nearest_existing(path) else {
+        return "unknown".into();
+    };
+    let Ok(c_path) = std::ffi::CString::new(target.as_os_str().as_bytes()) else {
+        return "unknown".into();
+    };
+    let mut buf: libc::statfs = unsafe { std::mem::zeroed() };
+    // SAFETY: as `statfs_of` above.
+    if unsafe { libc::statfs(c_path.as_ptr(), &mut buf) } != 0 {
+        return "unknown".into();
+    }
+    match buf.f_type as i64 {
+        0xEF53 => "ext2/3/4".into(),
+        0x9123683E => "btrfs".into(),
+        0x58465342 => "xfs".into(),
+        0x01021994 => "tmpfs".into(),
+        0x794C7630 => "overlayfs".into(),
+        0x2FC12FC1 => "zfs".into(),
+        0x6969 => "nfs".into(),
+        other => format!("magic {other:#x}"),
+    }
+}
+
+#[cfg(all(
+    unix,
+    not(any(
+        target_os = "macos",
+        target_os = "ios",
+        target_os = "freebsd",
+        target_os = "linux"
+    ))
+))]
+fn filesystem_name(_path: &Path) -> String {
+    "unknown".into()
+}
+
+/// Whether the volume distinguishes `Foo` from `foo`.
+///
+/// Probed rather than inferred from the filesystem's name, and probed on the
+/// path in question: what matters is not what APFS *can* be formatted as but
+/// whether this directory spelled two ways resolves to one file. That is
+/// exactly what basedir stripping and manifest include paths depend on, and it
+/// is a byte comparison in both.
+///
+/// Read-only, per this module's third rule: it flips the case of a component
+/// that already exists and asks whether the result is the same file, rather
+/// than creating anything to find out.
+#[cfg(unix)]
+fn case_sensitive(path: &Path) -> Option<bool> {
+    use std::os::unix::fs::MetadataExt;
+    let target = nearest_existing(path)?;
+    let name = target.file_name()?.to_str()?;
+    // A component with no letters cannot answer the question either way.
+    if !name.chars().any(|c| c.is_ascii_alphabetic()) {
+        return None;
+    }
+    let flipped: String = name
+        .chars()
+        .map(|c| {
+            if c.is_ascii_uppercase() {
+                c.to_ascii_lowercase()
+            } else {
+                c.to_ascii_uppercase()
+            }
+        })
+        .collect();
+    let here = std::fs::metadata(target).ok()?;
+    match std::fs::metadata(target.with_file_name(flipped)) {
+        // The other spelling reached the very same file: the volume folds case.
+        Ok(other) if other.dev() == here.dev() && other.ino() == here.ino() => Some(false),
+        // Either nothing is there, or something else is -- both mean the two
+        // spellings are two names, which is what case-sensitive means.
+        _ => Some(true),
+    }
+}
+
+#[cfg(windows)]
+fn case_sensitive(_path: &Path) -> Option<bool> {
+    // Per-directory case sensitivity exists on NTFS but is not what any build
+    // here relies on, and the probe above needs an inode. Unanswered rather
+    // than guessed.
+    None
+}
+
+/// Whether Spotlight indexes the volume at `mount_point`.
+///
+/// `mdutil -s` reads state and changes nothing, and it answers unprivileged --
+/// but only for a *volume*. Handed an ordinary directory it returns "unknown
+/// indexing state", which is why this takes the mount point rather than the
+/// path someone asked about.
+#[cfg(target_os = "macos")]
+fn spotlight_indexed(mount_point: &str) -> Option<bool> {
+    let out = std::process::Command::new("mdutil")
+        .args(["-s", mount_point])
+        .output()
+        .ok()?;
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    )
+    .to_ascii_lowercase();
+    if text.contains("indexing enabled") {
+        Some(true)
+    } else if text.contains("indexing disabled") || text.contains("indexing and searching disabled")
+    {
+        Some(false)
+    } else {
+        // "unknown indexing state", or no mdutil at all.
+        None
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn spotlight_indexed(_mount_point: &str) -> Option<bool> {
+    None
 }
 
 /// Dev Drive trust state.
@@ -268,13 +529,13 @@ fn filesystem_name(_root: &str) -> String {
 /// reporting an unelevated failure as "not a Dev Drive" would be a lie that
 /// silently disables a check.
 #[cfg(windows)]
-fn dev_drive_state(root: &str) -> String {
+fn dev_drive_state(root: &str) -> Option<String> {
     let letter = root.trim_end_matches(":\\").trim_end_matches('\\');
     let Ok(out) = std::process::Command::new("fsutil")
         .args(["devdrv", "query", &format!("{letter}:")])
         .output()
     else {
-        return "unknown".into();
+        return Some("unknown".into());
     };
     let text = format!(
         "{}{}",
@@ -282,7 +543,7 @@ fn dev_drive_state(root: &str) -> String {
         String::from_utf8_lossy(&out.stderr)
     )
     .to_ascii_lowercase();
-    if text.contains("trusted developer volume") {
+    Some(if text.contains("trusted developer volume") {
         "trusted".into()
     } else if text.contains("not a developer volume") {
         "no".into()
@@ -290,27 +551,38 @@ fn dev_drive_state(root: &str) -> String {
         "unknown (needs elevation)".into()
     } else {
         "unknown".into()
-    }
+    })
 }
 
+/// Not a concept off Windows, so not a question this reports on.
 #[cfg(not(windows))]
-fn dev_drive_state(_root: &str) -> String {
-    "n/a".into()
+fn dev_drive_state(_root: &str) -> Option<String> {
+    None
 }
 
 fn describe_volume(path: &Path) -> VolumeReport {
     let root = volume_root(path);
-    let (filesystem, dev_drive) = match &root {
-        Some(r) => (filesystem_name(r), dev_drive_state(r)),
-        None => ("unknown".into(), "unknown".into()),
-    };
+    let filesystem = filesystem_for(path, root.as_deref());
     VolumeReport {
         path: path.display().to_string(),
         supports_block_cloning: crate::blockclone::volume_supports_cloning(path),
+        dev_drive: root.as_deref().and_then(dev_drive_state),
+        spotlight_indexed: root.as_deref().and_then(spotlight_indexed),
+        case_sensitive: case_sensitive(path),
         root,
         filesystem,
-        dev_drive,
     }
+}
+
+/// Windows names a filesystem from its volume root; Unix names it from a path.
+#[cfg(windows)]
+fn filesystem_for(_path: &Path, root: Option<&str>) -> String {
+    root.map_or_else(|| "unknown".into(), filesystem_name)
+}
+
+#[cfg(unix)]
+fn filesystem_for(path: &Path, _root: Option<&str>) -> String {
+    filesystem_name(path)
 }
 
 /// Defender state, best effort.
@@ -319,7 +591,7 @@ fn describe_volume(path: &Path) -> VolumeReport {
 /// and a COM dependency for a diagnostic is not a good trade. Every field is
 /// optional, because "we could not tell" is a real answer here.
 #[cfg(windows)]
-fn defender_report() -> DefenderReport {
+fn defender_report() -> Option<DefenderReport> {
     let script = "$ErrorActionPreference='SilentlyContinue';\
         $s = Get-MpComputerStatus; $p = Get-MpPreference;\
         [pscustomobject]@{ rtp = $s.RealTimeProtectionEnabled;\
@@ -330,13 +602,13 @@ fn defender_report() -> DefenderReport {
         .args(["-NoProfile", "-NonInteractive", "-Command", script])
         .output()
     else {
-        return DefenderReport::default();
+        return Some(DefenderReport::default());
     };
     let text = String::from_utf8_lossy(&out.stdout);
     let Ok(v) = serde_json::from_str::<serde_json::Value>(text.trim()) else {
-        return DefenderReport::default();
+        return Some(DefenderReport::default());
     };
-    DefenderReport {
+    Some(DefenderReport {
         real_time_protection: v.get("rtp").and_then(|x| x.as_bool()),
         // A JSON null means the property is absent on this Defender build, which
         // is "could not tell" rather than a value worth printing.
@@ -365,19 +637,21 @@ fn defender_report() -> DefenderReport {
         // Readable without elevation, unlike the exclusion list itself, so this
         // is worth reporting either way.
         tamper_protected: v.get("tamper").and_then(|x| x.as_bool()),
-    }
+    })
 }
 
+/// Nothing to report: there is no Defender here, and saying `unknown` about a
+/// question that was never asked is not the same as not asking it.
 #[cfg(not(windows))]
-fn defender_report() -> DefenderReport {
-    DefenderReport::default()
+fn defender_report() -> Option<DefenderReport> {
+    None
 }
 
 /// Gather everything, without changing anything.
 pub fn check(config: &Config, cwd: &Path) -> EnvReport {
     let mut findings = Findings(Vec::new());
 
-    // The configured directory, not the default: SCCACHE_DIR and the config
+    // The configured directory, not the default: SCCION_DIR and the config
     // file both move it, and reporting the default would defeat the point.
     let cache_dir: PathBuf = config.fallback_cache.dir.clone();
     let cache = describe_volume(&cache_dir);
@@ -424,7 +698,7 @@ pub fn check(config: &Config, cwd: &Path) -> EnvReport {
     //
     // A layer above the machine may only *decline* it, because whether the
     // mode is available at all depends on the cache backend -- a checkout
-    // asking for it does not make it so. `SCCACHE_DIRECT` is folded into the
+    // asking for it does not make it so. `SCCION_DIRECT` is folded into the
     // machine value already, by `Config::load`, so it is not asked again here.
     let preprocessor_cache_mode = match (
         p.use_preprocessor_cache_mode,
@@ -463,7 +737,7 @@ pub fn check(config: &Config, cwd: &Path) -> EnvReport {
                 "use_dependency_keying",
                 p.use_dependency_keying,
                 project.use_dependency_keying,
-                bool_from_env("SCCACHE_DEPEND"),
+                bool_from_env(crate::envvar::DEPEND),
             )
         } else {
             // Dependency keying replaces only the way a compilation's inputs
@@ -488,27 +762,60 @@ pub fn check(config: &Config, cwd: &Path) -> EnvReport {
                 cache.root.clone().unwrap_or_else(|| "?".into()),
                 working_directory.root.clone().unwrap_or_else(|| "?".into())
             ),
-            Some("Set SCCACHE_DIR to a directory on the same volume as the build tree."),
+            Some("Set SCCION_DIR to a directory on the same volume as the build tree."),
         );
     }
 
-    if cache.dev_drive == "no" {
-        findings.push(
+    // Only where there is a Dev Drive to have. `None` means the question does
+    // not arise on this platform, which is not the same as an unknown answer.
+    match cache.dev_drive.as_deref() {
+        Some("no") => findings.push(
             Level::Info,
             format!(
                 "Cache volume {} is not a Dev Drive, so Defender scans it synchronously.",
                 cache.root.clone().unwrap_or_default()
             ),
             Some("A Dev Drive defers scanning until after the file open completes."),
-        );
-    } else if cache.dev_drive.starts_with("unknown") {
+        ),
+        Some(state) if state.starts_with("unknown") => findings.push(
+            Level::Info,
+            format!("Dev Drive status of the cache volume is {state}."),
+            Some("Run this from an elevated prompt for a definitive answer."),
+        ),
+        _ => {}
+    }
+
+    // The macOS counterpart of the Defender question: a scanner reading every
+    // file the cache writes. Unlike Defender it can be excluded without
+    // elevation and without turning anything off machine-wide.
+    if cache.spotlight_indexed == Some(true) {
         findings.push(
             Level::Info,
             format!(
-                "Dev Drive status of the cache volume is {}.",
-                cache.dev_drive
+                "Spotlight indexes the cache volume ({}), so every cache write is read back by mds.",
+                cache.root.clone().unwrap_or_default()
             ),
-            Some("Run this from an elevated prompt for a definitive answer."),
+            Some(
+                "Add the cache directory to System Settings > Siri & Spotlight > Spotlight \
+                 Privacy. Excluding one directory is enough; `mdutil -i off` disables indexing \
+                 for the whole volume and needs sudo.",
+            ),
+        );
+    }
+
+    // Not a misconfiguration, and deliberately not a warning -- it is a fact
+    // about the volume that decides whether two spellings of one checkout share
+    // cache entries. Basedir stripping and manifest include paths both compare
+    // bytes, so on a folding volume the answer depends on how a path was typed.
+    if cache.case_sensitive == Some(false) || working_directory.case_sensitive == Some(false) {
+        findings.push(
+            Level::Info,
+            "This volume folds case, so one directory has more than one spelling.".to_string(),
+            Some(
+                "Cache keys compare paths as bytes. Two builds of the same tree reached by \
+                 differently-cased paths will not share entries -- spell basedirs and build \
+                 directories consistently.",
+            ),
         );
     }
 
@@ -526,20 +833,22 @@ pub fn check(config: &Config, cwd: &Path) -> EnvReport {
                     "This tree's project file declines it; see use_preprocessor_cache_mode in \
                      the project config named above."
                 }
-                _ => "It requires local disk storage; SCCACHE_DIRECT=false also disables it.",
+                _ => "It requires local disk storage; SCCION_DIRECT=false also disables it.",
             }),
         );
     }
 
     let defender = defender_report();
-    if defender.real_time_protection == Some(true) {
+    if let Some(d) = defender.as_ref()
+        && d.real_time_protection == Some(true)
+    {
         // Tamper Protection makes Defender accept an exclusion write and then
         // discard it -- Add-MpPreference reports no error and the list stays
         // empty. Recommending it here would send someone chasing a command that
         // cannot work, so the remedy has to change with it.
-        let tampered = defender.tamper_protected == Some(true);
-        let remedy = exclusion_remedy(defender.tamper_protected);
-        match defender.process_exclusions.as_ref() {
+        let tampered = d.tamper_protected == Some(true);
+        let remedy = exclusion_remedy(d.tamper_protected);
+        match d.process_exclusions.as_ref() {
             Some(e) if !e.iter().any(|p| p.to_ascii_lowercase().contains("cl.exe")) => {
                 findings.push(
                     Level::Info,
@@ -582,6 +891,7 @@ pub fn check(config: &Config, cwd: &Path) -> EnvReport {
         .ok()
         .map(|p| p.display().to_string());
     if let (Some(exe), Some(cache_root)) = (&sccion_path, &cache.root)
+        && cache.dev_drive.is_some()
         && volume_root(Path::new(exe)).as_ref() != Some(cache_root)
     {
         findings.push(
@@ -628,24 +938,10 @@ impl EnvReport {
             println!("  binary                  {p}");
         }
         println!("  cache                   {}", self.cache_location);
+        println!("  cache volume            {}", self.cache.describe());
         println!(
-            "  cache volume            {} ({}, dev drive: {}, block cloning: {})",
-            self.cache.root.clone().unwrap_or_else(|| "?".into()),
-            self.cache.filesystem,
-            self.cache.dev_drive,
-            if self.cache.supports_block_cloning {
-                "yes"
-            } else {
-                "no"
-            }
-        );
-        println!(
-            "  working dir volume      {} ({})",
-            self.working_directory
-                .root
-                .clone()
-                .unwrap_or_else(|| "?".into()),
-            self.working_directory.filesystem
+            "  working dir volume      {}",
+            self.working_directory.describe()
         );
         println!("  same volume             {}", self.same_volume);
         println!("  compression             {}", self.compression);
@@ -659,15 +955,19 @@ impl EnvReport {
         for s in &self.preprocessor_cache_settings {
             println!("    {:<22}{}", s.name, s.describe());
         }
-        match self.defender.real_time_protection {
-            Some(rtp) => println!("  defender rtp            {rtp}"),
-            None => println!("  defender rtp            unknown"),
-        }
-        if let Some(mode) = &self.defender.performance_mode {
-            println!("  defender perf mode      {mode}");
-        }
-        if let Some(t) = self.defender.tamper_protected {
-            println!("  defender tamper prot    {t}");
+        // Only where there is a Defender. A row reading `unknown` said nothing
+        // and looked like a failed check.
+        if let Some(d) = &self.defender {
+            match d.real_time_protection {
+                Some(rtp) => println!("  defender rtp            {rtp}"),
+                None => println!("  defender rtp            unknown"),
+            }
+            if let Some(mode) = &d.performance_mode {
+                println!("  defender perf mode      {mode}");
+            }
+            if let Some(t) = d.tamper_protected {
+                println!("  defender tamper prot    {t}");
+            }
         }
 
         if self.findings.is_empty() {
@@ -765,7 +1065,7 @@ mod tests {
         assert!(inert.describe().contains("preprocessor cache mode is off"));
     }
 
-    /// `SCCACHE_DEPEND` is read on the compile path with "anything that is not
+    /// `SCCION_DEPEND` is read on the compile path with "anything that is not
     /// a recognised negative means on". Parsing it more strictly here would
     /// make the report disagree with the build it describes.
     #[test]
@@ -773,22 +1073,37 @@ mod tests {
         // Sharing one process-wide environment, so the values are set and
         // cleared within a single test rather than raced across several.
         for off in ["false", "FALSE", "off", "0", " 0 "] {
-            unsafe { std::env::set_var("SCCACHE_TEST_DEPEND", off) };
-            assert_eq!(bool_from_env("SCCACHE_TEST_DEPEND"), Some(false), "{off:?}");
+            unsafe { std::env::set_var("SCCION_TEST_DEPEND", off) };
+            assert_eq!(bool_from_env("SCCION_TEST_DEPEND"), Some(false), "{off:?}");
         }
         for on in ["true", "1", "yes", ""] {
-            unsafe { std::env::set_var("SCCACHE_TEST_DEPEND", on) };
-            assert_eq!(bool_from_env("SCCACHE_TEST_DEPEND"), Some(true), "{on:?}");
+            unsafe { std::env::set_var("SCCION_TEST_DEPEND", on) };
+            assert_eq!(bool_from_env("SCCION_TEST_DEPEND"), Some(true), "{on:?}");
         }
+        // The older spelling reaches this helper too. It did not until this was
+        // written: `bool_from_env` predates `envvar` and read the process
+        // environment directly, so `--check-env` could not see a variable
+        // spelled the way the rest of the program now spells it.
+        unsafe { std::env::remove_var("SCCION_TEST_DEPEND") };
+        unsafe { std::env::set_var("SCCACHE_TEST_DEPEND", "false") };
+        assert_eq!(bool_from_env("SCCION_TEST_DEPEND"), Some(false));
+
+        // And the newer spelling outranks it, as everywhere else.
+        unsafe { std::env::set_var("SCCION_TEST_DEPEND", "true") };
+        assert_eq!(bool_from_env("SCCION_TEST_DEPEND"), Some(true));
         unsafe { std::env::remove_var("SCCACHE_TEST_DEPEND") };
+
+        unsafe { std::env::remove_var("SCCION_TEST_DEPEND") };
         assert_eq!(
-            bool_from_env("SCCACHE_TEST_DEPEND"),
+            bool_from_env("SCCION_TEST_DEPEND"),
             None,
             "unset is not `false`: it means the layer said nothing, and the \
              project or the machine still gets to decide"
         );
     }
 
+    /// A drive letter is what a volume *is* on Windows, and nowhere else.
+    #[cfg(windows)]
     #[test]
     fn volume_root_handles_the_shapes_paths_actually_take() {
         assert_eq!(volume_root(Path::new(r"D:\cache")).as_deref(), Some("D:\\"));
@@ -802,6 +1117,84 @@ mod tests {
         // A UNC path has no drive letter; claiming one would be a lie.
         assert_eq!(volume_root(Path::new(r"\\server\share")), None);
         assert_eq!(volume_root(Path::new("relative/path")), None);
+    }
+
+    /// The defect this replaced: `volume_root` recognised only a drive letter,
+    /// so every POSIX path answered `None`, `same_volume` was false by
+    /// construction, and a correctly configured Mac was warned that its cache
+    /// and build tree were on different volumes.
+    #[cfg(unix)]
+    #[test]
+    fn a_posix_path_gets_a_real_volume() {
+        let root = volume_root(Path::new("/")).expect("the root filesystem has a mount point");
+        assert!(
+            root.starts_with('/'),
+            "a mount point is an absolute path, got {root:?}"
+        );
+
+        // The point of the whole exercise: two paths on one filesystem agree.
+        // Anything under the temporary directory and the temporary directory
+        // itself are the same volume by construction.
+        let dir = tempfile::tempdir().unwrap();
+        let deep = dir.path().join("a/b/c");
+        assert_eq!(
+            volume_root(dir.path()),
+            volume_root(&deep),
+            "a path and its own subdirectory cannot be on different volumes"
+        );
+
+        // And it answers for a path that does not exist yet, which is the state
+        // a cache directory is in on a machine that has never run a build.
+        assert!(
+            volume_root(&deep).is_some(),
+            "the volume a directory will be created on is answerable"
+        );
+    }
+
+    /// Case folding decides whether one checkout has one cache key or two, so
+    /// the report has to know -- and has to find out without writing anything.
+    #[cfg(unix)]
+    #[test]
+    fn case_sensitivity_is_probed_not_assumed() {
+        let dir = tempfile::tempdir().unwrap();
+        let mixed = dir.path().join("MixedCase");
+        std::fs::create_dir(&mixed).unwrap();
+
+        let answer = case_sensitive(&mixed).expect("a name with letters can be probed");
+        // Whichever way this volume goes, the probe must agree with what the
+        // filesystem actually does rather than with what its type suggests.
+        let folded = dir.path().join("mixedcase");
+        assert_eq!(
+            answer,
+            !folded.exists(),
+            "the probe disagreed with the filesystem: {} exists = {}",
+            folded.display(),
+            folded.exists()
+        );
+
+        // Probing must not have created anything.
+        let entries: Vec<_> = std::fs::read_dir(dir.path()).unwrap().collect();
+        assert_eq!(entries.len(), 1, "the probe wrote to the filesystem");
+    }
+
+    /// A concept a platform does not have is absent, not unknown.
+    #[test]
+    fn a_report_omits_what_this_platform_cannot_answer() {
+        let here = describe_volume(Path::new("."));
+        if cfg!(windows) {
+            assert!(here.dev_drive.is_some(), "Windows has Dev Drives");
+        } else {
+            assert!(
+                here.dev_drive.is_none(),
+                "there is no Dev Drive off Windows, and `unknown` implied the \
+                 question was open when it was never asked"
+            );
+            assert!(
+                !here.describe().contains("dev drive"),
+                "the printed line named a Windows concept: {}",
+                here.describe()
+            );
+        }
     }
 
     /// The regression the layered shape exists for. A tree that sets
@@ -862,15 +1255,19 @@ mod tests {
                 path: "d:/c".into(),
                 root: Some("D:\\".into()),
                 filesystem: "ReFS".into(),
-                dev_drive: "trusted".into(),
+                dev_drive: Some("trusted".into()),
                 supports_block_cloning: true,
+                case_sensitive: Some(true),
+                spotlight_indexed: None,
             },
             working_directory: VolumeReport {
                 path: "d:/w".into(),
                 root: Some("D:\\".into()),
                 filesystem: "ReFS".into(),
-                dev_drive: "trusted".into(),
+                dev_drive: Some("trusted".into()),
                 supports_block_cloning: true,
+                case_sensitive: Some(true),
+                spotlight_indexed: None,
             },
             same_volume: true,
             cache_location: "d:/c".into(),
@@ -884,7 +1281,7 @@ mod tests {
                 None,
             ),
             preprocessor_cache_settings: vec![],
-            defender: DefenderReport::default(),
+            defender: None,
             findings: vec![
                 Finding {
                     level: Level::Info,
