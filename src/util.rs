@@ -1236,11 +1236,16 @@ pub fn strip_basedirs_in_arg<'a>(arg: &'a [u8], basedirs: &[Vec<u8>]) -> Cow<'a,
         return Cow::Borrowed(arg);
     }
     // Longest first, so a basedir nested inside another does not strip the
-    // shorter prefix and leave the remainder of the longer one behind.
-    let mut sorted: Vec<&[u8]> = basedirs.iter().map(|b| b.as_slice()).collect();
-    sorted.sort_by_key(|b| std::cmp::Reverse(b.len()));
+    // shorter prefix and leave the remainder of the longer one behind. Each
+    // carries whether *its own* volume folds case, asked once per basedir and
+    // cached -- see `crate::volume`.
+    let mut sorted: Vec<(&[u8], bool)> = basedirs
+        .iter()
+        .filter(|b| !b.is_empty())
+        .map(|b| (b.as_slice(), crate::volume::basedir_folds_case(b)))
+        .collect();
+    sorted.sort_by_key(|(b, _)| std::cmp::Reverse(b.len()));
 
-    sorted.retain(|b| !b.is_empty());
     if sorted.is_empty() {
         return Cow::Borrowed(arg);
     }
@@ -1249,16 +1254,15 @@ pub fn strip_basedirs_in_arg<'a>(arg: &'a [u8], basedirs: &[Vec<u8>]) -> Cow<'a,
     // separator (see `Config`). Arguments are not, so matching has to happen
     // against a normalised copy. This normalisation is length-preserving, which
     // is what lets an offset found in the copy index the original directly.
+    //
+    // Case is *not* normalised here, because it cannot be decided for the
+    // argument as a whole: an argument may name paths on more than one volume,
+    // and only the basedir knows what its volume does. It is decided per
+    // comparison instead, by `starts_with_on`.
     #[cfg(target_os = "windows")]
     let haystack: Vec<u8> = arg
         .iter()
-        .map(|&b| {
-            if b == b'\\' {
-                b'/'
-            } else {
-                b.to_ascii_lowercase()
-            }
-        })
+        .map(|&b| if b == b'\\' { b'/' } else { b })
         .collect();
     #[cfg(target_os = "windows")]
     let haystack: &[u8] = &haystack;
@@ -1269,8 +1273,11 @@ pub fn strip_basedirs_in_arg<'a>(arg: &'a [u8], basedirs: &[Vec<u8>]) -> Cow<'a,
     let mut i = 0;
     let mut matched = false;
     while i < arg.len() {
-        match sorted.iter().find(|n| haystack[i..].starts_with(n)) {
-            Some(n) => {
+        match sorted
+            .iter()
+            .find(|(n, folds)| starts_with_on(&haystack[i..], n, *folds))
+        {
+            Some((n, _)) => {
                 matched = true;
                 i += n.len();
             }
@@ -1286,11 +1293,12 @@ pub fn strip_basedirs_in_arg<'a>(arg: &'a [u8], basedirs: &[Vec<u8>]) -> Cow<'a,
             // Accept the separator-less form only at the very end of the
             // argument, where there is no following component for it to run
             // into -- which is what keeps the boundary rule intact.
-            None => match sorted
-                .iter()
-                .find(|n| n.len() > 1 && haystack[i..] == n[..n.len() - 1])
-            {
-                Some(n) => {
+            None => match sorted.iter().find(|(n, folds)| {
+                n.len() > 1
+                    && haystack.len() - i == n.len() - 1
+                    && starts_with_on(&haystack[i..], &n[..n.len() - 1], *folds)
+            }) {
+                Some((n, _)) => {
                     matched = true;
                     i += n.len() - 1;
                 }
@@ -1306,6 +1314,26 @@ pub fn strip_basedirs_in_arg<'a>(arg: &'a [u8], basedirs: &[Vec<u8>]) -> Cow<'a,
     } else {
         Cow::Borrowed(arg)
     }
+}
+
+/// `haystack.starts_with(needle)`, folding ASCII case when the volume does.
+///
+/// ASCII only, while APFS and NTFS fold the whole Unicode table. That is a
+/// deliberate floor rather than an oversight: folding further would mean
+/// carrying the volume's own case table, and getting it *wrong* is the
+/// dangerous direction -- two paths declared equal that the filesystem
+/// considers distinct is a cache entry served for the wrong tree. Under-folding
+/// only costs a hit. Every path component in a build tree that has ever been
+/// measured here is ASCII.
+fn starts_with_on(haystack: &[u8], needle: &[u8], folds: bool) -> bool {
+    if !folds {
+        return haystack.starts_with(needle);
+    }
+    haystack.len() >= needle.len()
+        && haystack
+            .iter()
+            .zip(needle)
+            .all(|(h, n)| h.eq_ignore_ascii_case(n))
 }
 
 pub fn strip_basedirs<'a>(preprocessor_output: &'a [u8], basedirs: &[Vec<u8>]) -> Cow<'a, [u8]> {
@@ -1328,8 +1356,36 @@ pub fn strip_basedirs<'a>(preprocessor_output: &'a [u8], basedirs: &[Vec<u8>]) -
     #[cfg(target_os = "windows")]
     let normalized_output = &normalize_win_path(preprocessor_output);
 
+    // Basedirs whose volume folds case are searched in a lowercased copy of the
+    // output, with a lowercased needle -- `memchr` has no case-insensitive
+    // substring search, and it is worth far more here than one extra buffer:
+    // preprocessor output is megabytes and this runs once per compilation. The
+    // copy is only made when some basedir actually needs it, and both forms are
+    // length-preserving, so a position found in either indexes the original.
+    //
+    // On Windows `normalize_win_path` already lowercases and every basedir
+    // folds, so nothing here changes and no second copy is made.
+    let folding: Vec<bool> = basedirs
+        .iter()
+        .map(|b| crate::volume::basedir_folds_case(b))
+        .collect();
+    #[cfg(target_os = "windows")]
+    let folded_output: Option<Vec<u8>> = None;
+    #[cfg(not(target_os = "windows"))]
+    let folded_output: Option<Vec<u8>> = folding
+        .iter()
+        .any(|&f| f)
+        .then(|| preprocessor_output.to_ascii_lowercase());
+
     for (idx, basedir_bytes) in basedirs.iter().enumerate() {
-        let basedir = basedir_bytes.as_slice();
+        let lowered;
+        let (normalized_output, basedir): (&[u8], &[u8]) = match folded_output {
+            Some(ref folded) if folding[idx] => {
+                lowered = basedir_bytes.to_ascii_lowercase();
+                (folded, &lowered)
+            }
+            _ => (normalized_output, basedir_bytes.as_slice()),
+        };
 
         // On Windows, preprocessor output quotes paths as C string literals
         // (#line directives and GNU linemarkers), so backslash separators
@@ -1970,45 +2026,67 @@ mod tests {
         );
     }
 
-    /// The live half of M3, and the one thing still open in it.
+    /// The live half of M3: one checkout reached by two spellings is one
+    /// checkout -- on the volumes where that is actually true, and only there.
     ///
-    /// On a case-folding volume -- which is the macOS default, confirmed by
-    /// `--check-env` on this machine -- one checkout has more than one
-    /// spelling, and both reach the same files. Basedir matching compares
-    /// bytes, so the second spelling strips nothing and every path reaches the
-    /// key absolute.
-    ///
-    /// Measured on the real toolchain rather than inferred: from an empty
-    /// cache, one translation unit of Sourcetrail-TS compiled from
-    /// `/Users/.../Sourcetrail-TS` and then from
+    /// Measured on the real toolchain before it was fixed, rather than
+    /// inferred: from an empty cache, one translation unit of Sourcetrail-TS
+    /// compiled from `/Users/.../Sourcetrail-TS` and then from
     /// `/users/.../sourcetrail-ts` produced **two cache entries** -- miss, hit,
-    /// miss, hit. The same two spellings also register as two workspaces,
-    /// because `agent::canonical` normalises nothing off Windows.
+    /// miss, hit.
     ///
-    /// Ignored rather than deleted: it is the reproduction the fix has to
-    /// satisfy, and the fix is a decision this test does not get to make. The
-    /// matcher cannot simply fold case everywhere -- on a case-sensitive volume
-    /// `/Foo` and `/foo` are two directories, and folding them would turn a
-    /// missed hit into a wrong one. Doing it per volume means the basedir has
-    /// to carry whether its volume folds, which changes a type that crosses the
-    /// wire. Run with `cargo test -- --ignored`.
+    /// The test asks the volume rather than the platform, because that is what
+    /// the matcher now does and because the two answers disagree: APFS folds by
+    /// default and can be formatted not to, and this file has to pass on both.
+    /// Which branch runs is not the point -- the point is that the matcher
+    /// agrees with the filesystem either way.
     #[test]
-    #[ignore = "M3: basedir matching does not fold case; see the doc comment"]
     fn a_checkout_reached_by_two_spellings_is_one_checkout() {
-        let basedir = crate::config::normalize_basedir("/Users/x/proj").unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let proj = dir.path().join("Proj");
+        std::fs::create_dir(&proj).unwrap();
+
+        let basedir = crate::config::normalize_basedir(proj.to_str().unwrap()).unwrap();
         let dirs = std::slice::from_ref(&basedir);
 
+        let declared = format!("-I{}/include", proj.display());
         assert_eq!(
-            &*super::strip_basedirs_in_arg(b"-I/Users/x/proj/include", dirs),
+            &*super::strip_basedirs_in_arg(declared.as_bytes(), dirs),
             b"-Iinclude",
-            "the spelling the basedir was declared with strips today"
+            "the spelling the basedir was declared with has always stripped"
         );
-        assert_eq!(
-            &*super::strip_basedirs_in_arg(b"-I/users/x/PROJ/include", dirs),
-            b"-Iinclude",
-            "on a folding volume this names the very same directory, so it has \
-             to reach the key the same way"
-        );
+
+        let other = format!("-I{}/include", dir.path().join("pROJ").display());
+        let stripped = super::strip_basedirs_in_arg(other.as_bytes(), dirs);
+        if crate::volume::folds_case(&proj) {
+            assert_eq!(
+                &*stripped, b"-Iinclude",
+                "this volume folds, so {other} names the very same directory and \
+                 has to reach the key the same way"
+            );
+        } else {
+            assert_eq!(
+                &*stripped,
+                other.as_bytes(),
+                "this volume does not fold, so {other} is a different directory \
+                 -- stripping it would serve one tree's object for another's"
+            );
+        }
+    }
+
+    /// The half of the decision that has no test on this machine's volume.
+    ///
+    /// Whichever way the temporary directory above happens to be formatted,
+    /// only one branch of it runs. The comparison itself is where the trade
+    /// lives, so it is checked directly in both directions: folding is a choice
+    /// the volume makes, never one the matcher makes on its own.
+    #[test]
+    fn not_folding_means_exactly_not_folding() {
+        assert!(super::starts_with_on(b"/Users/x/", b"/users/X/", true));
+        assert!(!super::starts_with_on(b"/Users/x/", b"/users/X/", false));
+        assert!(super::starts_with_on(b"/Users/x/", b"/Users/x/", false));
+        // Length is not folded away by either.
+        assert!(!super::starts_with_on(b"/Users/", b"/users/x/", true));
     }
 
     /// `-I<checkout root>` names the basedir with no trailing separator.
