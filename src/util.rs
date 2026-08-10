@@ -313,6 +313,35 @@ impl TimeMacroFinder {
         self.previous_small_read.clear();
     }
 
+    /// Bytes that can continue a C identifier.
+    fn is_identifier_byte(b: u8) -> bool {
+        b.is_ascii_alphanumeric() || b == b'_'
+    }
+
+    /// Whether `needle` occurs in `buffer` as a token of its own.
+    ///
+    /// An occurrence welded to an identifier character on either side is part of a
+    /// longer identifier, and C's maximal munch means it can never expand as the
+    /// macro: `Ident__DATE__` in libclang's `Preprocessor.h` is that identifier and
+    /// nothing else. Before this, naming the macro was enough to make every
+    /// translation unit including such a header uncacheable in direct mode.
+    ///
+    /// Both edges are treated as a match when the answer would lie outside the
+    /// buffer, because a chunk boundary means the neighbouring byte is unknown and
+    /// the safe direction is to report the macro. It is still only a byte scan: a
+    /// mention inside a comment or a string literal reads exactly like a use, and
+    /// telling those apart would mean lexing C over every byte of every header --
+    /// on the hashing path, where being wrong means a wrong cache hit rather than a
+    /// slow one.
+    fn occurs_as_token(buffer: &[u8], needle: &[u8]) -> bool {
+        memchr::memmem::find_iter(buffer, needle).any(|at| {
+            let joined_before = at > 0 && Self::is_identifier_byte(buffer[at - 1]);
+            let end = at + needle.len();
+            let joined_after = end < buffer.len() && Self::is_identifier_byte(buffer[end]);
+            !joined_before && !joined_after
+        })
+    }
+
     fn find_macros(&self, buffer: &[u8]) {
         // TODO
         // This could be made more efficient, either by using a regex for all
@@ -321,13 +350,13 @@ impl TimeMacroFinder {
         // `ccache` reads the file twice, so we might actually already be
         // winning in most cases... though they have an inode cache.
         // In any case, let's only improve this if it ends up being slow.
-        if memchr::memmem::find(buffer, b"__TIMESTAMP__").is_some() {
+        if Self::occurs_as_token(buffer, b"__TIMESTAMP__") {
             self.found_timestamp.set(true);
         }
-        if memchr::memmem::find(buffer, b"__TIME__").is_some() {
+        if Self::occurs_as_token(buffer, b"__TIME__") {
             self.found_time.set(true);
         }
-        if memchr::memmem::find(buffer, b"__DATE__").is_some() {
+        if Self::occurs_as_token(buffer, b"__DATE__") {
             self.found_date.set(true);
         }
     }
@@ -1698,6 +1727,61 @@ mod tests {
         assert_eq!(a.split_prefix("b"), None);
     }
 
+    /// Naming a time macro inside a longer identifier is not using it.
+    ///
+    /// libclang's `Preprocessor.h` declares `IdentifierInfo *Ident__DATE__`,
+    /// and a byte scan read that as "this file expands __DATE__" -- which made
+    /// every translation unit including it uncacheable in direct mode. On a
+    /// 561-unit build that was 7 of the most expensive units recompiling every
+    /// time. C's maximal munch settles it: `Ident__DATE__` is one identifier
+    /// and cannot expand the macro.
+    #[test]
+    fn a_time_macro_welded_to_an_identifier_is_not_one() {
+        for named in [
+            &b"IdentifierInfo *Ident__DATE__, *Ident__TIME__;"[..],
+            &b"x__TIMESTAMP__"[..],
+            // Trailing side too: `__DATE__X` is its own identifier.
+            &b"__DATE__X = 1;"[..],
+        ] {
+            let mut finder = TimeMacroFinder::new();
+            finder.find_time_macros(named);
+            assert!(
+                !finder.found_time_macros(),
+                "{:?} names a macro without using it",
+                String::from_utf8_lossy(named)
+            );
+        }
+
+        for used in [
+            &b"const char *d = __DATE__;"[..],
+            &b"__TIME__"[..],
+            &b"puts(__TIMESTAMP__);"[..],
+        ] {
+            let mut finder = TimeMacroFinder::new();
+            finder.find_time_macros(used);
+            assert!(
+                finder.found_time_macros(),
+                "{:?} really does use one",
+                String::from_utf8_lossy(used)
+            );
+        }
+    }
+
+    /// What the boundary rule deliberately does not fix.
+    ///
+    /// A mention in a comment reads exactly like a use to a byte scan, and the
+    /// same header has one. Telling them apart means lexing C -- comments,
+    /// strings, line continuations -- across chunked reads, on the hashing
+    /// path, where being wrong yields a wrong cache hit rather than a slow
+    /// build. So this stays a false positive on purpose, and a project that
+    /// knows its sources says so with `ignore_time_macros`.
+    #[test]
+    fn a_time_macro_in_a_comment_is_still_reported() {
+        let mut finder = TimeMacroFinder::new();
+        finder.find_time_macros(b"/// __DATE__ or __TIME__ in the file so far.");
+        assert!(finder.found_time_macros());
+    }
+
     #[test]
     fn test_time_macro_short_read() {
         // Normal "read" should succeed
@@ -1714,7 +1798,7 @@ mod tests {
 
         // So should a partial "read" later down the line
         let mut finder = TimeMacroFinder::new();
-        finder.find_time_macros(b"Something or other larger than the haystack");
+        finder.find_time_macros(b"Something or other larger than the haystack ");
         finder.find_time_macros(b"__");
         assert!(!finder.found_time());
         finder.find_time_macros(b"TIME__");
@@ -1722,10 +1806,10 @@ mod tests {
 
         // Even if the last "read" is large
         let mut finder = TimeMacroFinder::new();
-        finder.find_time_macros(b"Something or other larger than the haystack");
+        finder.find_time_macros(b"Something or other larger than the haystack ");
         finder.find_time_macros(b"__");
         assert!(!finder.found_time());
-        finder.find_time_macros(b"TIME__ something or other larger than the haystack");
+        finder.find_time_macros(b"TIME__ something or other larger than the haystack ");
         assert!(finder.found_time());
 
         // Pathological case
@@ -1756,24 +1840,24 @@ mod tests {
         assert!(!finder.found_time());
         finder.find_time_macros(b"TI");
         assert!(!finder.found_time());
-        finder.find_time_macros(b"ME__ This is larger than the haystack");
+        finder.find_time_macros(b"ME__ This is larger than the haystack ");
         assert!(finder.found_time());
         assert!(!finder.found_timestamp());
         finder.find_time_macros(b"__");
         assert!(!finder.found_timestamp());
-        finder.find_time_macros(b"TIMESTAMP__ This is larger than the haystack");
+        finder.find_time_macros(b"TIMESTAMP__ This is larger than the haystack ");
         assert!(finder.found_timestamp());
 
         // Odd-numbered sawtooth length pathological case
         let mut finder = TimeMacroFinder::new();
         finder.find_time_macros(b"__");
         assert!(!finder.found_time());
-        finder.find_time_macros(b"TIME__ This is larger than the haystack");
+        finder.find_time_macros(b"TIME__ This is larger than the haystack ");
         assert!(finder.found_time());
         assert!(!finder.found_timestamp());
         finder.find_time_macros(b"__");
         assert!(!finder.found_timestamp());
-        finder.find_time_macros(b"TIMESTAMP__ This is larger than the haystack");
+        finder.find_time_macros(b"TIMESTAMP__ This is larger than the haystack ");
         assert!(finder.found_timestamp());
     }
 

@@ -913,7 +913,7 @@ mod test {
 
     #[test]
     fn test_find_time_macros_small_file_match_multiple() {
-        let buf = b"__TIMESTAMP____DATE____TIME__";
+        let buf = b"__TIMESTAMP__ __DATE__ __TIME__";
         let finder = Digest::reader_sync_time_macros(buf.as_slice()).unwrap().1;
         assert!(finder.found_time_macros());
         assert!(finder.found_time());
@@ -934,7 +934,7 @@ mod test {
     #[test]
     fn test_find_time_macros_large_file_match_no_overlap() {
         let mut buf = vec![0; HASH_BUFFER_SIZE * 2];
-        buf.extend(b"__TIMESTAMP____DATE____TIME__");
+        buf.extend(b"__TIMESTAMP__ __DATE__ __TIME__");
         let finder = Digest::reader_sync_time_macros(buf.as_slice()).unwrap().1;
         assert!(finder.found_time_macros());
         assert!(finder.found_time());
