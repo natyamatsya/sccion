@@ -787,7 +787,16 @@ where
 
         // Try to look for a cached preprocessing step for this compilation
         // request.
-        let preprocessor_cache_mode_config = storage.preprocessor_cache_mode_config();
+        let mut preprocessor_cache_mode_config = storage.preprocessor_cache_mode_config();
+        // Whether a tree expands `__DATE__` is a fact about the tree, so a
+        // committed project file outranks the machine here. The scan reads
+        // bytes and cannot tell a macro that expands from one merely named, and
+        // toolchain headers name them -- libclang's `Preprocessor.h` alone is
+        // enough to make every unit that includes it uncacheable in direct
+        // mode.
+        if let Some(ignore) = project.ignore_time_macros {
+            preprocessor_cache_mode_config.ignore_time_macros = ignore;
+        }
         let too_hard_for_preprocessor_cache_mode = self
             .parsed_args
             .too_hard_for_preprocessor_cache_mode

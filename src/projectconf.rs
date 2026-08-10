@@ -27,8 +27,19 @@
 //! another. It is reported whether or not there is a project file, because most
 //! repositories have never heard of sccache and still belong to a checkout.
 //!
-//! The test a key has to pass is that the worst a hostile repository can do
-//! with it is make its own builds slower. `basedirs` passes: it can only make
+//! The test a key has to pass is that **its blast radius is the declaring
+//! repository's own builds**. Nothing here may reach another project's entries,
+//! another user's cache, or anything about where a build reads or writes.
+//!
+//! That test used to be written as "the worst it can do is make its own builds
+//! slower", which was too tight and did not describe what was already admitted:
+//! `basedirs` makes keys deliberately *less* specific, and a tree that declares
+//! a root whose contents are not in fact path-independent gets wrong objects,
+//! not slow ones. It is allowed because path-independence is the tree's own
+//! property to assert and the consequence lands on the tree that asserted it.
+//! `ignore_time_macros` is admitted on exactly that footing.
+//!
+//! `basedirs` passes: it can only make
 //! cache keys less specific to a path. `use_dependency_keying` passes: it
 //! chooses whether a compilation's inputs are learned by compiling and asking
 //! or by preprocessing first, which changes what the build spends and nothing
@@ -99,6 +110,17 @@ struct ProjectConf {
     /// depends on the cache backend.
     #[serde(default)]
     use_preprocessor_cache_mode: Option<bool>,
+    /// Whether `__DATE__`, `__TIME__` and `__TIMESTAMP__` appearing in a file
+    /// this tree compiles should be taken at face value.
+    ///
+    /// The check scans bytes, so it cannot tell a macro that expands from one
+    /// merely named -- and toolchain headers name them: libclang's
+    /// `Preprocessor.h` has `Ident__DATE__` and a comment, which is enough to
+    /// make every translation unit that includes it uncacheable in direct mode.
+    /// Whether a tree actually expands them is a fact about the tree, which is
+    /// why it is answerable here and not on the machine.
+    #[serde(default)]
+    ignore_time_macros: Option<bool>,
     /// An arbitrary string folded into every cache key from this tree, so the
     /// project can invalidate its own entries.
     #[serde(default)]
@@ -126,6 +148,7 @@ pub struct Discovered {
     pub basedirs: Vec<Vec<u8>>,
     pub use_dependency_keying: Option<bool>,
     pub use_preprocessor_cache_mode: Option<bool>,
+    pub ignore_time_macros: Option<bool>,
     pub custom_cache_buster: Option<String>,
     /// Absolute, already resolved against the file's directory.
     pub extra_hash_files: Vec<PathBuf>,
@@ -348,6 +371,7 @@ fn read_conf(path: &Path, dir: &Path) -> Discovered {
         basedirs: out,
         use_dependency_keying: conf.use_dependency_keying,
         use_preprocessor_cache_mode: conf.use_preprocessor_cache_mode,
+        ignore_time_macros: conf.ignore_time_macros,
         custom_cache_buster: conf.custom_cache_buster,
         extra_hash_files,
         // Only a refusal is carried forward. `true` is not worth warning about
