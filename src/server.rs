@@ -1040,6 +1040,13 @@ where
                         info.map_err(|e| e.to_string()),
                     )))
                 }
+                Request::DescribeWorkspace { handle } => {
+                    debug!("handle_client: describe_workspace");
+                    let info = me.describe_workspace(&handle);
+                    Ok(Message::WithoutBody(Response::Workspace(
+                        info.map_err(|e| e.to_string()),
+                    )))
+                }
                 Request::GetMissRecords { handle, limit } => {
                     debug!("handle_client: get_miss_records");
                     let records = me.miss_records(handle.as_deref(), limit);
@@ -1351,12 +1358,43 @@ where
         Ok(crate::protocol::WorkspaceInfo {
             handle,
             root: crate::agent::canonical(&root),
-            vcs: match vcs {
-                crate::projectconf::Vcs::Git => "git",
-                crate::projectconf::Vcs::Jj => "jj",
-                crate::projectconf::Vcs::Mercurial => "hg",
-            }
-            .to_owned(),
+            vcs: vcs_name(vcs).to_owned(),
+        })
+    }
+
+    /// The checkout a handle names, for a caller that holds nothing else.
+    ///
+    /// An unknown handle is an error and not an empty answer. The temptation is
+    /// to resolve one through `miss_records`, which needs no new request and is
+    /// how `stats_for` already validates handles -- but a workspace that has
+    /// never missed has no records, so that route reports a perfectly good
+    /// handle as unknown. A lookup that cannot distinguish "not registered"
+    /// from "nothing happened yet" is the silent-empty failure this table
+    /// exists to avoid.
+    pub fn describe_workspace(&self, handle: &str) -> Result<crate::protocol::WorkspaceInfo> {
+        let root = self
+            .workspaces
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(handle)
+            .cloned()
+            .ok_or_else(|| anyhow!("unknown workspace handle"))?;
+        // Re-read rather than remember: a handle outlives whatever it names,
+        // and a checkout that has since been deleted or is no longer a
+        // repository should be said to be gone. Answering from a stale copy
+        // would describe a tree that is not there, which is worse than the
+        // error -- every answer derived from it would be about nothing.
+        let found = crate::projectconf::discover(&root);
+        let Some(vcs) = found.vcs else {
+            bail!(
+                "the workspace {} is no longer a git, jj or hg checkout",
+                root.display()
+            );
+        };
+        Ok(crate::protocol::WorkspaceInfo {
+            handle: handle.to_owned(),
+            root: crate::agent::canonical(&root),
+            vcs: vcs_name(vcs).to_owned(),
         })
     }
 
@@ -2097,6 +2135,18 @@ const MAX_TRACKED_AGENTS: usize = 64;
 
 /// Where callers past [`MAX_TRACKED_AGENTS`] are counted.
 pub const OTHER_AGENTS: &str = "<other>";
+
+/// The name a workspace goes by on the wire.
+///
+/// Shared by the two places that build a `WorkspaceInfo`, so that registering a
+/// workspace and describing it later can never disagree about what it is.
+fn vcs_name(vcs: crate::projectconf::Vcs) -> &'static str {
+    match vcs {
+        crate::projectconf::Vcs::Git => "git",
+        crate::projectconf::Vcs::Jj => "jj",
+        crate::projectconf::Vcs::Mercurial => "hg",
+    }
+}
 
 /// How many workspaces may be registered at once.
 ///

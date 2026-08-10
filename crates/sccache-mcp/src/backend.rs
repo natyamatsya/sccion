@@ -14,6 +14,7 @@ use sccache::api::{EnvReport, MissRecord, ServerInfo, WorkspaceInfo};
 
 pub trait Backend: Send + Sync {
     fn register_workspace(&self, path: &Path) -> Result<WorkspaceInfo>;
+    fn describe_workspace(&self, handle: &str) -> Result<WorkspaceInfo>;
     fn stats(&self) -> Result<ServerInfo>;
     fn miss_records(&self, handle: Option<&str>, limit: usize) -> Result<Vec<MissRecord>>;
     fn environment(&self, cwd: &Path) -> EnvReport;
@@ -47,6 +48,10 @@ impl DaemonBackend {
 impl Backend for DaemonBackend {
     fn register_workspace(&self, path: &Path) -> Result<WorkspaceInfo> {
         self.daemon.register_workspace(path)
+    }
+
+    fn describe_workspace(&self, handle: &str) -> Result<WorkspaceInfo> {
+        self.daemon.describe_workspace(handle)
     }
 
     fn stats(&self) -> Result<ServerInfo> {

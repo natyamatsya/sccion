@@ -28,7 +28,13 @@ use crate::config::Config;
 use crate::errors::*;
 use crate::protocol::{Request, Response};
 
-pub use crate::checkenv::EnvReport;
+// The report's own field types, not just the report: every field of
+// `EnvReport` is public, so anything that can hold one already needs these to
+// read it, and an adapter that could only re-serialise it could not test what
+// it says.
+pub use crate::checkenv::{
+    DefenderReport, EnvReport, Finding, Level, Origin, Setting, VolumeReport,
+};
 pub use crate::missrecord::{
     Classification, DirectState, KeyComponents, MissRecord, RING_CAPACITY as MAX_MISS_RECORDS,
 };
@@ -140,6 +146,21 @@ impl Daemon {
         let mut conn = self.connect()?;
         match conn.request(Request::RegisterWorkspace {
             path: path.as_os_str().to_owned(),
+        })? {
+            Response::Workspace(Ok(info)) => Ok(info),
+            Response::Workspace(Err(e)) => Err(Refused(e).into()),
+            _ => bail!("Unexpected server response!"),
+        }
+    }
+
+    /// The checkout a handle names.
+    ///
+    /// The inverse of [`Daemon::register_workspace`], for a caller that was
+    /// given a handle and needs to ask a question about the tree itself.
+    pub fn describe_workspace(&self, handle: &str) -> Result<WorkspaceInfo> {
+        let mut conn = self.connect()?;
+        match conn.request(Request::DescribeWorkspace {
+            handle: handle.to_owned(),
         })? {
             Response::Workspace(Ok(info)) => Ok(info),
             Response::Workspace(Err(e)) => Err(Refused(e).into()),

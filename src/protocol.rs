@@ -13,9 +13,10 @@ use serde::{Deserialize, Serialize};
 /// side of a change fail to find each other rather than exchanging bytes one of
 /// them will misread. bincode is not self-describing, so without this the
 /// mismatch is silent misinterpretation rather than a clean error.
-/// Bumped to 2 when `RegisterWorkspace` and `GetMissRecords` were added. A
-/// daemon left running across the change will not be found by the new client,
-/// which is the intended outcome: stop it with `sccache --stop-server`.
+/// Bumped to 2 when `RegisterWorkspace` and `GetMissRecords` were added, and
+/// to 3 for `DescribeWorkspace`. A daemon left running across the change will
+/// not be found by the new client, which is the intended outcome: stop it with
+/// `sccache --stop-server`.
 ///
 /// **Only Windows actually enforces this**, because the pipe name is the only
 /// rendezvous that carries it. Off Windows the client finds the daemon on a
@@ -24,7 +25,7 @@ use serde::{Deserialize, Serialize};
 /// this constant exists to prevent and does not. Hence the allow: the constant
 /// is genuinely unreachable here, and that is the bug, not the warning.
 #[cfg_attr(not(windows), allow(dead_code))]
-pub const PROTOCOL_VERSION: u32 = 2;
+pub const PROTOCOL_VERSION: u32 = 3;
 use std::ffi::OsString;
 
 /// A client request.
@@ -69,6 +70,15 @@ pub enum Request {
         handle: Option<String>,
         limit: usize,
     },
+    /// The checkout a handle names.
+    ///
+    /// A handle is deliberately opaque, and a caller that holds one has no
+    /// other way back to a directory. Without this, any question that has to be
+    /// answered *about a tree* -- what its project file says, which settings a
+    /// build in it would run under -- could only be answered about the asking
+    /// process's own directory, which for the MCP adapter is wherever it
+    /// happened to be launched.
+    DescribeWorkspace { handle: String },
 }
 
 /// A server response.
@@ -104,7 +114,10 @@ pub enum Response {
     RecordStats,
 
     // --- Out-of-band query responses ---
-    /// Response for `Request::RegisterWorkspace`.
+    /// Response for `Request::RegisterWorkspace` and
+    /// `Request::DescribeWorkspace`. One type, because both answer the same
+    /// question -- which checkout is this? -- and only differ in what they are
+    /// given to answer it from.
     Workspace(Result<WorkspaceInfo, String>),
     /// Response for `Request::GetMissRecords`.
     MissRecords(Result<Vec<MissRecord>, String>),

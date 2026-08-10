@@ -33,7 +33,7 @@ const TTL_ENVIRONMENT: u64 = 300_000;
 const TOOLS: &[(&str, &str)] = &[
     (
         "check_environment",
-        "Report the environment sccache is running in: cache location and size,          filesystem, preprocessor cache settings, and any findings that would          invalidate a measurement. Reports only; changes nothing.",
+        "Report the environment sccache is running in: cache location and size,          filesystem, preprocessor cache settings, and any findings that would          invalidate a measurement. Pass a workspace handle to get the settings a          build in that checkout would actually run under, and which layer          supplied each -- machine, project file, or environment. Reports only;          changes nothing.",
     ),
     (
         "compare_keys",
@@ -186,6 +186,16 @@ fn input_schema(name: &str) -> Value {
             "type": "object",
             "properties": {"handle": handle},
             "required": ["handle"],
+        }),
+        "check_environment" => json!({
+            "type": "object",
+            "properties": {"handle": {
+                "type": "string",
+                "description": "From register_workspace. Optional: with it, the settings \
+                                reported are the ones a build in that checkout would run \
+                                under, including any its project file overrides. Without \
+                                it, the machine's own configuration.",
+            }},
         }),
         "explain_key" => json!({
             "type": "object",
@@ -464,15 +474,29 @@ fn tools_call(params: &Value, backend: &dyn Backend) -> Result<Value, (i64, Stri
             Ok(envelope::tool_result(body, CacheScope::Private, TTL_STATS))
         }
         "check_environment" => {
-            let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+            // With a handle the report is about that checkout: its project
+            // file decides `ignore_time_macros` and `use_dependency_keying`,
+            // and answering from the adapter's own directory would describe a
+            // tree nobody is building. Without one it stays machine-wide,
+            // which is what a caller who has not registered anything can be
+            // told.
+            let (cwd, scope) = match args.get("handle").and_then(Value::as_str) {
+                Some(handle) => {
+                    let info = backend.describe_workspace(handle).map_err(handle_error)?;
+                    // Keyed by a handle, so it describes one caller's checkout
+                    // -- including the contents of its project file -- and must
+                    // not be served to another.
+                    (PathBuf::from(info.root), CacheScope::Private)
+                }
+                None => (
+                    std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+                    // The same answer for every caller, and stable for as long
+                    // as the machine is.
+                    CacheScope::Shared,
+                ),
+            };
             let report = serde_json::to_value(backend.environment(&cwd)).unwrap_or_default();
-            // The same answer for every caller, and stable for as long as the
-            // machine is.
-            Ok(envelope::tool_result(
-                report,
-                CacheScope::Shared,
-                TTL_ENVIRONMENT,
-            ))
+            Ok(envelope::tool_result(report, scope, TTL_ENVIRONMENT))
         }
         _ => Err((ERR_NOT_FOUND, format!("no such tool: {name}"))),
     }
@@ -587,6 +611,16 @@ mod tests {
             Ok(WorkspaceInfo {
                 handle: "d34db33f".repeat(4),
                 root: path.to_string_lossy().into_owned(),
+                vcs: "git".into(),
+            })
+        }
+        fn describe_workspace(&self, handle: &str) -> anyhow::Result<WorkspaceInfo> {
+            if handle == "nope" {
+                anyhow::bail!("unknown workspace handle");
+            }
+            Ok(WorkspaceInfo {
+                handle: handle.to_owned(),
+                root: "D:/wt".into(),
                 vcs: "git".into(),
             })
         }
@@ -757,6 +791,116 @@ mod tests {
         assert_eq!(r["result"]["cacheScope"], "shared");
     }
 
+    /// The environment report is about a *tree*: which settings a build there
+    /// would run under, and which of them its project file overrides. The
+    /// adapter's own working directory is wherever an editor launched it, and
+    /// answering from that reported the machine's settings for a checkout that
+    /// overrides them -- true of this process, wrong about the build.
+    #[test]
+    fn check_environment_reports_on_the_workspace_a_handle_names() {
+        /// Records which directory the report was asked about.
+        struct Located(std::sync::Mutex<Option<PathBuf>>);
+        impl Backend for Located {
+            fn register_workspace(&self, _: &Path) -> anyhow::Result<WorkspaceInfo> {
+                unimplemented!()
+            }
+            fn describe_workspace(&self, handle: &str) -> anyhow::Result<WorkspaceInfo> {
+                Fake.describe_workspace(handle)
+            }
+            fn stats(&self) -> anyhow::Result<ServerInfo> {
+                unimplemented!()
+            }
+            fn miss_records(&self, _: Option<&str>, _: usize) -> anyhow::Result<Vec<MissRecord>> {
+                unimplemented!()
+            }
+            fn environment(&self, cwd: &Path) -> sccache::api::EnvReport {
+                *self.0.lock().unwrap() = Some(cwd.to_path_buf());
+                empty_report()
+            }
+        }
+
+        let backend = Located(Default::default());
+        let request = json!({
+            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": {
+                "name": "check_environment",
+                "arguments": {"handle": "abc"},
+                "_meta": meta(PROTOCOL_VERSION),
+            },
+        });
+        let r = handle(&request, &backend).unwrap();
+        assert_eq!(
+            backend.0.lock().unwrap().as_deref(),
+            Some(Path::new("D:/wt")),
+            "the handle has to reach the checkout, not the adapter's own cwd"
+        );
+        // It now carries one checkout's project settings, so it stops being
+        // the one answer that may be shared between callers.
+        assert_eq!(r["result"]["cacheScope"], "private");
+
+        // Without a handle it is machine-wide again, and shareable.
+        let backend = Located(Default::default());
+        let request = json!({
+            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": {
+                "name": "check_environment",
+                "arguments": {},
+                "_meta": meta(PROTOCOL_VERSION),
+            },
+        });
+        let r = handle(&request, &backend).unwrap();
+        assert_eq!(r["result"]["cacheScope"], "shared");
+    }
+
+    /// A handle this daemon never minted is refused here too. Falling back to
+    /// the adapter's own directory would answer confidently about the wrong
+    /// tree, which is worse than not answering.
+    #[test]
+    fn check_environment_refuses_a_handle_it_cannot_resolve() {
+        let r = call(
+            "tools/call",
+            json!({
+                "name": "check_environment",
+                "arguments": {"handle": "nope"},
+                "_meta": meta(PROTOCOL_VERSION),
+            }),
+        );
+        assert_eq!(r["error"]["code"], ERR_UNKNOWN_HANDLE);
+    }
+
+    /// Enough of a report to be serialised; the contents are `checkenv`'s
+    /// business and are tested there.
+    fn empty_report() -> sccache::api::EnvReport {
+        let volume = sccache::api::VolumeReport {
+            path: "D:/wt".into(),
+            root: Some("D:\\".into()),
+            filesystem: "ReFS".into(),
+            dev_drive: "trusted".into(),
+            supports_block_cloning: true,
+        };
+        sccache::api::EnvReport {
+            sccache_version: "test".into(),
+            sccache_path: None,
+            cache: volume.clone(),
+            working_directory: volume,
+            same_volume: true,
+            cache_location: "D:/cache".into(),
+            max_cache_size: 0,
+            compression: "none".into(),
+            project_config: None,
+            preprocessor_cache_mode: sccache::api::Setting {
+                name: "use_preprocessor_cache_mode".into(),
+                value: true,
+                origin: sccache::api::Origin::Machine,
+                machine_value: None,
+                note: None,
+            },
+            preprocessor_cache_settings: vec![],
+            defender: Default::default(),
+            findings: vec![],
+        }
+    }
+
     /// `-32020`..=`-32099` is reserved for the specification, so nothing this
     /// adapter invents may land there.
     #[test]
@@ -852,6 +996,9 @@ mod tests {
         struct Untraced;
         impl Backend for Untraced {
             fn register_workspace(&self, _: &Path) -> anyhow::Result<WorkspaceInfo> {
+                unimplemented!()
+            }
+            fn describe_workspace(&self, _: &str) -> anyhow::Result<WorkspaceInfo> {
                 unimplemented!()
             }
             fn stats(&self) -> anyhow::Result<ServerInfo> {

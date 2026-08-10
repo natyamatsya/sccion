@@ -58,6 +58,91 @@ pub struct VolumeReport {
     pub supports_block_cloning: bool,
 }
 
+/// Which layer supplied a setting's value.
+///
+/// A report that gave only the value would be true and useless: the question
+/// anyone actually has is *why* it is that, and the answer is almost always
+/// "something you did not know was overriding it".
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Origin {
+    /// This machine's configuration, or the default it fell back to.
+    Machine,
+    /// A `.sccache.toml` in the tree being built, which outranks the machine.
+    Project,
+    /// An environment variable, which outranks both.
+    Environment,
+    /// No layer chose it: it follows from another setting, named in `note`.
+    Implied,
+}
+
+/// One resolved setting, and where its value came from.
+#[derive(Debug, Clone, Serialize)]
+pub struct Setting {
+    pub name: String,
+    /// What a compilation in the reported working directory would actually
+    /// use -- not what the machine's configuration says in isolation.
+    pub value: bool,
+    pub origin: Origin,
+    /// What the machine's configuration said, when something outranked it.
+    ///
+    /// `None` when nothing did, so that nobody has to compare two equal values
+    /// to work out whether an override was in play.
+    pub machine_value: Option<bool>,
+    /// Why the value is what it is, when the layers alone do not explain it.
+    pub note: Option<String>,
+}
+
+impl Setting {
+    /// The ordinary case: the most specific layer that said anything wins.
+    fn resolved(name: &str, machine: bool, project: Option<bool>, env: Option<bool>) -> Setting {
+        let (value, origin) = match (env, project) {
+            (Some(v), _) => (v, Origin::Environment),
+            (None, Some(v)) => (v, Origin::Project),
+            (None, None) => (machine, Origin::Machine),
+        };
+        Setting {
+            name: name.to_owned(),
+            value,
+            origin,
+            machine_value: (origin != Origin::Machine).then_some(machine),
+            note: None,
+        }
+    }
+
+    /// The value, and what it took to get there.
+    ///
+    /// Silent when the machine's own configuration decided it: saying so on
+    /// every line would bury the two or three that are actually interesting.
+    pub fn describe(&self) -> String {
+        match (self.origin, self.machine_value, &self.note) {
+            (Origin::Machine, _, _) => self.value.to_string(),
+            (_, _, Some(note)) => format!("{} ({note})", self.value),
+            (origin, Some(was), None) => format!(
+                "{} (from the {}, over the machine's {was})",
+                self.value,
+                match origin {
+                    Origin::Project => "project",
+                    Origin::Environment => "environment",
+                    _ => "machine",
+                }
+            ),
+            _ => self.value.to_string(),
+        }
+    }
+
+    /// A value the layers did not get to choose.
+    fn implied(name: &str, machine: bool, why: &str) -> Setting {
+        Setting {
+            name: name.to_owned(),
+            value: false,
+            origin: Origin::Implied,
+            machine_value: Some(machine),
+            note: Some(why.to_owned()),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct EnvReport {
     pub sccache_version: String,
@@ -68,8 +153,12 @@ pub struct EnvReport {
     pub cache_location: String,
     pub max_cache_size: u64,
     pub compression: String,
-    pub preprocessor_cache_mode: bool,
-    pub preprocessor_cache_settings: Vec<(String, bool)>,
+    /// The project file whose settings were applied, if the working directory
+    /// is under one. Named so that an override can be traced to a file rather
+    /// than left as an assertion.
+    pub project_config: Option<String>,
+    pub preprocessor_cache_mode: Setting,
+    pub preprocessor_cache_settings: Vec<Setting>,
     pub defender: DefenderReport,
     pub findings: Vec<Finding>,
 }
@@ -112,6 +201,26 @@ fn exclusion_remedy(tamper_protected: Option<bool>) -> &'static str {
     } else {
         "Add-MpPreference -ExclusionProcess cl.exe, sccache.exe, ninja.exe"
     }
+}
+
+/// An environment variable read exactly the way the compile path reads it.
+///
+/// The same rule as `generate_hash_key`: anything present that is not a
+/// recognised negative counts as on. A report that parsed these more strictly
+/// than the code does would disagree with the build it describes.
+///
+/// This is *this process's* environment. For `sccache --check-env` that is the
+/// shell someone would build from; for the MCP adapter it is wherever the
+/// adapter was launched, which need not be where the build runs. That is why
+/// the origin is reported as `environment` rather than folded silently into
+/// the value.
+fn bool_from_env(name: &str) -> Option<bool> {
+    std::env::var(name).ok().map(|v| {
+        !matches!(
+            v.trim().to_ascii_lowercase().as_str(),
+            "false" | "off" | "0"
+        )
+    })
 }
 
 fn volume_root(path: &Path) -> Option<String> {
@@ -303,21 +412,71 @@ pub fn check(config: &Config, cwd: &Path) -> EnvReport {
         },
     };
 
-    let pp = config.fallback_cache.preprocessor_cache_mode;
-    let preprocessor_cache_mode = pp.use_preprocessor_cache_mode;
-    let preprocessor_cache_settings = {
-        let p = pp;
-        vec![
-            ("file_stat_matches".to_string(), p.file_stat_matches),
-            ("use_ctime_for_stat".to_string(), p.use_ctime_for_stat),
-            ("ignore_time_macros".to_string(), p.ignore_time_macros),
-            ("skip_system_headers".to_string(), p.skip_system_headers),
-            // The one with the largest measured effect, and it was the one
-            // setting this report did not mention: on a 561-unit clang build,
-            // 206s cold against 155s.
-            ("use_dependency_keying".to_string(), p.use_dependency_keying),
-        ]
+    // The settings a build in `cwd` would run under, not the machine's in
+    // isolation. Reporting the machine's was a quiet lie for any tree carrying
+    // a `.sccache.toml`: this report said `ignore_time_macros: false` while
+    // every compilation in that tree ran with it on, which is the kind of
+    // wrong answer that costs an afternoon.
+    let project = crate::projectconf::discover(cwd);
+    let p = config.fallback_cache.preprocessor_cache_mode;
+
+    // Mode first: the two settings below are meaningless without it.
+    //
+    // A layer above the machine may only *decline* it, because whether the
+    // mode is available at all depends on the cache backend -- a checkout
+    // asking for it does not make it so. `SCCACHE_DIRECT` is folded into the
+    // machine value already, by `Config::load`, so it is not asked again here.
+    let preprocessor_cache_mode = match (
+        p.use_preprocessor_cache_mode,
+        project.use_preprocessor_cache_mode,
+    ) {
+        (true, Some(false)) => Setting {
+            name: "use_preprocessor_cache_mode".to_owned(),
+            value: false,
+            origin: Origin::Project,
+            machine_value: Some(true),
+            note: None,
+        },
+        (machine, _) => Setting {
+            name: "use_preprocessor_cache_mode".to_owned(),
+            value: machine,
+            origin: Origin::Machine,
+            machine_value: None,
+            note: None,
+        },
     };
+
+    let preprocessor_cache_settings = vec![
+        Setting::resolved("file_stat_matches", p.file_stat_matches, None, None),
+        Setting::resolved("use_ctime_for_stat", p.use_ctime_for_stat, None, None),
+        Setting::resolved(
+            "ignore_time_macros",
+            p.ignore_time_macros,
+            project.ignore_time_macros,
+            None,
+        ),
+        Setting::resolved("skip_system_headers", p.skip_system_headers, None, None),
+        // The one with the largest measured effect: on a 561-unit clang build,
+        // 206s cold against 155s.
+        if preprocessor_cache_mode.value {
+            Setting::resolved(
+                "use_dependency_keying",
+                p.use_dependency_keying,
+                project.use_dependency_keying,
+                bool_from_env("SCCACHE_DEPEND"),
+            )
+        } else {
+            // Dependency keying replaces only the way a compilation's inputs
+            // are learned, so it is inert without the manifest that consumes
+            // them. Reporting the configured value here would promise a
+            // behaviour that no compilation in this tree can reach.
+            Setting::implied(
+                "use_dependency_keying",
+                p.use_dependency_keying,
+                "preprocessor cache mode is off, so nothing consumes the dependency report",
+            )
+        },
+    ];
 
     // --- findings ---------------------------------------------------------
 
@@ -353,13 +512,22 @@ pub fn check(config: &Config, cwd: &Path) -> EnvReport {
         );
     }
 
-    if !preprocessor_cache_mode {
+    if !preprocessor_cache_mode.value {
         findings.push(
             Level::Warning,
             "Preprocessor cache mode is off, so every compile runs the preprocessor even on \
              a cache hit."
                 .to_string(),
-            Some("It requires local disk storage; SCCACHE_DIRECT=false also disables it."),
+            // Which advice is useful depends on who turned it off. Sending
+            // someone to check their storage backend when their own project
+            // file declined the mode is a wild goose chase.
+            Some(match preprocessor_cache_mode.origin {
+                Origin::Project => {
+                    "This tree's project file declines it; see use_preprocessor_cache_mode in \
+                     the project config named above."
+                }
+                _ => "It requires local disk storage; SCCACHE_DIRECT=false also disables it.",
+            }),
         );
     }
 
@@ -437,6 +605,7 @@ pub fn check(config: &Config, cwd: &Path) -> EnvReport {
         working_directory,
         same_volume,
         compression,
+        project_config: project.source.map(|p| p.display().to_string()),
         preprocessor_cache_mode,
         preprocessor_cache_settings,
         // The report gathered above, not a second `defender_report()`: each
@@ -480,9 +649,15 @@ impl EnvReport {
         );
         println!("  same volume             {}", self.same_volume);
         println!("  compression             {}", self.compression);
-        println!("  direct/preprocessor     {}", self.preprocessor_cache_mode);
-        for (k, v) in &self.preprocessor_cache_settings {
-            println!("    {k:<22}{v}");
+        if let Some(p) = &self.project_config {
+            println!("  project config          {p}");
+        }
+        println!(
+            "  direct/preprocessor     {}",
+            self.preprocessor_cache_mode.describe()
+        );
+        for s in &self.preprocessor_cache_settings {
+            println!("    {:<22}{}", s.name, s.describe());
         }
         match self.defender.real_time_protection {
             Some(rtp) => println!("  defender rtp            {rtp}"),
@@ -541,6 +716,79 @@ mod tests {
         }
     }
 
+    /// The whole point of the origin: a value alone cannot tell you that
+    /// something you did not write is deciding your build.
+    #[test]
+    fn a_setting_says_which_layer_supplied_it() {
+        let machine_only = Setting::resolved("ignore_time_macros", false, None, None);
+        assert_eq!(machine_only.origin, Origin::Machine);
+        assert!(!machine_only.value);
+        assert_eq!(
+            machine_only.machine_value, None,
+            "nothing overrode it, so there is no earlier value to report"
+        );
+
+        // The case this exists for: a checkout's own file turning something on
+        // that the machine leaves off. The report used to say `false` here,
+        // while every compilation in that tree ran with it `true`.
+        let overridden = Setting::resolved("ignore_time_macros", false, Some(true), None);
+        assert!(overridden.value);
+        assert_eq!(overridden.origin, Origin::Project);
+        assert_eq!(overridden.machine_value, Some(false));
+        assert!(overridden.describe().contains("project"));
+
+        // The environment outranks the project, matching `generate_hash_key`.
+        // A report that resolved these in a different order would describe a
+        // build nobody is running.
+        let from_env = Setting::resolved("use_dependency_keying", true, Some(true), Some(false));
+        assert!(!from_env.value);
+        assert_eq!(from_env.origin, Origin::Environment);
+    }
+
+    /// An override that changes nothing must not be reported as if it did.
+    #[test]
+    fn a_setting_nothing_can_reach_says_so_instead_of_a_value() {
+        let inert = Setting::implied(
+            "use_dependency_keying",
+            true,
+            "preprocessor cache mode is off",
+        );
+        assert!(
+            !inert.value,
+            "the configured `true` is unreachable, and reporting it would promise \
+             a behaviour no compilation in this tree can get"
+        );
+        assert_eq!(inert.origin, Origin::Implied);
+        // The configured value is still there to be seen -- it is what would
+        // take effect once the mode is back on.
+        assert_eq!(inert.machine_value, Some(true));
+        assert!(inert.describe().contains("preprocessor cache mode is off"));
+    }
+
+    /// `SCCACHE_DEPEND` is read on the compile path with "anything that is not
+    /// a recognised negative means on". Parsing it more strictly here would
+    /// make the report disagree with the build it describes.
+    #[test]
+    fn env_overrides_are_read_the_way_the_compile_path_reads_them() {
+        // Sharing one process-wide environment, so the values are set and
+        // cleared within a single test rather than raced across several.
+        for off in ["false", "FALSE", "off", "0", " 0 "] {
+            unsafe { std::env::set_var("SCCACHE_TEST_DEPEND", off) };
+            assert_eq!(bool_from_env("SCCACHE_TEST_DEPEND"), Some(false), "{off:?}");
+        }
+        for on in ["true", "1", "yes", ""] {
+            unsafe { std::env::set_var("SCCACHE_TEST_DEPEND", on) };
+            assert_eq!(bool_from_env("SCCACHE_TEST_DEPEND"), Some(true), "{on:?}");
+        }
+        unsafe { std::env::remove_var("SCCACHE_TEST_DEPEND") };
+        assert_eq!(
+            bool_from_env("SCCACHE_TEST_DEPEND"),
+            None,
+            "unset is not `false`: it means the layer said nothing, and the \
+             project or the machine still gets to decide"
+        );
+    }
+
     #[test]
     fn volume_root_handles_the_shapes_paths_actually_take() {
         assert_eq!(volume_root(Path::new(r"D:\cache")).as_deref(), Some("D:\\"));
@@ -554,6 +802,55 @@ mod tests {
         // A UNC path has no drive letter; claiming one would be a lie.
         assert_eq!(volume_root(Path::new(r"\\server\share")), None);
         assert_eq!(volume_root(Path::new("relative/path")), None);
+    }
+
+    /// The regression the layered shape exists for. A tree that sets
+    /// `ignore_time_macros` in its own `.sccache.toml` builds with it on, and
+    /// this report said `false` -- the machine's answer, describing a build
+    /// nobody was running.
+    #[test]
+    fn a_project_file_is_reported_as_the_source_of_what_it_overrides() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        // A checkout, so the walk stops here rather than wandering up into
+        // whatever the temporary directory happens to live under.
+        std::fs::create_dir(root.join(".git")).unwrap();
+        std::fs::write(
+            root.join(crate::projectconf::PROJECT_CONF_NAME),
+            "ignore_time_macros = true\n",
+        )
+        .unwrap();
+
+        let report = check(&Config::default(), root);
+        let setting = report
+            .preprocessor_cache_settings
+            .iter()
+            .find(|s| s.name == "ignore_time_macros")
+            .expect("the report lists it");
+
+        assert!(setting.value, "this is what a build in that tree would use");
+        assert_eq!(setting.origin, Origin::Project);
+        assert_eq!(
+            setting.machine_value,
+            Some(false),
+            "the machine's answer is still worth seeing -- it is what makes \
+             this an override rather than an agreement"
+        );
+        assert!(
+            report.project_config.is_some(),
+            "an override that cannot be traced to a file is an assertion, not \
+             an answer: the file may be several directories up"
+        );
+
+        // A setting no project file mentioned still comes from the machine, or
+        // a project would be opting out of settings it never named.
+        let untouched = report
+            .preprocessor_cache_settings
+            .iter()
+            .find(|s| s.name == "file_stat_matches")
+            .expect("the report lists it");
+        assert_eq!(untouched.origin, Origin::Machine);
+        assert_eq!(untouched.machine_value, None);
     }
 
     #[test]
@@ -579,7 +876,13 @@ mod tests {
             cache_location: "d:/c".into(),
             max_cache_size: 0,
             compression: "none".into(),
-            preprocessor_cache_mode: true,
+            project_config: None,
+            preprocessor_cache_mode: Setting::resolved(
+                "use_preprocessor_cache_mode",
+                true,
+                None,
+                None,
+            ),
             preprocessor_cache_settings: vec![],
             defender: DefenderReport::default(),
             findings: vec![

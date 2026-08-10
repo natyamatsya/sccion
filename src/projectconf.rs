@@ -158,6 +158,16 @@ pub struct Discovered {
     /// heard of sccache still belongs to a workspace worth naming.
     pub vcs_root: Option<PathBuf>,
     pub vcs: Option<Vcs>,
+    /// The project file these settings were read from, when one was found and
+    /// parsed. A report that says a project overrode a setting is only half an
+    /// answer without it: the file may be several directories above the one
+    /// asked about, and finding it by hand means repeating the walk.
+    ///
+    /// Stays `None` for a file that exists but could not be read or parsed --
+    /// it contributed nothing but the root, and naming it as the source of
+    /// settings it did not supply would be worse than silence. The `warn!` on
+    /// that path is what says it was there.
+    pub source: Option<PathBuf>,
     /// `Some(false)` when this checkout declines to be answered for over MCP.
     ///
     /// **Deliberately one-directional: a project may say no and cannot say
@@ -381,6 +391,7 @@ fn read_conf(path: &Path, dir: &Path) -> Discovered {
             Some(false) => Some(false),
             _ => None,
         },
+        source: Some(path.to_path_buf()),
         // Filled in by `finish`: the file has been found but the walk has not
         // reached the root yet.
         vcs_root: None,
