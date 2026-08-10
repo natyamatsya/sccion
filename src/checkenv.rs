@@ -667,17 +667,19 @@ pub fn check(config: &Config, cwd: &Path) -> EnvReport {
     }
 
     // Not a misconfiguration, and deliberately not a warning -- it is a fact
-    // about the volume that decides whether two spellings of one checkout share
-    // cache entries. Basedir stripping and manifest include paths both compare
-    // bytes, so on a folding volume the answer depends on how a path was typed.
+    // about the volume, and the reason basedir matching asks the volume rather
+    // than the platform (see `crate::volume`). Reported because the two things
+    // that key off a path no longer agree about it: cache keys fold here,
+    // workspace identity does not.
     if cache.case_sensitive == Some(false) || working_directory.case_sensitive == Some(false) {
         findings.push(
             Level::Info,
             "This volume folds case, so one directory has more than one spelling.".to_string(),
             Some(
-                "Cache keys compare paths as bytes. Two builds of the same tree reached by \
-                 differently-cased paths will not share entries -- spell basedirs and build \
-                 directories consistently.",
+                "Cache entries are shared across spellings: basedir matching folds case on a \
+                 volume that folds it. Per-checkout figures are not -- `--show-stats` and miss \
+                 records still register each spelling as its own workspace, so spell build \
+                 directories consistently if you read those.",
             ),
         );
     }
