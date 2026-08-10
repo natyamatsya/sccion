@@ -57,15 +57,15 @@ Configuration options and their default values:
 
   The trade is that a miss now costs a compile rather than a preprocess, so a compilation whose *manifest* is missing but whose *object* is already in the cache pays the difference instead of getting a cheap hit. That is not hypothetical: on the same build, a *second checkout's first build* against a cache the first one filled took 359s with this on and 306s with it off, because a manifest that does not match still leaves the object findable by preprocessing.
 
-  So: leave it on if you build one checkout repeatedly, and set it to `false` — in the config, or in a `.sccache.toml` committed to a project that does otherwise — if you routinely build fresh checkouts or worktrees against a shared cache.
+  So: leave it on if you build one checkout repeatedly, and set it to `false` — in the config, or in a `.sccion.toml` committed to a project that does otherwise — if you routinely build fresh checkouts or worktrees against a shared cache.
 
-  Whether it pays off is a property of the project rather than of the machine, so it can also be set in a committed `.sccache.toml` (see [Project configuration](#project-configuration)). It is asked for in order of how specific the answer is: the environment variable `SCCION_DEPEND` (`true`/`on`/`1` or `false`/`off`/`0`) for this invocation, then the project file, then this setting.
+  Whether it pays off is a property of the project rather than of the machine, so it can also be set in a committed `.sccion.toml` (see [Project configuration](#project-configuration)). It is asked for in order of how specific the answer is: the environment variable `SCCION_DEPEND` (`true`/`on`/`1` or `false`/`off`/`0`) for this invocation, then the project file, then this setting.
 
 See where to write the config in [the configuration doc](Configuration.md).
 
 ## Project configuration
 
-Some settings depend on the project being built rather than on the machine building it. Those can be set in a `.sccache.toml` committed to the repository, which sccion looks for the way tools look for `.clang-format`: by walking up from the directory a compilation runs in, stopping once it has looked in the checkout root (a directory or file named `.git`, `.jj` or `.hg`).
+Some settings depend on the project being built rather than on the machine building it. Those can be set in a `.sccion.toml` committed to the repository, which sccion looks for the way tools look for `.clang-format`: by walking up from the directory a compilation runs in, stopping once it has looked in the checkout root (a directory or file named `.git`, `.jj` or `.hg`).
 
 The point of finding it by walking up is that the file does not have to name a path. **The directory holding the file is the checkout root**, so one committed file is correct in every checkout of the project, including worktrees that do not exist yet.
 

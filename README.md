@@ -37,9 +37,10 @@ information.
 > `SCCION_*`, and every one of them is also read under its `SCCACHE_*` name,
 > meaning exactly the same thing. `SCCION_` wins if both are set, and a
 > disagreement between them is logged rather than settled in silence. The
-> configuration file's location, the cache directory and the `.sccache.toml`
-> project file keep their names outright. Nothing you have configured needs
-> changing to run `sccion` instead of `sccache`.
+> configuration file's location and the cache directory keep their names
+> outright. The one thing to rename is the project file, `.sccache.toml` ->
+> `.sccion.toml`: it never existed in sccache, so there is no older setup for
+> it to be compatible with.
 
 ---
 
@@ -394,7 +395,7 @@ sccache contributors. In summary, sccion adds:
 * **Dependency keying** — cache keys derived from the compiler's own dependency
   report rather than from preprocessed source. See
   [docs/Dependencies.md](docs/Dependencies.md).
-* **Project configuration** — a committed `.sccache.toml`, discovered by walking
+* **Project configuration** — a committed `.sccion.toml`, discovered by walking
   up from the source like `.clang-format`, that lets a repository declare the
   facts about itself that affect its own cache keys. See
   [docs/Checkouts.md](docs/Checkouts.md).
@@ -412,8 +413,9 @@ sccache contributors. In summary, sccion adds:
 
 **Names.** The binaries are `sccion`, `sccion-dist` and `sccion-mcp`. Settings
 are spelled `SCCION_*` and are read under `SCCACHE_*` as well; the configuration
-file's location, the cache directory and the `.sccache.toml` project file keep
-their upstream names outright. An sccache setup keeps working unchanged. sccion
+file's location and the cache directory keep their upstream names outright. The
+project file is `.sccion.toml` with no fallback, because it is this fork's own
+invention and has no upstream spelling to honour. sccion
 is not affiliated with or endorsed by Mozilla, and the Mozilla name and the
 sccache trade marks are used here only to identify the work this one is derived
 from.

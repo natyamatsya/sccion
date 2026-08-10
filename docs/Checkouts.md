@@ -16,7 +16,7 @@ subject of most of this page.
 
 ## Turning it on
 
-Commit a `.sccache.toml` at the top of the repository:
+Commit a `.sccion.toml` at the top of the repository:
 
 ```toml
 # Empty is the common case -- the file's own directory is the checkout root.

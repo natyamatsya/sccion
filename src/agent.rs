@@ -31,7 +31,7 @@ pub const AGENT_ID_VAR: &str = "SCCION_AGENT_ID";
 /// comparable records. Here the opposite is wanted: the whole purpose is to
 /// tell two checkouts apart, and stripping would collapse every one of them to
 /// the same empty string -- precisely in the case this exists to serve, since
-/// a committed `.sccache.toml` makes the checkout root a basedir.
+/// a committed `.sccion.toml` makes the checkout root a basedir.
 pub fn identity(env_vars: &[(OsString, OsString)], cwd: &Path) -> Option<String> {
     let named = env_vars
         .iter()

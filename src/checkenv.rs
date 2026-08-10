@@ -1,10 +1,10 @@
 // SPDX-FileCopyrightText: Copyright natyamatsya and sccache contributors
 // SPDX-License-Identifier: Apache-2.0
 
-//! `sccion --check-env`: report the environment sccache is about to run in.
+//! `sccion --check-env`: report the environment sccion is about to run in.
 //!
 //! The failures this exists to catch are not crashes. They are configurations
-//! that work perfectly while quietly costing most of what sccache could have
+//! that work perfectly while quietly costing most of what sccion could have
 //! saved -- a cache on a different volume than the build tree, `/Zi` instead of
 //! `/Z7` so nothing is cacheable at all, preprocessor cache mode reporting itself
 //! enabled while structurally unable to hit. Each of those produces a build that
@@ -14,7 +14,7 @@
 //!
 //! 1. **Out of band.** None of this runs on the compile path. The checks cost
 //!    more than they could ever save there.
-//! 2. **Report, never adapt.** Nothing sccache does may vary with what is found.
+//! 2. **Report, never adapt.** Nothing sccion does may vary with what is found.
 //!    Behaviour that depends on the detected environment gives you a cache hit on
 //!    one machine and a miss on another, which is the least debuggable kind of
 //!    bug.
@@ -68,7 +68,7 @@ pub struct VolumeReport {
 pub enum Origin {
     /// This machine's configuration, or the default it fell back to.
     Machine,
-    /// A `.sccache.toml` in the tree being built, which outranks the machine.
+    /// A `.sccion.toml` in the tree being built, which outranks the machine.
     Project,
     /// An environment variable, which outranks both.
     Environment,
@@ -414,7 +414,7 @@ pub fn check(config: &Config, cwd: &Path) -> EnvReport {
 
     // The settings a build in `cwd` would run under, not the machine's in
     // isolation. Reporting the machine's was a quiet lie for any tree carrying
-    // a `.sccache.toml`: this report said `ignore_time_macros: false` while
+    // a `.sccion.toml`: this report said `ignore_time_macros: false` while
     // every compilation in that tree ran with it on, which is the kind of
     // wrong answer that costs an afternoon.
     let project = crate::projectconf::discover(cwd);
@@ -805,7 +805,7 @@ mod tests {
     }
 
     /// The regression the layered shape exists for. A tree that sets
-    /// `ignore_time_macros` in its own `.sccache.toml` builds with it on, and
+    /// `ignore_time_macros` in its own `.sccion.toml` builds with it on, and
     /// this report said `false` -- the machine's answer, describing a build
     /// nobody was running.
     #[test]

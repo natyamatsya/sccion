@@ -3,8 +3,8 @@
 > Every `SCCION_*` variable on this page is also read under its `SCCACHE_*`
 > name, and means the same thing. `SCCION_` wins where both are set, and a
 > disagreement between the two is logged rather than settled quietly. The
-> configuration file's own location and the `.sccache.toml` project file are
-> unchanged from sccache.
+> configuration file's own location is unchanged from sccache. The project
+> file, `.sccion.toml`, is this fork's own and is read under that name only.
 
 ## file
 

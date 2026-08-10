@@ -58,7 +58,7 @@ use serde::Deserialize;
 use crate::config::normalize_basedir;
 
 /// The file name looked for at each level.
-pub const PROJECT_CONF_NAME: &str = ".sccache.toml";
+pub const PROJECT_CONF_NAME: &str = ".sccion.toml";
 
 /// The version control system a checkout belongs to.
 ///
@@ -194,7 +194,7 @@ fn stamp(path: &Path) -> Option<Stamp> {
 /// Adding the file is how a project opts in, so the answer that has to be
 /// revisited is precisely the negative one -- and it used to be kept for the
 /// life of the daemon. That made opting in require a restart, and the symptom
-/// was indistinguishable from the file not working: write `.sccache.toml`,
+/// was indistinguishable from the file not working: write `.sccion.toml`,
 /// rebuild, watch nothing change.
 ///
 /// A few seconds of staleness costs a handful of compilations keyed without the
@@ -417,7 +417,7 @@ mod tests {
     /// one that must expire. It never did: the daemon answered "no project
     /// file" for the rest of its life, so opting in meant restarting it, and
     /// the symptom was indistinguishable from the file not working -- write
-    /// `.sccache.toml`, rebuild, watch nothing change. Measured on a real
+    /// `.sccion.toml`, rebuild, watch nothing change. Measured on a real
     /// build before this: a second checkout shared 0 of 561 objects with the
     /// file in place, and 559 of 561 once the daemon was restarted.
     #[test]
@@ -511,7 +511,7 @@ mod tests {
     /// The walk already passed the checkout root on its way up and used to
     /// throw it away. It is worth more than the config file it was looking for:
     /// it is what says which workspace a compilation belongs to, and most
-    /// repositories have no `.sccache.toml` at all.
+    /// repositories have no `.sccion.toml` at all.
     #[test]
     fn the_checkout_root_is_found_without_any_project_file() {
         let t = tempfile::tempdir().unwrap();

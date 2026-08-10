@@ -48,7 +48,7 @@ Read by the server at startup like the cache settings, so restart it with
 tool call fails" into one line an operator can act on.
 
 **"May this checkout be answered for?"** — the repository's decision, in its
-committed `.sccache.toml`:
+committed `.sccion.toml`:
 
 ```toml
 expose_over_mcp = false

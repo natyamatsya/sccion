@@ -737,7 +737,7 @@ where
     ) -> Result<HashResult<T>> {
         let start_of_compilation = std::time::SystemTime::now();
 
-        // What the project being built asks for, from a `.sccache.toml` found
+        // What the project being built asks for, from a `.sccion.toml` found
         // at or above this compilation. Discovery is keyed on the compilation's
         // own directory rather than on the daemon's, because one daemon serves
         // every checkout on the machine.
@@ -856,7 +856,7 @@ where
         // the project being built, then the machine. Whether it pays off
         // depends on how often a compilation misses its manifest while its
         // object is still in the cache, which is a property of the project --
-        // so a committed `.sccache.toml` outranks a machine-wide setting, and
+        // so a committed `.sccion.toml` outranks a machine-wide setting, and
         // `SCCACHE_DEPEND` outranks both for the run in front of you.
         let mut use_dependency_keying = use_preprocessor_cache_mode && !may_dist;
         if use_dependency_keying {
@@ -3516,7 +3516,7 @@ mod dependency_keying_test {
     }
 
     /// Whether this pays off depends on how the project is built, so a
-    /// committed `.sccache.toml` can ask for it with no environment variable
+    /// committed `.sccion.toml` can ask for it with no environment variable
     /// and no machine-wide setting -- which is what a build the whole team
     /// shares needs.
     #[test]
