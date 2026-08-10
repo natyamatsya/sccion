@@ -625,6 +625,18 @@ pub fn storage_from_config(
     let preprocessor_cache_mode_config = config.fallback_cache.preprocessor_cache_mode;
     let rw_mode = config.fallback_cache.rw_mode.into();
     debug!("Init disk cache with dir {:?}, size {}", dir, size);
+    // Say whether direct mode is on, because every other symptom of it being
+    // off is indirect: compilations still hit, just by the slower route, and
+    // the counters that give it away are two lines nobody reads. It is also
+    // configurable in three places, so "which one won" is a real question.
+    info!(
+        "Preprocessor cache mode {}",
+        if preprocessor_cache_mode_config.use_preprocessor_cache_mode {
+            "on"
+        } else {
+            "off"
+        }
+    );
     Ok(Arc::new(DiskCache::new(
         dir,
         size,

@@ -114,6 +114,14 @@ pub fn default_dist_cache_dir() -> PathBuf {
         .to_owned()
 }
 
+/// What the disk cache means by "preprocessor cache mode was not mentioned".
+///
+/// Kept next to [`PreprocessorCacheModeConfig::activated`], which it has to
+/// agree with.
+fn default_use_preprocessor_cache_mode() -> bool {
+    true
+}
+
 fn default_disk_cache_size() -> u64 {
     TEN_GIGS
 }
@@ -247,6 +255,17 @@ pub struct AzureCacheConfig {
 #[serde(default)]
 pub struct PreprocessorCacheModeConfig {
     /// Whether to use preprocessor cache mode entirely
+    ///
+    /// The serde default is deliberately not [`Default::default()`]. Only the
+    /// disk cache deserializes this struct, and its default is
+    /// [`Self::activated`] -- so a config file that mentions *any* setting in
+    /// this table, to change one of the others, used to turn the whole mode off
+    /// by omission. The failure is silent and backwards: someone enabling
+    /// `ignore_time_macros` to make direct mode faster switched it off instead,
+    /// and the only sign was a `--show-stats` line reading `no`. The `Default`
+    /// impl stays `false` because a backend that is not local wants exactly
+    /// that; see `Storage::preprocessor_cache_mode_config`.
+    #[serde(default = "default_use_preprocessor_cache_mode")]
     pub use_preprocessor_cache_mode: bool,
     /// If false (default), only compare header files by hashing their contents.
     /// If true, will use size + ctime + mtime to check whether a file has changed.
@@ -1683,6 +1702,49 @@ pub mod server {
     pub fn from_path(conf_path: &Path) -> Result<Option<Config>> {
         super::try_read_config_file(conf_path).context("Failed to load server config file")
     }
+}
+
+/// Changing one preprocessor-cache setting must not switch the mode off.
+///
+/// The table's fields fill from `Default`, where the mode is `false`, while the
+/// disk cache's own default is `activated()`, where it is `true`. So mentioning
+/// the table at all -- to set `ignore_time_macros`, say -- used to disable the
+/// very mode that setting exists to tune, silently, with nothing in any log and
+/// only a `--show-stats` line reading `no` to show for it.
+#[test]
+fn naming_one_preprocessor_setting_leaves_the_mode_on() {
+    let toml = r#"
+        [cache.disk]
+        dir = "/tmp/cache"
+
+        [cache.disk.preprocessor_cache_mode]
+        ignore_time_macros = true
+    "#;
+    let config: FileConfig = toml::from_str(toml).expect("Is valid toml.");
+    let disk = config.cache.disk.expect("a disk cache was configured");
+    assert!(
+        disk.preprocessor_cache_mode.use_preprocessor_cache_mode,
+        "mentioning the table must not turn the mode off"
+    );
+    assert!(disk.preprocessor_cache_mode.ignore_time_macros);
+
+    // Saying so explicitly still works, in both directions.
+    let off = r#"
+        [cache.disk]
+        dir = "/tmp/cache"
+
+        [cache.disk.preprocessor_cache_mode]
+        use_preprocessor_cache_mode = false
+    "#;
+    let config: FileConfig = toml::from_str(off).expect("Is valid toml.");
+    assert!(
+        !config
+            .cache
+            .disk
+            .expect("a disk cache was configured")
+            .preprocessor_cache_mode
+            .use_preprocessor_cache_mode
+    );
 }
 
 #[test]
