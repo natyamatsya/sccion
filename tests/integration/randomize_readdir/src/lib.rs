@@ -41,11 +41,19 @@
 //! hits the cache. If not, something inside sccache relies implicitly
 //! on the order that files are returned from the filesystem, which is
 //! not defined, which is not ideal.
+//!
+//! **Linux only, and empty everywhere else.** The shim resolves `readdir64`
+//! through `RTLD_NEXT`, and that symbol does not exist outside glibc -- macOS
+//! has no `readdir64` at all. Compiling here was never the problem; *loading*
+//! was. The constructor below panics when a lookup fails, a panic in a
+//! constructor cannot unwind, and it runs while the dynamic loader holds its
+//! lock -- so the process does not abort cleanly, it stops. `cargo test
+//! --workspace` on macOS hung there indefinitely, which reads exactly like a
+//! slow test. It is also LD_PRELOAD by construction, and macOS's two-level
+//! namespace would not honour that anyway, so there is nothing here to port.
+#![cfg(target_os = "linux")]
 
 use ctor::ctor;
-#[cfg(target_vendor = "apple")]
-use libc::dirent as dirent64;
-#[cfg(not(target_vendor = "apple"))]
 use libc::dirent64;
 use libc::{c_char, c_int, c_void, dirent, dlsym, DIR, RTLD_NEXT};
 use log::{error, info};
