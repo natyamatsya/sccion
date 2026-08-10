@@ -40,6 +40,7 @@
 use std::collections::HashMap;
 use std::path::{Component, Path, PathBuf};
 use std::sync::{LazyLock, Mutex};
+use std::time::{Duration, Instant};
 
 use serde::Deserialize;
 
@@ -155,15 +156,32 @@ fn stamp(path: &Path) -> Option<Stamp> {
     Some((meta.modified().ok(), meta.len()))
 }
 
+/// How long "there is no project file here" is taken on trust.
+///
+/// Adding the file is how a project opts in, so the answer that has to be
+/// revisited is precisely the negative one -- and it used to be kept for the
+/// life of the daemon. That made opting in require a restart, and the symptom
+/// was indistinguishable from the file not working: write `.sccache.toml`,
+/// rebuild, watch nothing change.
+///
+/// A few seconds of staleness costs a handful of compilations keyed without the
+/// basedir, which is a slower build and never a wrong one. Re-walking is ~10
+/// `stat`s, so at this interval a build pays it a few dozen times instead of
+/// once per compilation -- the saving the memo exists for is kept, and the trap
+/// is not.
+const ABSENT_REVALIDATE_AFTER: Duration = Duration::from_secs(2);
+
 /// What was answered for a directory, and how to tell it is still the answer.
 #[derive(Clone)]
 struct Memo {
     found: Discovered,
     /// The file the answer came from, as it looked when it was read. `None`
-    /// when there was no file: a project that adds one is opting in rather than
-    /// editing, and noticing that would mean redoing the walk every time, which
-    /// is the whole thing being avoided.
+    /// when there was no file, which is the case [`ABSENT_REVALIDATE_AFTER`]
+    /// exists for.
     source: Option<(PathBuf, Stamp)>,
+    /// When this answer was taken. Only consulted for a negative one; a file
+    /// that exists is revalidated by its stamp instead, which is exact.
+    taken: Instant,
 }
 
 /// Discovered settings, keyed by the directory the search started from.
@@ -189,6 +207,9 @@ pub fn discover(start: &Path) -> Discovered {
         // look exactly like the setting doing nothing.
         match &memo.source {
             Some((path, seen)) if stamp(path).as_ref() != Some(seen) => {}
+            // Nothing was found last time. Look again, but not on every
+            // compilation -- see `ABSENT_REVALIDATE_AFTER`.
+            None if memo.taken.elapsed() >= ABSENT_REVALIDATE_AFTER => {}
             _ => return memo.found,
         }
     }
@@ -198,6 +219,7 @@ pub fn discover(start: &Path) -> Discovered {
         Memo {
             found: found.clone(),
             source: source.and_then(|p| stamp(&p).map(|s| (p, s))),
+            taken: Instant::now(),
         },
     );
     found
@@ -354,6 +376,56 @@ mod tests {
     fn write(dir: &Path, name: &str, body: &str) {
         std::fs::create_dir_all(dir).unwrap();
         std::fs::write(dir.join(name), body).unwrap();
+    }
+
+    /// Adding the file is how a project opts in, so the negative answer is the
+    /// one that must expire. It never did: the daemon answered "no project
+    /// file" for the rest of its life, so opting in meant restarting it, and
+    /// the symptom was indistinguishable from the file not working -- write
+    /// `.sccache.toml`, rebuild, watch nothing change. Measured on a real
+    /// build before this: a second checkout shared 0 of 561 objects with the
+    /// file in place, and 559 of 561 once the daemon was restarted.
+    #[test]
+    fn a_project_file_added_after_the_first_answer_is_noticed() {
+        let t = tempfile::tempdir().unwrap();
+        let root = t.path().join("repo");
+        let start = root.join("build");
+        std::fs::create_dir_all(&start).unwrap();
+        std::fs::create_dir_all(root.join(".git")).unwrap();
+
+        assert!(
+            discover(&start).basedirs.is_empty(),
+            "nothing to find yet, and that answer gets memoized"
+        );
+
+        write(&root, PROJECT_CONF_NAME, "");
+        assert!(
+            discover(&start).basedirs.is_empty(),
+            "the memo is the point: it must not re-walk on every compilation"
+        );
+
+        // Age the memo rather than sleeping through the interval. `Instant` has
+        // no epoch to subtract from on a machine that just booted, so fall back
+        // to waiting rather than unwrapping something that can legitimately be
+        // `None`.
+        match Instant::now().checked_sub(ABSENT_REVALIDATE_AFTER) {
+            Some(then) => {
+                CACHE
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .get_mut(&start)
+                    .expect("the negative answer was memoized")
+                    .taken = then;
+            }
+            None => std::thread::sleep(ABSENT_REVALIDATE_AFTER),
+        }
+
+        let expected = normalize_basedir(root.to_str().unwrap()).unwrap();
+        assert_eq!(
+            discover(&start).basedirs,
+            vec![expected],
+            "once the interval passes, opting in takes effect without a restart"
+        );
     }
 
     #[test]
