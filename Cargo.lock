@@ -2928,7 +2928,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "sccache"
+name = "sccion"
 version = "0.17.0"
 dependencies = [
  "anyhow",
@@ -3012,7 +3012,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "sccache-bench"
+name = "sccion-bench"
 version = "0.1.0"
 dependencies = [
  "anyhow",
@@ -3026,12 +3026,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "sccache-mcp"
+name = "sccion-mcp"
 version = "0.17.0"
 dependencies = [
  "anyhow",
  "env_logger",
- "sccache",
+ "sccion",
  "serde",
  "serde_json",
 ]

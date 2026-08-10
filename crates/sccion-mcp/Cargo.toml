@@ -1,22 +1,22 @@
 [package]
 edition = "2024"
-name = "sccache-mcp"
+name = "sccion-mcp"
 rust-version = "1.91.0"
 version = "0.17.0"
 
-description = "Model Context Protocol adapter for sccache: a read-only query surface over a local sccache daemon."
+description = "Model Context Protocol adapter for sccion: a read-only query surface over a local sccion daemon."
 license = "Apache-2.0"
-repository = "https://github.com/mozilla/sccache/"
+repository = "https://github.com/natyamatsya/sccion/"
 
 [[bin]]
-name = "sccache-mcp"
+name = "sccion-mcp"
 path = "src/main.rs"
 
 [dependencies]
 anyhow = "1.0"
-# Only `sccache::api` is used. The adapter never touches the cache, the wire
+# Only `sccion::api` is used. The adapter never touches the cache, the wire
 # format, or the compile path -- that is the whole point of the seam.
-sccache = { path = "../.." }
+sccion = { path = "../.." }
 env_logger = "0.11"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = ">=1.0, <1.0.147"

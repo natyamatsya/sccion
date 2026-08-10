@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 
-SCCACHE="${SCCACHE_PATH:-/sccache/target/debug/sccache}"
+SCCACHE="${SCCACHE_PATH:-/sccion/target/debug/sccion}"
 export SCCACHE_ERROR_LOG=/build/sccache-error-chain.log
 
 echo "================================================================================"
@@ -80,10 +80,10 @@ echo "Flushing all cache levels..."
 
 # Copy test crate
 rm -rf /build/test-crate-chain
-cp -r /sccache/tests/test-crate /build/test-crate-chain
+cp -r /sccion/tests/test-crate /build/test-crate-chain
 cd /build/test-crate-chain
 
-# Start sccache server
+# Start sccion server
 rm -f "$SCCACHE_ERROR_LOG"
 SCCACHE_LOG=debug "$SCCACHE" --start-server &>/dev/null
 

@@ -1,6 +1,6 @@
 # Response Files
 
-Response files are a way for compilers to accept arguments that would otherwise overflow the character limit in the command line. [On Windows in particular](https://learn.microsoft.com/en-us/troubleshoot/windows-client/shell-experience/command-line-string-limitation), the character limit per command is 8191 characters. These files can contain additional options that the compiler will read and process as if they were provided in the original command. Each compiler that supports response files has different formats/expectations and implementations. Support for response files are also re-implemented per compiler by sccache so it can cache compilations accurately. There is currently support for response files on the gcc and msvc implementations in sccache.
+Response files are a way for compilers to accept arguments that would otherwise overflow the character limit in the command line. [On Windows in particular](https://learn.microsoft.com/en-us/troubleshoot/windows-client/shell-experience/command-line-string-limitation), the character limit per command is 8191 characters. These files can contain additional options that the compiler will read and process as if they were provided in the original command. Each compiler that supports response files has different formats/expectations and implementations. Support for response files are also re-implemented per compiler by sccion so it can cache compilations accurately. There is currently support for response files on the gcc and msvc implementations in sccion.
 
 ## GCC
 
@@ -13,8 +13,8 @@ As defined by the [gcc docs](https://gcc.gnu.org/onlinedocs/gcc-4.6.3/gcc/Overal
 5. The response file may itself contain additional @file options; any such options will be processed recursively.
 
 Implementation details:
-- The gcc implementation in sccache supports all of these.
-- sccache will not expand concatenated arguments such as `-include@foo` (see [#150](https://github.com/mozilla/sccache/issues/150#issuecomment-318586953) for more on this).
+- The gcc implementation in sccion supports all of these.
+- sccion will not expand concatenated arguments such as `-include@foo` (see [#150](https://github.com/mozilla/sccache/issues/150#issuecomment-318586953) for more on this).
 - Recursive files are processed depth-first; when an @file option is encountered, its contents are read and each option is evaluated in-place before continuing to options following the @file.
 
 ## MSVC
@@ -31,7 +31,7 @@ Per the [MSVC docs](https://learn.microsoft.com/en-us/cpp/build/reference/cl-com
 5. A response file cannot contain additional `@file` options, they are not recursive. (found in a [separate doc](https://learn.microsoft.com/en-us/cpp/build/reference/at-specify-a-compiler-response-file?view=msvc-170))
 6. (implied) options can be wrapped in double-quotes (`"`), which allows whitespace to be preserved within the option
 
-The msvc implementation in sccache supports all of these **except** #4, because sccache doesn't accept the `/link` directive. 
+The msvc implementation in sccion supports all of these **except** #4, because sccion doesn't accept the `/link` directive. 
 
 Additionally, because `msbuild` generates response files using an encoding other than `utf-8`, all text files under the [WHATWG encoding standard](https://encoding.spec.whatwg.org/) are supported. This includes both `utf-8` and `utf-16`.
 

@@ -33,7 +33,7 @@ pub enum SocketAddr {
     #[cfg(any(target_os = "linux", target_os = "android"))]
     UnixAbstract(Vec<u8>),
     /// A Windows named pipe, held as its full name, e.g.
-    /// `\.\pipe\sccache-S-1-5-21-...-1`.
+    /// `\.\pipe\sccion-S-1-5-21-...-1`.
     #[cfg(windows)]
     Pipe(String),
 }

@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 
-SCCACHE="${SCCACHE_PATH:-/sccache/target/debug/sccache}"
+SCCACHE="${SCCACHE_PATH:-/sccion/target/debug/sccion}"
 
 echo "==================================================================="
 echo "Testing: Basedirs with all backends, autotools + headers + __FILE__"
@@ -19,15 +19,15 @@ autotools() (
 test_backend() {
     local backend_name="$1"
     shift
-    cp -r /sccache/tests/integration/basedirs-autotools /build/dir1
-    cp -r /sccache/tests/integration/basedirs-autotools /build/dir2
+    cp -r /sccion/tests/integration/basedirs-autotools /build/dir1
+    cp -r /sccion/tests/integration/basedirs-autotools /build/dir2
 
     echo ""
     echo "=========================================="
     echo "Testing backend: $backend_name"
     echo "=========================================="
 
-    # Stop any running sccache server
+    # Stop any running sccion server
     "$SCCACHE" --stop-server 2>/dev/null || true
 
     # Set backend-specific environment variables (passed as arguments)
@@ -38,7 +38,7 @@ test_backend() {
     # Configure basedirs - should strip /build/dir1 and /build/dir2 prefixes
     export SCCACHE_BASEDIRS="/build/dir1:/build/dir2"
 
-    # Start sccache server
+    # Start sccion server
     "$SCCACHE" --start-server
 
     echo "Test 1: Compile from first directory (cache miss)"
@@ -125,15 +125,15 @@ test_multilevel_backend() {
         level_name="azure"
     fi
     shift
-    cp -r /sccache/tests/integration/basedirs-autotools /build/dir1
-    cp -r /sccache/tests/integration/basedirs-autotools /build/dir2
+    cp -r /sccion/tests/integration/basedirs-autotools /build/dir1
+    cp -r /sccion/tests/integration/basedirs-autotools /build/dir2
 
     echo ""
     echo "=========================================="
     echo "Testing multilevel basedirs: disk + $backend_name"
     echo "=========================================="
 
-    # Stop any running sccache server
+    # Stop any running sccion server
     "$SCCACHE" --stop-server 2>/dev/null || true
 
     # Set backend-specific environment variables (passed as arguments)
@@ -148,7 +148,7 @@ test_multilevel_backend() {
     rm -rf /build/sccache-ml-basedirs
     mkdir -p /build/sccache-ml-basedirs
 
-    # Start sccache server
+    # Start sccion server
     "$SCCACHE" --start-server
 
     # Verify multi-level is active
@@ -189,7 +189,7 @@ test_multilevel_backend() {
     rm -rf /build/sccache-ml-basedirs
     mkdir -p /build/sccache-ml-basedirs
     rm -rf /build/dir1
-    cp -r /sccache/tests/integration/basedirs-autotools /build/dir1
+    cp -r /sccion/tests/integration/basedirs-autotools /build/dir1
     "$SCCACHE" --start-server
 
     autotools /build/dir1
@@ -210,7 +210,7 @@ test_multilevel_backend() {
     echo ""
     echo "Test 4: Rebuild from dir2 (should hit backfilled L0 via basedirs)"
     rm -rf /build/dir2
-    cp -r /sccache/tests/integration/basedirs-autotools /build/dir2
+    cp -r /sccion/tests/integration/basedirs-autotools /build/dir2
     autotools /build/dir2
 
     STATS_JSON=$("$SCCACHE" --show-stats --stats-format=json)

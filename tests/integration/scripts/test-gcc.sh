@@ -1,14 +1,14 @@
 #!/bin/bash
 set -euo pipefail
 
-SCCACHE="${SCCACHE_PATH:-/sccache/target/debug/sccache}"
-TEST_FILE="/sccache/tests/test_clang_multicall.c"
+SCCACHE="${SCCACHE_PATH:-/sccion/target/debug/sccion}"
+TEST_FILE="/sccion/tests/test_clang_multicall.c"
 
 echo "=========================================="
 echo "Testing: GCC Compiler"
 echo "=========================================="
 
-# Start sccache server
+# Start sccion server
 "$SCCACHE" --start-server || true
 
 echo "Test 1: Compile C++ file (cache miss)"
@@ -42,26 +42,26 @@ fi
 
 echo "Test 3: Test ASM"
 ASM="$SCCACHE gcc"
-$ASM -c /sccache/tests/integration/test_intel_asm.s
+$ASM -c /sccion/tests/integration/test_intel_asm.s
 
 DEPFILE="/tmp/test.o.d"
 rm -f $DEPFILE
-$ASM -c /sccache/tests/integration/test_intel_asm.s -MD -MF $DEPFILE
+$ASM -c /sccion/tests/integration/test_intel_asm.s -MD -MF $DEPFILE
 test ! -f $DEPFILE || { echo "ERROR: Dependency file found"; exit 1; }
 
 echo "Test 4: Test ASM with preprocessor"
-$ASM -c /sccache/tests/integration/test_intel_asm_to_preproc.S
+$ASM -c /sccion/tests/integration/test_intel_asm_to_preproc.S
 
-$ASM -c /sccache/tests/integration/test_intel_asm_to_preproc.S -MD -MF $DEPFILE
+$ASM -c /sccion/tests/integration/test_intel_asm_to_preproc.S -MD -MF $DEPFILE
 test -f $DEPFILE || { echo "ERROR: Dependency file not found"; exit 1; }
 rm -f $DEPFILE
 
 echo "Test 5: Test preprocessed C++ file with dependency arguments (cache miss)"
-$CXX -c /sccache/tests/integration/test_preprocessed.ii -o /tmp/test.o -MD -MF $DEPFILE
+$CXX -c /sccion/tests/integration/test_preprocessed.ii -o /tmp/test.o -MD -MF $DEPFILE
 test -f /tmp/test.o || { echo "ERROR: No compiler output found"; exit 1; }
 test ! -f $DEPFILE || { echo "ERROR: Dependency file found"; exit 1; }
 
 echo "Test 6: Test preprocessed C++ file with dependency arguments (cache hit expected)"
-$CXX -c /sccache/tests/integration/test_preprocessed.ii -o /tmp/test.o -MD -MF $DEPFILE
+$CXX -c /sccion/tests/integration/test_preprocessed.ii -o /tmp/test.o -MD -MF $DEPFILE
 test -f /tmp/test.o || { echo "ERROR: No compiler output found"; exit 1; }
 test ! -f $DEPFILE || { echo "ERROR: Dependency file found"; exit 1; }

@@ -4,7 +4,7 @@
 
 extern crate assert_cmd;
 extern crate log;
-extern crate sccache;
+extern crate sccion;
 extern crate serde_json;
 
 use crate::harness::{
@@ -12,8 +12,8 @@ use crate::harness::{
     start_local_daemon, stop_local_daemon, write_json_cfg, write_source,
 };
 use assert_cmd::prelude::*;
-use sccache::config::HTTPUrl;
-use sccache::dist::{
+use sccion::config::HTTPUrl;
+use sccion::dist::{
     AssignJobResult, CompileCommand, InputsReader, JobId, JobState, RunJobResult, ServerIncoming,
     ServerOutgoing, SubmitToolchainResult, Toolchain, ToolchainReader,
 };
@@ -21,7 +21,7 @@ use std::ffi::OsStr;
 use std::path::Path;
 use std::process::Output;
 
-use sccache::errors::*;
+use sccion::errors::*;
 
 mod harness;
 
@@ -56,7 +56,7 @@ fn basic_compile(tmpdir: &Path, sccache_cfg_path: &Path, sccache_cached_cfg_path
 }
 
 fn rust_compile(tmpdir: &Path, sccache_cfg_path: &Path, sccache_cached_cfg_path: &Path) -> Output {
-    let sccache_path = env!("CARGO_BIN_EXE_sccache");
+    let sccache_path = env!("CARGO_BIN_EXE_sccion");
     let envs: Vec<(_, &OsStr)> = vec![
         ("RUSTC_WRAPPER", sccache_path.as_ref()),
         ("CARGO_TARGET_DIR", "target".as_ref()),
@@ -102,7 +102,7 @@ fn rust_compile(tmpdir: &Path, sccache_cfg_path: &Path, sccache_cached_cfg_path:
 pub fn dist_test_sccache_client_cfg(
     tmpdir: &Path,
     scheduler_url: HTTPUrl,
-) -> sccache::config::FileConfig {
+) -> sccion::config::FileConfig {
     let mut sccache_cfg = harness::sccache_client_cfg(tmpdir, false);
     sccache_cfg.cache.disk.as_mut().unwrap().size = 0;
     sccache_cfg.dist.scheduler_url = Some(scheduler_url);

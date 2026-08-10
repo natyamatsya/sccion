@@ -65,13 +65,13 @@ key_prefix = ""
 # Overridden by SCCACHE_CACHE_COMPRESSION.
 #
 # NOTE: top-level settings must appear before any [table] header. In TOML a key
-# written below one belongs to that table, and sccache will reject it.
+# written below one belongs to that table, and sccion will reject it.
 compression = "zstd"
 # The zstd level, when compressing. Overridden by SCCACHE_CACHE_ZSTD_LEVEL.
 zstd_level = 3
 
 [cache.disk]
-dir = "/tmp/.cache/sccache"
+dir = "/tmp/.cache/sccion"
 size = 7516192768 # 7 GiBytes
 
 # See the local docs on more explanations about this mode
@@ -106,8 +106,8 @@ key_prefix = "prefix"
 [cache.gha]
 url = "http://localhost"
 token = "secret"
-cache_to = "sccache-latest"
-cache_from = "sccache-"
+cache_to = "sccion-latest"
+cache_from = "sccion-"
 
 [cache.memcached]
 # Deprecated alias for `endpoint`
@@ -169,12 +169,12 @@ endpoint = "cos.na-siliconvalley.myqcloud.com"
 key_prefix = "cosprefix"
 ```
 
-sccache looks for its configuration file at the path indicated by env variable `SCCACHE_CONF`.
+sccion looks for its configuration file at the path indicated by env variable `SCCACHE_CONF`.
 
-If no such env variable is set, sccache looks at default locations as below:
-- Linux: `~/.config/sccache/config`
+If no such env variable is set, sccion looks at default locations as below:
+- Linux: `~/.config/sccion/config`
 - macOS: `~/Library/Application Support/Mozilla.sccache/config`
-- Windows: `%APPDATA%\Mozilla\sccache\config\config`
+- Windows: `%APPDATA%\Mozilla\sccion\config\config`
 
 The latest `cache.XXX` entries may be found here: https://github.com/mozilla/sccache/blob/ffe3070f77ef3301c8ff718316e4ab017ec83042/src/config.rs#L300.
 
@@ -183,7 +183,7 @@ The latest `cache.XXX` entries may be found here: https://github.com/mozilla/scc
 Whatever is set by a file based configuration, it is overruled by the env
 configuration variables
 
-Note that some env variables may need sccache server restart to take effect.
+Note that some env variables may need sccion server restart to take effect.
 
 ### misc
 
@@ -191,11 +191,11 @@ Note that some env variables may need sccache server restart to take effect.
 * `SCCACHE_CONF` configuration file path
 * `SCCACHE_BASEDIRS` base directory (or directories) to strip from paths for cache key computation. This is similar to ccache's `CCACHE_BASEDIR` and enables cache hits across different absolute paths when compiling the same source code. Multiple directories can be separated by `;` on Windows hosts and by `:` on any other operating system. When multiple directories are specified, the longest matching prefix is used. Path matching is **case-insensitive** on Windows and **case-sensitive** on other operating systems. Environment variable takes precedence over file configuration. Only absolute paths are supported; relative paths will cause an error and prevent the server from start.
 * `SCCACHE_CACHED_CONF`
-* `SCCACHE_IDLE_TIMEOUT` how long the local daemon process waits for more client requests before exiting, in seconds. Set to `0` to run sccache permanently
+* `SCCACHE_IDLE_TIMEOUT` how long the local daemon process waits for more client requests before exiting, in seconds. Set to `0` to run sccion permanently
 * `SCCACHE_STARTUP_NOTIFY` specify a path to a socket which will be used for server completion notification
 * `SCCACHE_MAX_FRAME_LENGTH` how much data can be transferred between client and server
 * `SCCACHE_NO_DAEMON` set to `1` to disable putting the server to the background
-* `SCCACHE_CLIENT_SIDE` set to `1` to run the compile in the client process and use the daemon only as a gateway to the cache storage (see [the architecture doc](Architecture.md#client-side-mode-sccache_client_side)). This is the recommended mode and is expected to become the only supported configuration in the future. Ignored when `SCCACHE_ERROR_LOG` or distributed compilation is in use.
+* `SCCACHE_CLIENT_SIDE` set to `1` to run the compile in the client process and use the daemon only as a gateway to the cache storage (see [the architecture doc](Architecture.md#client-side-mode-sccion_client_side)). This is the recommended mode and is expected to become the only supported configuration in the future. Ignored when `SCCACHE_ERROR_LOG` or distributed compilation is in use.
 * `SCCACHE_CACHE_MULTIARCH` to disable caching of multi architecture builds.
 * `SCCACHE_CACHE_ZSTD_LEVEL` to set zstd compression level of cache. the range is `1-22` and default is `3`.
 * `SCCACHE_CACHE_COMPRESSION` to disable compression entirely: set it to `none`
@@ -238,10 +238,10 @@ Note that some env variables may need sccache server restart to take effect.
   on-disk entries, and it now costs less than it used to.
 
   Both settings are read by the **server**, once, at startup: change either and
-  restart it with `sccache --stop-server`. Entries record their own encoding, so
-  a cache may hold a mix, and one written by an older sccache still reads
+  restart it with `sccion --stop-server`. Entries record their own encoding, so
+  a cache may hold a mix, and one written by an older sccion still reads
   correctly — changing this does not invalidate anything.
-  - For example, in `10`, it have about 0.9x size with about 1.6x time than default `3` (tested with compiling sccache code)
+  - For example, in `10`, it have about 0.9x size with about 1.6x time than default `3` (tested with compiling sccion code)
   - This option will only applied to newly compressed cache and don't affect existing cache.
   - If you want to be apply to all cache, you should reset cache and make new cache.
 * `SCCACHE_LOG_MILLIS` when set (to any value), enables millisecond precision timestamps in log output instead of the default second precision.
@@ -256,7 +256,7 @@ Note that some env variables may need sccache server restart to take effect.
   configuration.
 
   Read by the **server** at startup, like the cache settings: change it and
-  restart with `sccache --stop-server`. `sccache-mcp` also refuses to start, so
+  restart with `sccion --stop-server`. `sccion-mcp` also refuses to start, so
   the failure is one clear line rather than an error per tool call.
 * `SCCACHE_AGENT_ID` names the caller, so `--show-stats` can break its numbers
   down per caller instead of reporting one sum with no addends. One daemon
@@ -284,11 +284,11 @@ Note that some env variables may need sccache server restart to take effect.
   A diagnostic that substituted a freshly built object would make a build depend
   on whether sampling happened to select it.
 
-  A mismatch is not reported until sccache has established that the compiler
+  A mismatch is not reported until sccion has established that the compiler
   reproduces *its own* output, by compiling a second time. On Windows a COFF
   object carries a timestamp unless the build asks for reproducibility, so both
   MSVC and clang fail that test by default and every sampled hit would otherwise
-  look wrong. When they fail it sccache says so and accuses nothing; build with
+  look wrong. When they fail it sccion says so and accuses nothing; build with
   `/Brepro` (MSVC) or `-Brepro` (clang-cl) to make the check meaningful.
 
   Mismatches are recorded with the classification `wrong_hit` and reported over
@@ -312,7 +312,7 @@ Note that some env variables may need sccache server restart to take effect.
   explanatory out of the daemon's bounded ring.
 
   On, the records are a full `(input, key, outcome)` trace of a build, which is
-  the whole of a key-stability check — capture one, change sccache, capture
+  the whole of a key-stability check — capture one, change sccion, capture
   another, and diff the keys. Any key that moved is either the point of the
   change or a bug in it.
 * `SCCACHE_MISS_LOG` path to a file every cache miss is appended to, one
@@ -347,7 +347,7 @@ Note that some env variables may need sccache server restart to take effect.
   `dependency_report_unreadable`, `shared_pdb` and the rest are permanent
   properties of the compilation as invoked, so retrying it unchanged reaches the
   same verdict. Every other classification may well succeed next time.
-* `SCCACHE_ERROR_LOG` path to a file where sccache will log errors
+* `SCCACHE_ERROR_LOG` path to a file where sccion will log errors
 * `SCCACHE_LOG` log level, accepting standard env_logger values, see [env_logger documentation](https://docs.rs/env_logger/latest/env_logger/#enabling-logging) for details
 
 ### cache configs
@@ -360,7 +360,7 @@ Multi-level caching enables hierarchical cache storage with automatic backfill. 
   - Order matters: left-to-right is fast-to-slow (L0, L1, L2, ...)
   - Valid names: `disk`, `redis`, `memcached`, `s3`, `gcs`, `azure`, `gha`, `webdav`, `oss`, `cos`
   - Each level must be separately configured with its own environment variables
-  - If not set, sccache uses single-level mode (legacy behavior)
+  - If not set, sccion uses single-level mode (legacy behavior)
 * `SCCACHE_MULTILEVEL_WRITE_ERROR_POLICY` controls error handling on cache writes (default: `l0`)
   - `ignore` - never fail on write errors, log warnings only (most permissive)
   - `l0` - fail only if L0 (first level) write fails (default, balances reliability and performance)
@@ -490,8 +490,8 @@ The full url appears then as `redis://user:passwd@1.2.3.4:6379/?db=1`.
 
 ## Checking the environment
 
-`sccache --check-env` reports the environment sccache will run in and exits. It
-runs nothing on the compile path, changes nothing, and never adapts sccache's
+`sccion --check-env` reports the environment sccion will run in and exits. It
+runs nothing on the compile path, changes nothing, and never adapts sccion's
 behaviour to what it finds — behaviour that varies with the detected environment
 produces a cache hit on one machine and a miss on another.
 
@@ -522,14 +522,14 @@ Measured effect, 150 serial cache-hit invocations against a 1 MiB `/Z7` object:
 ```
                               full     slim
 process-creation floor        8.96     9.02 ms   (cmd /c exit 0)
-sccache startup above floor   1.43     0.70 ms
+sccion startup above floor   1.43     0.70 ms
 config + connect + IPC        5.07     5.06 ms
 compile-specific              9.42     9.78 ms
 ```
 
-The slim build halves sccache's own startup, but that is 0.7 ms of a ~24 ms
+The slim build halves sccion's own startup, but that is 0.7 ms of a ~24 ms
 invocation. The dominant term is the **~9 ms this machine charges to create any
-process at all** — `cmd /c exit 0` costs the same — and nothing inside sccache can
+process at all** — `cmd /c exit 0` costs the same — and nothing inside sccion can
 go below it. Only not spawning a process per translation unit can, which means
 build-system integration rather than a change here.
 

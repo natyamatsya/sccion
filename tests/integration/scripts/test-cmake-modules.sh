@@ -1,16 +1,16 @@
 #!/bin/bash
 set -euo pipefail
 
-SCCACHE="${SCCACHE_PATH:-/sccache/target/debug/sccache}"
+SCCACHE="${SCCACHE_PATH:-/sccion/target/debug/sccion}"
 
 echo "=========================================="
 echo "Testing: CMake C++20 Modules Integration"
 echo "=========================================="
 
 # Copy cmake-modules project to writable location
-cp -r /sccache/tests/integration/cmake-modules /build/cmake-modules
+cp -r /sccion/tests/integration/cmake-modules /build/cmake-modules
 
-# Start sccache server
+# Start sccion server
 "$SCCACHE" --start-server || true
 
 echo "Build 1: Cache miss expected"

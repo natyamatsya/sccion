@@ -1,26 +1,26 @@
-# Using `sccache` with Xcode
+# Using `sccion` with Xcode
 
-It is possible to use `sccache` with Xcode with some setup.
+It is possible to use `sccion` with Xcode with some setup.
 
 ### Running the daemon
-Before building, you need to run the daemon outside of Xcode. This needs to be done because if `sccache` invocation happens to implicitly start the server daemon, the Xcode build will hang on the `sccache` invocation, waiting for the process to idle timeout.
+Before building, you need to run the daemon outside of Xcode. This needs to be done because if `sccion` invocation happens to implicitly start the server daemon, the Xcode build will hang on the `sccion` invocation, waiting for the process to idle timeout.
 
 You can do this in another terminal windows by calling
 ```sh
-SCCACHE_LOG=info SCCACHE_START_SERVER=1 SCCACHE_NO_DAEMON=1 sccache
+SCCACHE_LOG=info SCCACHE_START_SERVER=1 SCCACHE_NO_DAEMON=1 sccion
 ```
 
-Or by setting it up in a `launchd` configuration, perhaps as `~/Library/LaunchAgents/sccache.plist` (note the paths in the plist):
+Or by setting it up in a `launchd` configuration, perhaps as `~/Library/LaunchAgents/sccion.plist` (note the paths in the plist):
 ```xml
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
   <dict>
     <key>Label</key>
-    <string>sccache.server</string>
+    <string>sccion.server</string>
     <key>ProgramArguments</key>
     <array>
-      <string>/path/to/sccache</string>
+      <string>/path/to/sccion</string>
     </array>
     <key>EnvironmentVariables</key>
     <dict>
@@ -35,9 +35,9 @@ Or by setting it up in a `launchd` configuration, perhaps as `~/Library/LaunchAg
     </dict>
 
     <key>StandardOutPath</key>
-    <string>/tmp/sccache.log</string>
+    <string>/tmp/sccion.log</string>
     <key>StandardErrorPath</key>
-    <string>/tmp/sccache.log</string>
+    <string>/tmp/sccion.log</string>
 
   </dict>
 </plist>
@@ -50,28 +50,28 @@ having a custom launcher program.
 
 Then you can invoke `xcodebuild` like so
 ```sh
-xcodebuild C_COMPILER_LAUNCHER=sccache
+xcodebuild C_COMPILER_LAUNCHER=sccion
            CLANG_ENABLE_MODULES=NO
            COMPILER_INDEX_STORE_ENABLE=NO
            CLANG_USE_RESPONSE_FILE=NO
 ```
-Where the additional arguments are for disabling some features that `sccache` can't cache currently.
+Where the additional arguments are for disabling some features that `sccion` can't cache currently.
 
-These build settings can also be put in a xcconfig file, like `sccache.xcconfig`
+These build settings can also be put in a xcconfig file, like `sccion.xcconfig`
 ```
-C_COMPILER_LAUNCHER=sccache
+C_COMPILER_LAUNCHER=sccion
 CLANG_ENABLE_MODULES=NO
 COMPILER_INDEX_STORE_ENABLE=NO
 CLANG_USE_RESPONSE_FILE=NO
 ```
 Which can then be invoked with
 ```sh
-xcodebuild -xcconfig sccache.xcconfig
+xcodebuild -xcconfig sccion.xcconfig
 ```
 
 
 ### Setting it up for `cmake` Xcode generator
-While `cmake` has the convenient `CMAKE_<LANG>_COMPILER_LAUNCHER` for prepending tools like `sccache`, it is not supported for the Xcode generator.
+While `cmake` has the convenient `CMAKE_<LANG>_COMPILER_LAUNCHER` for prepending tools like `sccion`, it is not supported for the Xcode generator.
 
 But you can configuring it directly with something like
 ```cmake
@@ -92,7 +92,7 @@ if(DEFINED CCACHE)
     endif()
 endif()
 ```
-Then configuring with `-DCCACHE=sccache` should work on all generators.
+Then configuring with `-DCCACHE=sccion` should work on all generators.
 
 
 

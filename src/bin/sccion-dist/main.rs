@@ -6,18 +6,18 @@ extern crate log;
 use anyhow::{Context, Result, bail};
 use base64::Engine;
 use rand::{RngCore, rngs::OsRng};
-use sccache::config::{
+use sccion::config::{
     INSECURE_DIST_CLIENT_TOKEN, scheduler as scheduler_config, server as server_config,
 };
-use sccache::dist::{
+use sccion::dist::{
     self, AllocJobResult, AssignJobResult, BuilderIncoming, CompileCommand, HeartbeatServerResult,
     InputsReader, JobAlloc, JobAuthorizer, JobComplete, JobId, JobState, RunJobResult,
     SchedulerIncoming, SchedulerOutgoing, SchedulerStatusResult, ServerId, ServerIncoming,
     ServerNonce, ServerOutgoing, SubmitToolchainResult, TcCache, Toolchain, ToolchainReader,
     UpdateJobStateResult,
 };
-use sccache::util::BASE64_URL_SAFE_ENGINE;
-use sccache::util::daemonize;
+use sccion::util::BASE64_URL_SAFE_ENGINE;
+use sccion::util::daemonize;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap, HashSet, btree_map};
 use std::env;
@@ -74,9 +74,9 @@ fn main() {
         Err(e) => match e.downcast::<clap::error::Error>() {
             Ok(clap_err) => clap_err.exit(),
             Err(some_other_err) => {
-                println!("sccache-dist: {some_other_err}");
+                println!("sccion-dist: {some_other_err}");
                 for source_err in some_other_err.chain().skip(1) {
-                    println!("sccache-dist: caused by: {source_err}");
+                    println!("sccion-dist: caused by: {source_err}");
                 }
                 std::process::exit(1);
             }
@@ -86,10 +86,10 @@ fn main() {
     std::process::exit(match run(command) {
         Ok(s) => s,
         Err(e) => {
-            eprintln!("sccache-dist: error: {}", e);
+            eprintln!("sccion-dist: error: {}", e);
 
             for e in e.chain().skip(1) {
-                eprintln!("sccache-dist: caused by: {}", e);
+                eprintln!("sccion-dist: caused by: {}", e);
             }
             2
         }

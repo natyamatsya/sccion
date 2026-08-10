@@ -28,8 +28,8 @@ const BROWSER_MAX_WAIT: Duration = Duration::from_secs(10);
 const TEST_USERNAME: &str = "test@example.com";
 const TEST_PASSWORD: &str = "test1234";
 
-fn generate_code_grant_pkce_auth_config() -> sccache::config::DistAuth {
-    sccache::config::DistAuth::Oauth2CodeGrantPKCE {
+fn generate_code_grant_pkce_auth_config() -> sccion::config::DistAuth {
+    sccion::config::DistAuth::Oauth2CodeGrantPKCE {
         client_id: "Xmbl6zRW1o1tJ5LQOz0p65NwY47aMO7A".to_owned(),
         auth_url:
             "https://sccache-test.auth0.com/authorize?audience=https://sccache-dist-test-api/"
@@ -37,8 +37,8 @@ fn generate_code_grant_pkce_auth_config() -> sccache::config::DistAuth {
         token_url: "https://sccache-test.auth0.com/oauth/token".to_owned(),
     }
 }
-fn generate_implicit_auth_config() -> sccache::config::DistAuth {
-    sccache::config::DistAuth::Oauth2Implicit {
+fn generate_implicit_auth_config() -> sccion::config::DistAuth {
+    sccion::config::DistAuth::Oauth2Implicit {
         client_id: "TTborSAyjBnSi1W11201ZzNu9gSg63bq".to_owned(),
         auth_url:
             "https://sccache-test.auth0.com/authorize?audience=https://sccache-dist-test-api/"
@@ -48,11 +48,11 @@ fn generate_implicit_auth_config() -> sccache::config::DistAuth {
 
 fn config_with_dist_auth(
     tmpdir: &Path,
-    auth_config: sccache::config::DistAuth,
-) -> sccache::config::FileConfig {
-    sccache::config::FileConfig {
+    auth_config: sccion::config::DistAuth,
+) -> sccion::config::FileConfig {
+    sccion::config::FileConfig {
         cache: Default::default(),
-        dist: sccache::config::DistConfig {
+        dist: sccion::config::DistConfig {
             auth: auth_config,
             scheduler_url: None,
             cache_dir: tmpdir.join("unused-cache"),
@@ -70,7 +70,7 @@ fn config_with_dist_auth(
 }
 
 fn sccache_command() -> Command {
-    Command::new(env!("CARGO_BIN_EXE_sccache"))
+    Command::new(env!("CARGO_BIN_EXE_sccion"))
 }
 
 fn retry<F: FnMut() -> Option<T>, T>(interval: Duration, until: Duration, mut f: F) -> Option<T> {
@@ -204,7 +204,7 @@ impl Drop for SeleniumContainer {
 )]
 async fn test_auth() {
     // Make sure the client auth port isn't in use, as sccache will gracefully fall back
-    let client_auth_port = sccache::dist::client_auth::VALID_PORTS[0];
+    let client_auth_port = sccion::dist::client_auth::VALID_PORTS[0];
     assert_eq!(
         TcpStream::connect(("localhost", client_auth_port))
             .unwrap_err()
@@ -231,7 +231,7 @@ async fn test_auth() {
     test_auth_with_config(generate_implicit_auth_config()).await;
 }
 
-async fn test_auth_with_config(dist_auth: sccache::config::DistAuth) {
+async fn test_auth_with_config(dist_auth: sccion::config::DistAuth) {
     let conf_dir = tempfile::Builder::new()
         .prefix("sccache-test-conf")
         .tempdir()
@@ -279,7 +279,7 @@ async fn test_auth_with_config(dist_auth: sccache::config::DistAuth) {
         .unwrap()
         .read_to_string(&mut cached_config_string)
         .unwrap();
-    let cached_config: sccache::config::CachedFileConfig =
+    let cached_config: sccion::config::CachedFileConfig =
         toml::from_str(&cached_config_string).unwrap();
     assert_eq!(cached_config.dist.auth_tokens.len(), 1);
 }

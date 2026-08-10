@@ -17,11 +17,11 @@ use anyhow::{Context, Error, Result, anyhow, bail};
 use flate2::read::GzDecoder;
 use fs_err as fs;
 use libmount::Overlay;
-use sccache::dist::{
+use sccion::dist::{
     BuildResult, BuilderIncoming, CompileCommand, InputsReader, OutputData, ProcessOutput, TcCache,
     Toolchain,
 };
-use sccache::lru_disk_cache::Error as LruError;
+use sccion::lru_disk_cache::Error as LruError;
 use std::collections::{HashMap, hash_map};
 use std::io;
 use std::iter;

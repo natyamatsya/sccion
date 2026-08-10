@@ -3,9 +3,9 @@
 use fs_err as fs;
 use log::trace;
 #[cfg(any(feature = "dist-client", feature = "dist-server"))]
-use sccache::config::HTTPUrl;
-use sccache::dist::{self, SchedulerStatusResult, ServerId};
-use sccache::server::ServerInfo;
+use sccion::config::HTTPUrl;
+use sccion::dist::{self, SchedulerStatusResult, ServerId};
+use sccion::server::ServerInfo;
 use std::env;
 use std::fs::remove_dir_all;
 use std::io::Write;
@@ -131,7 +131,7 @@ pub fn init_cargo(path: &Path, cargo_name: &str) -> PathBuf {
 
 // Prune any environment variables that could adversely affect test execution.
 pub fn prune_command(mut cmd: Command) -> Command {
-    use sccache::util::OsStrExt;
+    use sccion::util::OsStrExt;
 
     for (var, _) in env::vars_os() {
         if var.starts_with("SCCACHE_") {
@@ -142,7 +142,7 @@ pub fn prune_command(mut cmd: Command) -> Command {
 }
 
 pub fn sccache_command() -> Command {
-    prune_command(Command::new(env!("CARGO_BIN_EXE_sccache")))
+    prune_command(Command::new(env!("CARGO_BIN_EXE_sccion")))
 }
 
 pub fn cargo_command() -> Command {
@@ -151,28 +151,28 @@ pub fn cargo_command() -> Command {
 
 #[cfg(feature = "dist-server")]
 pub fn sccache_dist_path() -> PathBuf {
-    env!("CARGO_BIN_EXE_sccache-dist").into()
+    env!("CARGO_BIN_EXE_sccion-dist").into()
 }
 
 pub fn sccache_client_cfg(
     tmpdir: &Path,
     preprocessor_cache_mode: bool,
-) -> sccache::config::FileConfig {
+) -> sccion::config::FileConfig {
     let cache_relpath = "client-cache";
     let dist_cache_relpath = DIST_CACHE_RELPATH;
     fs::create_dir(tmpdir.join(cache_relpath)).unwrap();
     fs::create_dir(tmpdir.join(dist_cache_relpath)).unwrap();
 
-    let disk_cache = sccache::config::DiskCacheConfig {
+    let disk_cache = sccion::config::DiskCacheConfig {
         dir: tmpdir.join(cache_relpath),
-        preprocessor_cache_mode: sccache::config::PreprocessorCacheModeConfig {
+        preprocessor_cache_mode: sccion::config::PreprocessorCacheModeConfig {
             use_preprocessor_cache_mode: preprocessor_cache_mode,
             ..Default::default()
         },
         ..Default::default()
     };
-    sccache::config::FileConfig {
-        cache: sccache::config::CacheConfigs {
+    sccion::config::FileConfig {
+        cache: sccion::config::CacheConfigs {
             azure: None,
             disk: Some(disk_cache),
             gcs: None,
@@ -185,7 +185,7 @@ pub fn sccache_client_cfg(
             cos: None,
             multilevel: None,
         },
-        dist: sccache::config::DistConfig {
+        dist: sccion::config::DistConfig {
             auth: Default::default(), // dangerously_insecure
             scheduler_url: None,
             cache_dir: tmpdir.join(dist_cache_relpath),
@@ -203,11 +203,11 @@ pub fn sccache_client_cfg(
 }
 
 #[cfg(feature = "dist-server")]
-fn sccache_scheduler_cfg() -> sccache::config::scheduler::Config {
-    sccache::config::scheduler::Config {
+fn sccache_scheduler_cfg() -> sccion::config::scheduler::Config {
+    sccion::config::scheduler::Config {
         public_addr: SocketAddr::from(([0, 0, 0, 0], SCHEDULER_PORT)),
-        client_auth: sccache::config::scheduler::ClientAuth::Insecure,
-        server_auth: sccache::config::scheduler::ServerAuth::Token {
+        client_auth: sccion::config::scheduler::ClientAuth::Insecure,
+        server_auth: sccion::config::scheduler::ServerAuth::Token {
             token: DIST_SERVER_TOKEN.to_owned(),
         },
     }
@@ -218,12 +218,12 @@ fn sccache_server_cfg(
     tmpdir: &Path,
     scheduler_url: HTTPUrl,
     server_ip: IpAddr,
-) -> sccache::config::server::Config {
+) -> sccion::config::server::Config {
     let relpath = "server-cache";
     fs::create_dir(tmpdir.join(relpath)).unwrap();
 
-    sccache::config::server::Config {
-        builder: sccache::config::server::BuilderType::Overlay {
+    sccion::config::server::Config {
+        builder: sccion::config::server::BuilderType::Overlay {
             build_dir: BUILD_DIR_CONTAINER_PATH.into(),
             bwrap_path: DIST_IMAGE_BWRAP_PATH.into(),
         },
@@ -231,7 +231,7 @@ fn sccache_server_cfg(
         public_addr: SocketAddr::new(server_ip, SERVER_PORT),
         bind_address: Some(SocketAddr::from(([0, 0, 0, 0], SERVER_PORT))),
         scheduler_url,
-        scheduler_auth: sccache::config::server::SchedulerAuth::Token {
+        scheduler_auth: sccion::config::server::SchedulerAuth::Token {
             token: DIST_SERVER_TOKEN.to_owned(),
         },
         toolchain_cache_size: TC_CACHE_SIZE,

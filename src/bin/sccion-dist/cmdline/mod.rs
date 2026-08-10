@@ -14,7 +14,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use sccache::{config, dist::ServerId};
+use sccion::{config, dist::ServerId};
 
 mod parse;
 

@@ -6,7 +6,7 @@ set -euo pipefail
 # handling in gcc.rs, making such builds non-cacheable. Now that response files
 # are expanded and spliced into the argument list, these builds are cacheable.
 
-SCCACHE="${SCCACHE_PATH:-/sccache/target/debug/sccache}"
+SCCACHE="${SCCACHE_PATH:-/sccion/target/debug/sccion}"
 
 echo "=========================================="
 echo "Testing: CMake 4.x C++20 Modules"
@@ -16,9 +16,9 @@ echo "cmake version: $(cmake --version | head -1)"
 echo "clang version: $(clang++ --version | head -1)"
 
 # Copy cmake-modules project to writable location
-cp -r /sccache/tests/integration/cmake-modules /build/cmake-modules
+cp -r /sccion/tests/integration/cmake-modules /build/cmake-modules
 
-# Start sccache server
+# Start sccion server
 "$SCCACHE" --start-server || true
 
 echo ""

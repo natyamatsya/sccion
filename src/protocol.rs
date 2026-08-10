@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 /// Bumped to 2 when `RegisterWorkspace` and `GetMissRecords` were added, and
 /// to 3 for `DescribeWorkspace`. A daemon left running across the change will
 /// not be found by the new client, which is the intended outcome: stop it with
-/// `sccache --stop-server`.
+/// `sccion --stop-server`.
 ///
 /// **Only Windows actually enforces this**, because the pipe name is the only
 /// rendezvous that carries it. Off Windows the client finds the daemon on a

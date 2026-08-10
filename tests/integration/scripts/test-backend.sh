@@ -3,14 +3,14 @@ set -euo pipefail
 
 TEST_NAME="${TEST_NAME:-unknown}"
 BACKEND_CHECK="${BACKEND_CHECK:-}"
-SCCACHE="${SCCACHE_PATH:-/sccache/target/debug/sccache}"
+SCCACHE="${SCCACHE_PATH:-/sccion/target/debug/sccion}"
 
 echo "=========================================="
 echo "Testing: $TEST_NAME"
 echo "=========================================="
 
 echo "Copying test crate to writable location..."
-cp -r /sccache/tests/test-crate /build/
+cp -r /sccion/tests/test-crate /build/
 
 cd /build/test-crate
 

@@ -1,12 +1,12 @@
 # Keying on what the compiler read
 
-To reuse an object, sccache has to know every file the compilation read. There
+To reuse an object, sccion has to know every file the compilation read. There
 are two ways to find that out, and which one is used decides what a cache miss
 costs.
 
 **Preprocess first.** Run the preprocessor, hash the result, and recover the
 include list from the preprocessed text. This works for every compiler, and it
-is what sccache does by default. The cost is an extra compiler run on every miss.
+is what sccion does by default. The cost is an extra compiler run on every miss.
 
 **Compile and ask.** Compile the translation unit and have the compiler report
 what it opened while it was doing the work it was going to do anyway. This
@@ -30,7 +30,7 @@ anything is compiled.
 Make-style dependency files (`-MD`, `/showIncludes` output, moc's
 `--output-dep-file`) and MSVC's `/sourceDependencies` JSON are parsed into that
 one representation. A build that already asks for a dependency file keeps it:
-sccache uses the caller's rather than adding a second, because two
+sccion uses the caller's rather than adding a second, because two
 `/sourceDependencies` flags mean `cl` writes only the last, and the file the
 build asked for would never appear.
 
@@ -49,7 +49,7 @@ checkout normalization. On a Qt build this is around a quarter of all
 compilations — 669 of 2557 on one project — and took its warm build from 225 s
 to 148 s.
 
-`rcc` output is not compiled by sccache but is compiled *through* it, and it has
+`rcc` output is not compiled by sccion but is compiled *through* it, and it has
 a caveat worth reading before expecting two checkouts to share:
 [Generated sources](Checkouts.md#generated-sources).
 

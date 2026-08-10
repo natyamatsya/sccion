@@ -17,8 +17,7 @@ use std::sync::LazyLock;
 pub static CRATE_DIR: LazyLock<PathBuf> =
     LazyLock::new(|| Path::new(file!()).parent().unwrap().join("../test-crate"));
 pub static CARGO: LazyLock<OsString> = LazyLock::new(|| std::env::var_os("CARGO").unwrap());
-pub static SCCACHE_BIN: LazyLock<&Path> =
-    LazyLock::new(|| Path::new(env!("CARGO_BIN_EXE_sccache")));
+pub static SCCACHE_BIN: LazyLock<&Path> = LazyLock::new(|| Path::new(env!("CARGO_BIN_EXE_sccion")));
 
 /// Ensures the logger is only initialized once. Panics if initialization fails.
 static LOGGER: LazyLock<Result<(), Infallible>> = LazyLock::new(|| {

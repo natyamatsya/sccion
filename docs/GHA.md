@@ -7,7 +7,7 @@ By changing `SCCACHE_GHA_VERSION`, we can purge all the cache.
 This cache type will need tokens like `ACTIONS_RESULTS_URL` and `ACTIONS_RUNTIME_TOKEN` to work. You can set these environmental variables using the following step in a GitHub Actions workflow.
 
 ```yaml
-- name: Configure sccache
+- name: Configure sccion
   uses: actions/github-script@v7
   with:
     script: |
@@ -15,8 +15,8 @@ This cache type will need tokens like `ACTIONS_RESULTS_URL` and `ACTIONS_RUNTIME
       core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '');
 ```
 
-The `SCCACHE_GHA_RW_MODE` environment variable can be set to `READ_ONLY` to make sccache use this backend in read-only mode. The default is `READ_WRITE`.
+The `SCCACHE_GHA_RW_MODE` environment variable can be set to `READ_ONLY` to make sccion use this backend in read-only mode. The default is `READ_WRITE`.
 
 ## Behavior
 
-In case sccache reaches the rate limit of the service, the build will continue, but the storage might not be performed.
+In case sccion reaches the rate limit of the service, the build will continue, but the storage might not be performed.

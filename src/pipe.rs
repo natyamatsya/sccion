@@ -40,7 +40,7 @@ const BUSY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 pub fn default_pipe_name() -> Option<String> {
     current_user_sid().map(|sid| {
         format!(
-            "{}sccache-{}-{}",
+            "{}sccion-{}-{}",
             SocketAddr::PIPE_PREFIX,
             sid,
             crate::protocol::PROTOCOL_VERSION

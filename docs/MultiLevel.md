@@ -1,6 +1,6 @@
 # Multi-Level Cache
 
-Multi-level caching enables hierarchical cache storage, similar to how CPUs use L1/L2/L3 caches or CDNs use edge/regional/origin tiers. This feature allows sccache to check multiple storage backends in sequence, dramatically improving cache hit rates and reducing latency.
+Multi-level caching enables hierarchical cache storage, similar to how CPUs use L1/L2/L3 caches or CDNs use edge/regional/origin tiers. This feature allows sccion to check multiple storage backends in sequence, dramatically improving cache hit rates and reducing latency.
 
 ## Table of Contents
 
@@ -53,7 +53,7 @@ This creates a cache hierarchy where frequently accessed artifacts stay in fast 
 1. Check L0 (disk)    → Miss (5ms)
 2. Check L1 (redis)   → Miss (10ms)
 3. Check L2 (s3)      → Hit! (200ms)
-4. Return to compiler wrapper / sccache (Total: 215ms)
+4. Return to compiler wrapper / sccion (Total: 215ms)
 5. Background: Backfill L2→L1 (async, non-blocking)
 6. Background: Backfill L2→L0 (async, non-blocking)
 7. Next request: Check L0 → Hit! (10ms)
@@ -81,7 +81,7 @@ If any level fails, the error is logged but the write succeeds if at least one l
 **Solution**: Add Redis or Memcached as L1
 ```bash
 SCCACHE_MULTILEVEL_CHAIN="disk,redis"
-SCCACHE_DIR="/tmp/sccache"
+SCCACHE_DIR="/tmp/sccion"
 SCCACHE_REDIS_ENDPOINT="redis://cache.internal:6379"
 ```
 
@@ -109,8 +109,8 @@ SCCACHE_MULTILEVEL_CHAIN="disk,redis,s3"
 **Solution**: Disk + cloud storage
 ```bash
 SCCACHE_MULTILEVEL_CHAIN="disk,s3"
-SCCACHE_DIR="$HOME/.cache/sccache"
-SCCACHE_BUCKET="my-personal-sccache"
+SCCACHE_DIR="$HOME/.cache/sccion"
+SCCACHE_BUCKET="my-personal-sccion"
 SCCACHE_CACHE_SIZE="5G"  # Keep disk small
 ```
 
@@ -132,7 +132,7 @@ export SCCACHE_MULTILEVEL_CHAIN="disk,redis,s3"
 
 ### Write Error Policy Configuration
 
-Control how sccache handles write failures across cache levels using `SCCACHE_MULTILEVEL_WRITE_ERROR_POLICY`:
+Control how sccion handles write failures across cache levels using `SCCACHE_MULTILEVEL_WRITE_ERROR_POLICY`:
 
 **Available policies**:
 - **`ignore`** - Never fail on write errors, log warnings only (most permissive)
@@ -183,7 +183,7 @@ export SCCACHE_MULTILEVEL_CHAIN="disk,redis,s3"
 export SCCACHE_MULTILEVEL_WRITE_ERROR_POLICY="l0"  # Default: fail only if disk fails
 
 # Level 0: Disk cache
-export SCCACHE_DIR="/var/cache/sccache"
+export SCCACHE_DIR="/var/cache/sccion"
 export SCCACHE_CACHE_SIZE="10G"
 
 # Level 1: Redis cache
@@ -191,7 +191,7 @@ export SCCACHE_REDIS_ENDPOINT="redis://localhost:6379"
 export SCCACHE_REDIS_EXPIRATION="86400"  # 24 hours
 
 # Level 2: S3 cache
-export SCCACHE_BUCKET="my-sccache-bucket"
+export SCCACHE_BUCKET="my-sccion-bucket"
 export SCCACHE_REGION="us-east-1"
 export SCCACHE_S3_USE_SSL="true"
 ```
@@ -199,13 +199,13 @@ export SCCACHE_S3_USE_SSL="true"
 ### Via Configuration File
 
 ```toml
-# ~/.config/sccache/config
+# ~/.config/sccion/config
 [cache.multilevel]
 chain = ["disk", "redis", "s3"]
 write_error_policy = "l0"  # Optional: ignore, l0 (default), or all
 
 [cache.disk]
-dir = "/var/cache/sccache"
+dir = "/var/cache/sccion"
 size = 10737418240  # 10GB
 
 [cache.redis]
@@ -213,14 +213,14 @@ endpoint = "redis://localhost:6379"
 expiration = 86400
 
 [cache.s3]
-bucket = "my-sccache-bucket"
+bucket = "my-sccion-bucket"
 endpoint = "s3-us-east-1.amazonaws.com"
 use_ssl = true
 ```
 
 ### Single Level (No Multi-Level)
 
-If `SCCACHE_MULTILEVEL_CHAIN` is not set, sccache uses the first configured cache backend (legacy behavior):
+If `SCCACHE_MULTILEVEL_CHAIN` is not set, sccion uses the first configured cache backend (legacy behavior):
 
 ```bash
 # Just uses disk (backwards compatible)

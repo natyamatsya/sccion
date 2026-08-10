@@ -53,7 +53,7 @@ the first:
 - `bench_objects`, an OBJECT library — ninja produces the `.obj` files and stops.
   This exercises exactly the compile-and-cache path, which is what a benchmark of
   a compiler cache should measure.
-- `sccache_bench`, which links them. Available with `--with-link`.
+- `sccion_bench`, which links them. Available with `--with-link`.
 
 The link is large, serial and entirely uncached, and it was drowning the signal.
 Same project, 60 translation units, `-j32`, three repetitions:

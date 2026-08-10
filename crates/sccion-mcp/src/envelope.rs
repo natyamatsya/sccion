@@ -16,7 +16,7 @@
 //!    `protocolVersion`, `clientCapabilities` and (SHOULD) `clientInfo` in
 //!    `_meta`; every result carries `serverInfo`. There is no connection setup
 //!    phase at all, which for this adapter is a good fit rather than a loss:
-//!    the sccache daemon is the state, and the adapter is a translator that can
+//!    the sccion daemon is the state, and the adapter is a translator that can
 //!    be restarted between any two calls without losing anything.
 //! 2. **A version mismatch is an error, not a negotiation.**
 //! 3. **Every result carries a `resultType`.** Everything here is `complete`;
@@ -44,8 +44,8 @@ pub const PROTOCOL_VERSION: &str = "2026-07-28";
 /// which to say it once.
 pub fn server_info() -> Value {
     json!({
-        "name": "sccache",
-        "title": "sccache build cache",
+        "name": "sccion",
+        "title": "sccion build cache",
         "version": env!("CARGO_PKG_VERSION"),
     })
 }
@@ -57,7 +57,7 @@ pub fn server_info() -> Value {
 
 /// The caller asked about a workspace handle this daemon did not mint.
 pub const ERR_UNKNOWN_HANDLE: i64 = -32001;
-/// No sccache daemon is running, or it could not be reached.
+/// No sccion daemon is running, or it could not be reached.
 pub const ERR_DAEMON_UNAVAILABLE: i64 = -32002;
 /// The caller's protocol version is not one this adapter speaks.
 ///

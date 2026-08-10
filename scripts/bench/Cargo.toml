@@ -1,14 +1,14 @@
 [package]
-name = "sccache-bench"
+name = "sccion-bench"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.91.0"
 license = "Apache-2.0"
 publish = false
-description = "Benchmark harness for sccache against a CMake + Ninja MSVC build."
+description = "Benchmark harness for sccion against a CMake + Ninja MSVC build."
 
 [[bin]]
-name = "sccache-bench"
+name = "sccion-bench"
 path = "src/main.rs"
 
 [dependencies]

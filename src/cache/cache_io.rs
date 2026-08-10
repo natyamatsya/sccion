@@ -708,7 +708,7 @@ mod tests {
             eprintln!("skipping: set SCCACHE_TEST_CLONE_DIR to a clone-capable volume");
             return;
         };
-        let dir = PathBuf::from(root).join(format!("sccache-io-clone-{}", std::process::id()));
+        let dir = PathBuf::from(root).join(format!("sccion-io-clone-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
 
         let payload = big_payload();

@@ -8,7 +8,7 @@ while caching far less than it appears to, or nothing.
 
 **Debug information must go into the object, not into a shared PDB.** With `cl`,
 `/Zi` gives every translation unit in a target the *same* PDB, which two
-compilations cannot both produce from cache, so sccache refuses them as
+compilations cannot both produce from cache, so sccion refuses them as
 `shared_pdb`. `/Z7` puts the debug information in the object and is cacheable.
 Most CMake projects get `/Zi` by default and cache one object per target until
 this is changed. `clang-cl` treats `/Zi` as `/Z7` and does not have the problem.
@@ -21,7 +21,7 @@ something else in the toolchain still varies. That caps how much
 [`SCCACHE_VERIFY_HITS`](Configuration.md) can check, and it is a reason to treat
 "cannot be verified" as an ordinary answer rather than a warning.
 
-`sccache --check-env` reports both, along with the rest of the machine's
+`sccion --check-env` reports both, along with the rest of the machine's
 configuration. See [Measuring and checking](Benchmarks.md#checking-the-machine).
 
 ## Flags

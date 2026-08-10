@@ -247,7 +247,7 @@ fn cmake_source(units: &[String]) -> String {
     // stops. That is what a benchmark of a *compiler cache* should measure --
     // building it exercises exactly the compile-and-cache path and nothing else.
     //
-    // `sccache_bench` links them into an executable, for when whole-build realism
+    // `sccion_bench` links them into an executable, for when whole-build realism
     // is wanted. It is separate because the link is large, serial, and entirely
     // uncached: at 61 translation units it accounted for most of a "cached
     // rebuild", so including it by default measured the linker, not sccache.
@@ -261,7 +261,7 @@ fn cmake_source(units: &[String]) -> String {
     // across translation units, and sccache refuses to cache at all ("shared pdb").
     format!(
         r#"cmake_minimum_required(VERSION 3.25)
-project(sccache_bench CXX)
+project(sccion_bench CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -276,9 +276,9 @@ add_library(bench_objects OBJECT
 )
 target_include_directories(bench_objects PRIVATE include)
 
-add_executable(sccache_bench src/main.cpp)
-target_include_directories(sccache_bench PRIVATE include)
-target_link_libraries(sccache_bench PRIVATE bench_objects)
+add_executable(sccion_bench src/main.cpp)
+target_include_directories(sccion_bench PRIVATE include)
+target_link_libraries(sccion_bench PRIVATE bench_objects)
 "#
     )
 }

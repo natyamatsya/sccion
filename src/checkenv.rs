@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright natyamatsya and sccache contributors
 // SPDX-License-Identifier: Apache-2.0
 
-//! `sccache --check-env`: report the environment sccache is about to run in.
+//! `sccion --check-env`: report the environment sccache is about to run in.
 //!
 //! The failures this exists to catch are not crashes. They are configurations
 //! that work perfectly while quietly costing most of what sccache could have
@@ -145,8 +145,8 @@ impl Setting {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct EnvReport {
-    pub sccache_version: String,
-    pub sccache_path: Option<String>,
+    pub sccion_version: String,
+    pub sccion_path: Option<String>,
     pub cache: VolumeReport,
     pub working_directory: VolumeReport,
     pub same_volume: bool,
@@ -199,7 +199,7 @@ fn exclusion_remedy(tamper_protected: Option<bool>) -> &'static str {
          exclusions set through Defender policy; Add-MpPreference will not take. \
          A Dev Drive gets scanning deferred without needing exclusions at all."
     } else {
-        "Add-MpPreference -ExclusionProcess cl.exe, sccache.exe, ninja.exe"
+        "Add-MpPreference -ExclusionProcess cl.exe, sccion.exe, ninja.exe"
     }
 }
 
@@ -578,15 +578,15 @@ pub fn check(config: &Config, cwd: &Path) -> EnvReport {
         }
     }
 
-    let sccache_path = std::env::current_exe()
+    let sccion_path = std::env::current_exe()
         .ok()
         .map(|p| p.display().to_string());
-    if let (Some(exe), Some(cache_root)) = (&sccache_path, &cache.root)
+    if let (Some(exe), Some(cache_root)) = (&sccion_path, &cache.root)
         && volume_root(Path::new(exe)).as_ref() != Some(cache_root)
     {
         findings.push(
             Level::Info,
-            "sccache.exe is not on the cache volume.".to_string(),
+            "sccion.exe is not on the cache volume.".to_string(),
             Some(
                 "Executables can live on a Dev Drive; only the Dev Drive itself cannot be the \
                  system volume. Moving them there gets their image scans deferred too.",
@@ -597,8 +597,8 @@ pub fn check(config: &Config, cwd: &Path) -> EnvReport {
     findings.0.sort_by_key(|f| f.level);
 
     EnvReport {
-        sccache_version: env!("CARGO_PKG_VERSION").to_string(),
-        sccache_path,
+        sccion_version: env!("CARGO_PKG_VERSION").to_string(),
+        sccion_path,
         cache_location: cache_dir.display().to_string(),
         max_cache_size: config.fallback_cache.size,
         cache,
@@ -623,8 +623,8 @@ impl EnvReport {
     }
 
     pub fn print(&self) {
-        println!("sccache {}", self.sccache_version);
-        if let Some(p) = &self.sccache_path {
+        println!("sccion {}", self.sccion_version);
+        if let Some(p) = &self.sccion_path {
             println!("  binary                  {p}");
         }
         println!("  cache                   {}", self.cache_location);
@@ -856,8 +856,8 @@ mod tests {
     #[test]
     fn a_report_with_no_errors_does_not_gate_ci() {
         let report = EnvReport {
-            sccache_version: "0".into(),
-            sccache_path: None,
+            sccion_version: "0".into(),
+            sccion_path: None,
             cache: VolumeReport {
                 path: "d:/c".into(),
                 root: Some("D:\\".into()),

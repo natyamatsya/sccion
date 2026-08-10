@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 
-SCCACHE="${SCCACHE_PATH:-/sccache/target/debug/sccache}"
+SCCACHE="${SCCACHE_PATH:-/sccion/target/debug/sccion}"
 export SCCACHE_ERROR_LOG=/build/sccache-error.log
 
 echo "========================================================================"
@@ -46,7 +46,7 @@ test_multilevel_backend() {
     echo "Testing multi-level: disk + $backend_name"
     echo "=========================================="
 
-    # Stop any running sccache server
+    # Stop any running sccion server
     "$SCCACHE" --stop-server &>/dev/null || true
     sleep 1
 
@@ -57,18 +57,18 @@ test_multilevel_backend() {
 
     # Configure multi-level cache: disk first (L1), then remote (L2)
     export SCCACHE_MULTILEVEL_CHAIN="disk,$level_name"
-    export SCCACHE_DIR="/build/sccache-disk"
+    export SCCACHE_DIR="/build/sccion-disk"
 
     # Clean disk cache
-    rm -rf /build/sccache-disk
-    mkdir -p /build/sccache-disk
+    rm -rf /build/sccion-disk
+    mkdir -p /build/sccion-disk
 
     # Copy test crate
     rm -rf /build/test-crate
-    cp -r /sccache/tests/test-crate /build/
+    cp -r /sccion/tests/test-crate /build/
     cd /build/test-crate
 
-    # Start sccache server with logging
+    # Start sccion server with logging
     rm -f "$SCCACHE_ERROR_LOG"
     SCCACHE_LOG=trace \
       "$SCCACHE" --start-server &>/dev/null
@@ -147,8 +147,8 @@ for l in levels:
     echo ""
     echo "Test 3: Backfill test - clear L1 (disk), verify L2 (remote) still has data"
     "$SCCACHE" --stop-server &>/dev/null || true
-    rm -rf /build/sccache-disk
-    mkdir -p /build/sccache-disk
+    rm -rf /build/sccion-disk
+    mkdir -p /build/sccion-disk
     SCCACHE_LOG=trace \
       "$SCCACHE" --start-server &>/dev/null
     sleep 1
@@ -205,7 +205,7 @@ for l in levels:
 
     # Clean up for next backend test
     "$SCCACHE" --stop-server &>/dev/null || true
-    rm -rf /build/test-crate /build/sccache-disk
+    rm -rf /build/test-crate /build/sccion-disk
 
     # Unset environment variables
     for env_var in "$@"; do

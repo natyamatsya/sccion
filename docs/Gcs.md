@@ -13,7 +13,7 @@ sharing a bucket with another application.
 
 ## Credentials
 
-Sccache is able to load credentials from various sources. Including:
+Sccion is able to load credentials from various sources. Including:
 
 - User Input: If `SCCACHE_GCS_KEY_PATH` has been set, we will load from this file
   first.
@@ -37,7 +37,7 @@ then `Keys` => `Add key` => `Create new key`. Select the JSON format and here it
 is. This JSON file is what `SCCACHE_GCS_KEY_PATH` expects.
 
 The service account needs `Storage Object Admin` permissions on the bucket
-(otherwise, sccache will fail with a simple `Permission denied`).
+(otherwise, sccion will fail with a simple `Permission denied`).
 
 ### External accounts
 
@@ -59,7 +59,7 @@ To verify that it works, run:
 ```
 export SCCACHE_GCS_BUCKET=<bucket name in GCP>
 export SCCACHE_GCS_KEY_PATH=secret-gcp-storage.json
-./sccache --show-stats
+./sccion --show-stats
 # you should see
 [...]
 Cache location                  GCS, bucket: Bucket(name=<bucket name in GCP>), key_prefix: (none)

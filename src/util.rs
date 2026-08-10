@@ -478,7 +478,7 @@ pub async fn hash_all_memoized(
     Ok(out)
 }
 
-/// Build a tokio runtime suitable for the (short-lived) sccache client.
+/// Build a tokio runtime suitable for the (short-lived) sccion client.
 ///
 /// A multi-threaded runtime would spawn one worker thread per CPU for every
 /// client invocation; on a many-core host running many parallel clients that
@@ -1091,7 +1091,7 @@ pub fn daemonize() -> Result<()> {
 ///
 /// # TODO
 ///
-/// We should refactor sccache current model to make sure that we only have
+/// We should refactor sccion current model to make sure that we only have
 /// one tokio runtime and keep reqwest alive inside it.
 ///
 /// ---
@@ -1506,7 +1506,10 @@ pub fn resolve_compiler_avoiding_wrapper(
     executable: &Path,
     env_vars: &[(OsString, OsString)],
 ) -> PathBuf {
-    const WRAPPER_DIR_COMPONENTS: [&str; 2] = ["ccache", "sccache"];
+    // `sccache` stays alongside `sccion`: this is about recognising a wrapper
+    // someone else put on the PATH, and upstream sccache is exactly as much a
+    // wrapper after the rename as it was before.
+    const WRAPPER_DIR_COMPONENTS: [&str; 3] = ["ccache", "sccache", "sccion"];
 
     // Helper to check if a path points to ccache/sccache (via symlink resolution)
     let resolves_to_wrapper = |path: &Path| -> bool {
@@ -1519,6 +1522,8 @@ pub fn resolve_compiler_avoiding_wrapper(
                     || name_lower.starts_with("ccache.")
                     || name_lower == "sccache"
                     || name_lower.starts_with("sccache.")
+                    || name_lower == "sccion"
+                    || name_lower.starts_with("sccion.")
             })
             .unwrap_or(false)
     };

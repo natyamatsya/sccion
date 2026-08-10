@@ -1,10 +1,10 @@
 # Local
 
-sccache defaults to using local disk storage. You can set the `SCCACHE_DIR` environment variable to change the disk cache location. By default it will use a sensible location for the current platform: `~/.cache/sccache` on Linux, `%LOCALAPPDATA%\Mozilla\sccache` on Windows, and `~/Library/Caches/Mozilla.sccache` on MacOS.
+sccion defaults to using local disk storage. You can set the `SCCACHE_DIR` environment variable to change the disk cache location. By default it will use a sensible location for the current platform: `~/.cache/sccion` on Linux, `%LOCALAPPDATA%\Mozilla\sccion` on Windows, and `~/Library/Caches/Mozilla.sccache` on MacOS.
 
 The default cache size is 10 gigabytes. To change this, set `SCCACHE_CACHE_SIZE`, for example `SCCACHE_CACHE_SIZE="1G"`.
 
-The local storage only supports a single sccache server at a time. Multiple concurrent servers will race and cause spurious build failures.
+The local storage only supports a single sccion server at a time. Multiple concurrent servers will race and cause spurious build failures.
 
 ## Preprocessor cache mode
 
@@ -14,10 +14,10 @@ from cache since preprocessing is a major expense for these.
 
 Preprocessor cache mode is controlled by a configuration option which is true by default, as well as additional conditions described below.
 
-To ensure that the cached preprocessor results for a source file correspond to the un-preprocessed inputs, sccache needs
-to remember, among other things, all files included by the source file. sccache also needs to recognize
+To ensure that the cached preprocessor results for a source file correspond to the un-preprocessed inputs, sccion needs
+to remember, among other things, all files included by the source file. sccion also needs to recognize
 when "external factors" may change the results, such as system time if the `__TIME__` macro is used
-in a source file. How conservative sccache is about some of these external factors is configurable, see below.
+in a source file. How conservative sccion is about some of these external factors is configurable, see below.
 
 Preprocessor cache mode will be disabled in any of the following cases:
 
@@ -33,13 +33,13 @@ Preprocessor cache mode will be disabled in any of the following cases:
 The preprocessor cache may silently produce stale results in any of the following cases:
 
 - When a source file was compiled and its results were cached, a header file would have been included if it existed, but it did
-  not exist at the time. sccache does not know about such files, so it cannot invalidate the result if the header file later exists.
+  not exist at the time. sccion does not know about such files, so it cannot invalidate the result if the header file later exists.
 - A macro such as `__TIME__` (etc) is used in the source code and `ignore_time_macros` is enabled
-- There are other external factors influencing the preprocessing result that sccache does not know about
+- There are other external factors influencing the preprocessing result that sccion does not know about
 
 Configuration options and their default values:
 
-- `use_preprocessor_cache_mode`: `true`. Whether to use preprocessor cache mode. This can be overridden for an sccache invocation by setting the environment variable `SCCACHE_DIRECT` to `true`/`on`/`1` or `false`/`off`/`0`.
+- `use_preprocessor_cache_mode`: `true`. Whether to use preprocessor cache mode. This can be overridden for an sccion invocation by setting the environment variable `SCCACHE_DIRECT` to `true`/`on`/`1` or `false`/`off`/`0`.
 - `file_stat_matches`: `false`. If false, only compare header files by hashing their contents. If true, will use size + ctime + mtime to check whether a file has changed. See other flags below for more control over this behavior.
 - `use_ctime_for_stat`: `true`. If true, uses the ctime (file status change on UNIX, creation time on Windows) to check that a file has/hasn't changed. Can be useful to disable when backdating modification times in a controlled manner.
 
@@ -53,7 +53,7 @@ Configuration options and their default values:
 
 - `use_dependency_keying`: `true`. A compilation whose inputs are not already known is *compiled* and asked what it read, instead of being preprocessed so the same list can be recovered from the preprocessed text. This removes an entire compiler run from every preprocessor cache miss. Only compilers that can report their inputs while compiling do this (currently MSVC, via `/sourceDependencies`); the rest preprocess as before, as do distributed compilations, which need preprocessed source.
 
-  Measured on a 2557-unit MSVC + Qt + CMake build: cold 485.4s → 414.8s, warm 99.5s → 94.8s. The warm side improves because a source file that includes nothing gets a manifest for the first time — sccache does not store one when the include list is empty, so such files re-preprocessed on every build.
+  Measured on a 2557-unit MSVC + Qt + CMake build: cold 485.4s → 414.8s, warm 99.5s → 94.8s. The warm side improves because a source file that includes nothing gets a manifest for the first time — sccion does not store one when the include list is empty, so such files re-preprocessed on every build.
 
   The trade is that a miss now costs a compile rather than a preprocess, so a compilation whose *manifest* is missing but whose *object* is already in the cache pays the difference instead of getting a cheap hit. That is not hypothetical: on the same build, a *second checkout's first build* against a cache the first one filled took 359s with this on and 306s with it off, because a manifest that does not match still leaves the object findable by preprocessing.
 
@@ -65,7 +65,7 @@ See where to write the config in [the configuration doc](Configuration.md).
 
 ## Project configuration
 
-Some settings depend on the project being built rather than on the machine building it. Those can be set in a `.sccache.toml` committed to the repository, which sccache looks for the way tools look for `.clang-format`: by walking up from the directory a compilation runs in, stopping once it has looked in the checkout root (a directory or file named `.git`, `.jj` or `.hg`).
+Some settings depend on the project being built rather than on the machine building it. Those can be set in a `.sccache.toml` committed to the repository, which sccion looks for the way tools look for `.clang-format`: by walking up from the directory a compilation runs in, stopping once it has looked in the checkout root (a directory or file named `.git`, `.jj` or `.hg`).
 
 The point of finding it by walking up is that the file does not have to name a path. **The directory holding the file is the checkout root**, so one committed file is correct in every checkout of the project, including worktrees that do not exist yet.
 
@@ -108,7 +108,7 @@ For each of these, the most specific answer wins: the environment variable for t
 
 Only these keys are honoured, and the file is ignored (with a warning) if it contains anything else. It travels with the repository, so anything it can set is something a repository can set: the test a key has to pass is that the worst a hostile repository could do with it is make its own builds slower or less shared. Settings that could redirect a build — where the cache lives, what the compiler is, which server to talk to — are deliberately not available here, for the same reason `.clang-format` cannot run a command.
 
-Most of sccache's configuration cannot be set here even in principle, quite apart from that rule: one sccache server serves every checkout on the machine and reads its configuration once at startup, so the cache backend, cache size, compression, logging, idle timeout and distributed-build settings are fixed for the server's lifetime. Two checkouts asking for different ones would have no answer.
+Most of sccion's configuration cannot be set here even in principle, quite apart from that rule: one sccion server serves every checkout on the machine and reads its configuration once at startup, so the cache backend, cache size, compression, logging, idle timeout and distributed-build settings are fixed for the server's lifetime. Two checkouts asking for different ones would have no answer.
 
 `basedirs` and `extra_hash_files` entries must be relative to the file and stay under it; absolute paths, and paths containing `..`, are ignored with a warning.
 
@@ -118,6 +118,6 @@ A malformed file does not fail the build. The checkout root is still used as a b
 
 By default, the local cache operates in read/write mode. The `SCCACHE_LOCAL_RW_MODE` environment variable can be set to `READ_ONLY` (or `READ_WRITE`) to modify this behavior.
 
-You can use read-only mode to prevent sccache from writing new cache items to the disk. This can be useful, for example, if you want to use items that have already been cached, but not add new ones to the cache. 
+You can use read-only mode to prevent sccion from writing new cache items to the disk. This can be useful, for example, if you want to use items that have already been cached, but not add new ones to the cache. 
 
-Note that this feature is only effective if you already have items in your cache. Using this option on an empty cache will cause sccache to simply do nothing, just add overhead.
+Note that this feature is only effective if you already have items in your cache. Using this option on an empty cache will cause sccion to simply do nothing, just add overhead.

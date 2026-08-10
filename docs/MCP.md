@@ -1,7 +1,7 @@
-# `sccache-mcp` — asking sccache questions from an agent
+# `sccion-mcp` — asking sccion questions from an agent
 
-`sccache-mcp` is a Model Context Protocol server that answers questions about a
-local sccache daemon: why a compilation missed, how the cache is doing, whether
+`sccion-mcp` is a Model Context Protocol server that answers questions about a
+local sccion daemon: why a compilation missed, how the cache is doing, whether
 the machine is set up to cache at all.
 
 It exists because an agent's only way to learn about the build today is to parse
@@ -21,7 +21,7 @@ a compilation. That is a deliberate boundary, not an accident of what has been
 built so far: a tool surface exposed to an agent must not be able to poison or
 clear a cache that other builds depend on.
 
-**It is stdio only.** Everything sccache does is same-machine. The remote
+**It is stdio only.** Everything sccion does is same-machine. The remote
 transport would import an authorization surface that is itself mid-migration,
 for no gain. Under stdio, a leaked workspace handle is confined to the process
 tree that could already talk to the daemon.
@@ -36,7 +36,7 @@ the one to use on a build server, where there is no agent to serve and the
 surface is only a way to read build state:
 
 ```toml
-# in the sccache config file
+# in the sccion config file
 mcp = false
 ```
 ```
@@ -44,7 +44,7 @@ SCCACHE_MCP=false     # outranks the config file, so a CI job needs no edit
 ```
 
 Read by the server at startup like the cache settings, so restart it with
-`sccache --stop-server`. `sccache-mcp` refuses to start too, which turns "every
+`sccion --stop-server`. `sccion-mcp` refuses to start too, which turns "every
 tool call fails" into one line an operator can act on.
 
 **"May this checkout be answered for?"** — the repository's decision, in its
@@ -69,7 +69,7 @@ allows.
 ## Running it
 
 ```
-sccache-mcp
+sccion-mcp
 ```
 
 Reads line-delimited JSON-RPC on stdin, writes responses on stdout, logs to
@@ -78,7 +78,7 @@ starting a daemon in order to ask it for statistics reports the statistics of
 the daemon just started, which is a confident zero rather than an answer.
 
 The adapter holds no state and can be restarted between any two requests. The
-sccache daemon is the state.
+sccion daemon is the state.
 
 ## Tools
 
@@ -96,7 +96,7 @@ Every tool but `register_workspace` and `check_environment` takes a
 | `compare_keys` | Which part of the key differs between two workspaces |
 | `uncacheable_summary` | Everything here that can never be cached, by reason |
 
-Resources: `sccache://environment` and `sccache://stats/{handle}`.
+Resources: `sccion://environment` and `sccion://stats/{handle}`.
 
 ### Handles
 
@@ -123,7 +123,7 @@ The `classification` on each record is the payload:
   `dependency_report_unreadable`, `shared_pdb` and the rest are permanent
   properties of the compilation as invoked. Retrying it unchanged reaches the
   same verdict. The reason is usually actionable: a source that expands
-  `__DATE__`, a flag sccache cannot model.
+  `__DATE__`, a flag sccion cannot model.
 - anything else (`cold`, `read_error`, `timed_out`, …) — may well succeed next
   time.
 
@@ -135,7 +135,7 @@ output; they can by their input.
 
 The tools above answer "why did *my build* miss". These answer "why is the
 *cache* behaving like that", which is a different job and mostly a different
-person — someone changing sccache rather than someone using it.
+person — someone changing sccion rather than someone using it.
 
 `compare_keys` is the one to reach for first. Two checkouts of a project that
 should share entries and do not is the commonest correctness question there is,
@@ -182,7 +182,7 @@ Built to **2026-07-28**, which removed protocol-level sessions and the
 - Adapter error codes stay in `-32000`..=`-32019`; `-32020`..=`-32099` is
   reserved for the specification.
 
-Every one of those is asserted by a test in `crates/sccache-mcp`, and the rules
+Every one of those is asserted by a test in `crates/sccion-mcp`, and the rules
 live in one file (`envelope.rs`) so the next revision is a diff there rather
 than an audit of the whole adapter.
 

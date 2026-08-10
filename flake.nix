@@ -1,5 +1,5 @@
 {
-  description = "sccache development environment and package";
+  description = "sccion development environment and package";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-25.11";
@@ -14,7 +14,7 @@
     cargoToml = builtins.fromTOML (builtins.readFile ./Cargo.toml);
     version = cargoToml.package.version;
 
-    mkSccache = {
+    mkSccion = {
       final,
       pname,
       features ? [],
@@ -45,10 +45,10 @@
 
         meta = with final.lib; {
           description = description;
-          homepage = "https://github.com/mozilla/sccache";
-          changelog = "https://github.com/mozilla/sccache/releases/tag/v${version}";
+          homepage = "https://github.com/natyamatsya/sccion";
+          changelog = "https://github.com/natyamatsya/sccion/releases/tag/v${version}";
           license = licenses.asl20;
-          mainProgram = "sccache";
+          mainProgram = "sccion";
         };
       };
   in
@@ -68,13 +68,13 @@
         };
       in {
         packages = {
-          default = pkgs.sccache;
-          sccache = pkgs.sccache;
-          sccache-dist = pkgs.sccache-dist;
+          default = pkgs.sccion;
+          sccion = pkgs.sccion;
+          sccion-dist = pkgs.sccion-dist;
         };
 
         devShells.default = pkgs.mkShell {
-          name = "sccache-dev";
+          name = "sccion-dev";
 
           buildInputs = with pkgs; [
             rustup
@@ -89,14 +89,14 @@
     )
     // {
       overlays.default = final: prev: {
-        sccache = mkSccache {
+        sccion = mkSccion {
           inherit final;
-          pname = "sccache";
+          pname = "sccion";
           description = "Ccache with Cloud Storage";
         };
-        sccache-dist = mkSccache {
+        sccion-dist = mkSccion {
           inherit final;
-          pname = "sccache-dist";
+          pname = "sccion-dist";
           features = [
             "dist-client"
             "dist-server"

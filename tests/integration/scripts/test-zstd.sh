@@ -1,14 +1,14 @@
 #!/bin/bash
 set -euo pipefail
 
-SCCACHE="${SCCACHE_PATH:-/sccache/target/debug/sccache}"
+SCCACHE="${SCCACHE_PATH:-/sccion/target/debug/sccion}"
 
 echo "=========================================="
 echo "Testing: ZSTD Compression Levels"
 echo "=========================================="
 
 echo "Copying test crate to writable location..."
-cp -r /sccache/tests/test-crate /build/
+cp -r /sccion/tests/test-crate /build/
 
 cd /build/test-crate
 

@@ -15,11 +15,11 @@
 
 use anyhow::{Context, Error, Result, bail};
 use flate2::read::GzDecoder;
-use sccache::dist::{
+use sccion::dist::{
     BuildResult, BuilderIncoming, CompileCommand, InputsReader, OutputData, ProcessOutput, TcCache,
     Toolchain,
 };
-use sccache::lru_disk_cache::Error as LruError;
+use sccion::lru_disk_cache::Error as LruError;
 use std::collections::{HashMap, hash_map};
 use std::path::{Path, PathBuf};
 use std::process::{ChildStdin, Command, Output, Stdio};
@@ -116,7 +116,7 @@ impl PotBuilder {
             image_map: Arc::new(Mutex::new(HashMap::new())),
             container_lists: Arc::new(Mutex::new(HashMap::new())),
             cleanup_thread_count: Arc::new(AtomicUsize::new(0)),
-            max_cleanup_thread_count: sccache::util::num_cpus() * 3,
+            max_cleanup_thread_count: sccion::util::num_cpus() * 3,
         };
         ret.cleanup()?;
         Ok(ret)

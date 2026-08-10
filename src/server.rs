@@ -182,7 +182,7 @@ impl DistClientContainer {
     fn new(config: &Config, _: &tokio::runtime::Handle) -> Self {
         if config.dist.scheduler_url.is_some() {
             warn!(
-                "Scheduler address configured but dist feature disabled, disabling distributed sccache"
+                "Scheduler address configured but dist feature disabled, disabling distributed sccion"
             )
         }
         Self {}
@@ -364,7 +364,7 @@ impl DistClientContainer {
         match config.scheduler_url {
             Some(ref addr) => {
                 let url = addr.to_url();
-                info!("Enabling distributed sccache to {}", url);
+                info!("Enabling distributed sccion to {}", url);
                 let auth_token = match &config.auth {
                     config::DistAuth::Token { token } => Ok(token.to_owned()),
                     config::DistAuth::Oauth2CodeGrantPKCE { auth_url, .. }
@@ -374,7 +374,7 @@ impl DistClientContainer {
                 };
                 let auth_token = try_or_fail_with_message!(
                     auth_token
-                        .context("could not load client auth token, run |sccache --dist-auth|")
+                        .context("could not load client auth token, run |sccion --dist-auth|")
                 );
                 let dist_client = dist::http::Client::new(
                     &config.pool,
@@ -408,7 +408,7 @@ impl DistClientContainer {
                 }
             }
             None => {
-                info!("No scheduler address configured, disabling distributed sccache");
+                info!("No scheduler address configured, disabling distributed sccion");
                 DistClientState::Disabled
             }
         }
@@ -1961,11 +1961,11 @@ where
 
                                 error!("[{:?}] fatal error: {}", out_pretty, err);
 
-                                let mut error = "sccache: encountered fatal error\n".to_string();
-                                let _ = writeln!(error, "sccache: error: {}", err);
+                                let mut error = "sccion: encountered fatal error\n".to_string();
+                                let _ = writeln!(error, "sccion: error: {}", err);
                                 for e in err.chain() {
                                     error!("[{:?}] \t{}", out_pretty, e);
-                                    let _ = writeln!(error, "sccache: caused by: {}", e);
+                                    let _ = writeln!(error, "sccion: caused by: {}", e);
                                 }
                                 //TODO: figure out a better way to communicate this?
                                 res.retcode = Some(-2);

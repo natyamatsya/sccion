@@ -1,21 +1,21 @@
 [package]
 # Should match .rustfmt.toml
 edition = "2024"
-name = "sccache"
+name = "sccion"
 rust-version = "1.91.0"
 version = "0.17.0"
 
 categories = ["command-line-utilities", "development-tools::build-utils"]
-description = "Sccache is a ccache-like tool. It is used as a compiler wrapper and avoids compilation when possible. Sccache has the capability to utilize caching in remote storage environments, including various cloud storage options, or alternatively, in local storage."
-keywords = ["ccache"]
+description = "sccion is a compiler cache, grafted from Mozilla's sccache. It is used as a compiler wrapper and avoids compilation when possible, storing results in local or remote storage."
+keywords = ["ccache", "sccache"]
 license = "Apache-2.0"
 readme = "README.md"
-repository = "https://github.com/mozilla/sccache/"
+repository = "https://github.com/natyamatsya/sccion/"
 
 [package.metadata.binstall]
-bin-dir = "sccache-v{ version }-{ target }/{ bin }{ binary-ext }"
+bin-dir = "sccion-v{ version }-{ target }/{ bin }{ binary-ext }"
 pkg-fmt = "tgz"
-pkg-url = "{ repo }/releases/download/v{ version }/sccache-v{ version }-{ target }{ archive-suffix }"
+pkg-url = "{ repo }/releases/download/v{ version }/sccion-v{ version }-{ target }{ archive-suffix }"
 
 [package.metadata.binstall.overrides.x86_64-pc-windows-msvc]
 pkg-fmt = "zip"
@@ -24,10 +24,10 @@ pkg-fmt = "zip"
 pkg-fmt = "zip"
 
 [[bin]]
-name = "sccache"
+name = "sccion"
 
 [[bin]]
-name = "sccache-dist"
+name = "sccion-dist"
 required-features = ["dist-server"]
 
 [profile.test]
@@ -251,14 +251,14 @@ dist-tests = ["dist-client", "dist-server"]
 [workspace]
 exclude = ["tests/test-crate"]
 members = [
-  "crates/sccache-mcp",
+  "crates/sccion-mcp",
   "scripts/bench",
   "tests/integration/randomize_readdir",
 ]
 
 [[bench]]
 harness = false
-name = "sccache_bench"
+name = "sccion_bench"
 test = false
 
 [lints]

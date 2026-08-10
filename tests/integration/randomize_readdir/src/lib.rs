@@ -36,9 +36,9 @@
 //! You can verify that the output is random by running for example
 //! `LD_PRELOAD=path/to/librandomize_readdir.so ls -U`.
 //!
-//! To test sccache with librandomize_readdir, export LD_PRELOAD in
+//! To test sccion with librandomize_readdir, export LD_PRELOAD in
 //! the integration test and then check that two the second invocation
-//! hits the cache. If not, something inside sccache relies implicitly
+//! hits the cache. If not, something inside sccion relies implicitly
 //! on the order that files are returned from the filesystem, which is
 //! not defined, which is not ideal.
 //!

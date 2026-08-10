@@ -4,21 +4,21 @@ export UID := $(shell id -u)
 export GID := $(shell id -g)
 
 PROJECT_ROOT := $(shell git rev-parse --show-toplevel)
-SCCACHE_BIN := $(PROJECT_ROOT)/target/debug/sccache
+SCCACHE_BIN := $(PROJECT_ROOT)/target/debug/sccion
 
 # Coverage support via WITH_COVERAGE=1
 COVERAGE_DIR := $(PROJECT_ROOT)/target/integration-coverage
 
 ifdef WITH_COVERAGE
 export WITH_COVERAGE
-SCCACHE_BIN := $(PROJECT_ROOT)/target/coverage/debug/sccache
+SCCACHE_BIN := $(PROJECT_ROOT)/target/coverage/debug/sccion
 BUILD_TARGET_DIR := --target-dir target/coverage
 # Container paths (docker-compose will receive these)
-export SCCACHE_PATH := /sccache/target/coverage/debug/sccache
+export SCCACHE_PATH := /sccion/target/coverage/debug/sccion
 export LLVM_PROFILE_FILE := /coverage/profraw/%p-%m.profraw
 else
 # Default container path
-export SCCACHE_PATH := /sccache/target/debug/sccache
+export SCCACHE_PATH := /sccion/target/debug/sccion
 endif
 
 # CI grouping helpers (GitHub Actions folding)
@@ -74,10 +74,10 @@ SERVICES_webdav := webdav
 SERVICES_zstd :=
 
 help:
-	@echo "sccache Integration Tests"
+	@echo "sccion Integration Tests"
 	@echo ""
 	@echo "Available targets:"
-	@echo "  make build                   Build sccache binary"
+	@echo "  make build                   Build sccion binary"
 	@echo ""
 	@echo "Backend Storage Tests:"
 	@echo "  make test-redis              Run Redis (new endpoint) test"
@@ -128,14 +128,14 @@ $(COVERAGE_DIR)/profraw:
 $(SCCACHE_BIN): $(PROJECT_ROOT)/Cargo.toml $(PROJECT_ROOT)/Cargo.lock
 	$(call group,Building $*)
 ifdef WITH_COVERAGE
-	@echo "Building sccache with coverage instrumentation in Docker..."
+	@echo "Building sccion with coverage instrumentation in Docker..."
 else
-	@echo "Building sccache in Docker..."
+	@echo "Building sccion in Docker..."
 endif
 	@docker run --rm \
-		-v $(PROJECT_ROOT):/sccache \
+		-v $(PROJECT_ROOT):/sccion \
 		-v $(PROJECT_ROOT)/target/integration-cargo-cache:/usr/local/cargo/registry \
-		-w /sccache \
+		-w /sccion \
 		-e OPENSSL_NO_VENDOR=1 \
 		$(if $(WITH_COVERAGE),-e RUSTFLAGS="-Cinstrument-coverage -Ccodegen-units=1 -Copt-level=0 -Coverflow-checks=off" -e CARGO_INCREMENTAL=0 -e "LLVM_PROFILE_FILE=/tmp/build-%p-%m.profraw") \
 		rust:latest \
@@ -188,11 +188,11 @@ coverage-report:
 	$(call group,Generating coverage report)
 	@echo "Generating coverage report..."
 	@docker run --rm \
-		-v $(PROJECT_ROOT):/sccache \
+		-v $(PROJECT_ROOT):/sccion \
 		-v $(PROJECT_ROOT)/target/integration-cargo-cache:/usr/local/cargo/registry \
-		-v sccache-coverage-tools:/usr/local/cargo/bin \
-		-v sccache-rustup:/usr/local/rustup \
-		-w /sccache \
+		-v sccion-coverage-tools:/usr/local/cargo/bin \
+		-v sccion-rustup:/usr/local/rustup \
+		-w /sccion \
 		rust:latest \
 		bash -c "rustup component add llvm-tools 2>/dev/null || true && \
 		         (which grcov >/dev/null 2>&1 || cargo install grcov --locked) && \

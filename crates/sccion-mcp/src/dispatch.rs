@@ -33,7 +33,7 @@ const TTL_ENVIRONMENT: u64 = 300_000;
 const TOOLS: &[(&str, &str)] = &[
     (
         "check_environment",
-        "Report the environment sccache is running in: cache location and size,          filesystem, preprocessor cache settings, and any findings that would          invalidate a measurement. Pass a workspace handle to get the settings a          build in that checkout would actually run under, and which layer          supplied each -- machine, project file, or environment. Reports only;          changes nothing.",
+        "Report the environment sccion is running in: cache location and size,          filesystem, preprocessor cache settings, and any findings that would          invalidate a measurement. Pass a workspace handle to get the settings a          build in that checkout would actually run under, and which layer          supplied each -- machine, project file, or environment. Reports only;          changes nothing.",
     ),
     (
         "compare_keys",
@@ -61,7 +61,7 @@ const TOOLS: &[(&str, &str)] = &[
     ),
     (
         "uncacheable_summary",
-        "Every compilation in this workspace that can never be cached, grouped          by reason with counts and examples. These are the ones where retrying          is pointless and the fix is in the build or in sccache.",
+        "Every compilation in this workspace that can never be cached, grouped          by reason with counts and examples. These are the ones where retrying          is pointless and the fix is in the build or in sccion.",
     ),
 ];
 
@@ -102,7 +102,7 @@ pub fn handle(request: &Value, backend: &dyn Backend) -> Option<Value> {
         // implemented. Answering them would be inventing a protocol.
         //
         // - `initialize` / `notifications/initialized`: the handshake is gone.
-        // - `ping`, `logging/setLevel`: removed. sccache logs to stderr, and
+        // - `ping`, `logging/setLevel`: removed. sccion logs to stderr, and
         //   `SCCACHE_LOG` / `SCCACHE_MISS_LOG` are the logging surface.
         // - `resources/subscribe`, `subscriptions/listen`: a long-lived stream
         //   would reintroduce the per-connection state this revision removed.
@@ -221,9 +221,9 @@ fn input_schema(name: &str) -> Value {
 fn resources_list() -> Value {
     envelope::result(
         json!({"resources": [{
-            "uri": "sccache://environment",
+            "uri": "sccion://environment",
             "name": "environment",
-            "title": "sccache environment report",
+            "title": "sccion environment report",
             "mimeType": "application/json",
         }]}),
         Some((TTL_ENVIRONMENT, CacheScope::Shared)),
@@ -233,9 +233,9 @@ fn resources_list() -> Value {
 fn resource_templates_list() -> Value {
     envelope::result(
         json!({"resourceTemplates": [{
-            "uriTemplate": "sccache://stats/{handle}",
+            "uriTemplate": "sccion://stats/{handle}",
             "name": "stats",
-            "title": "sccache statistics for one workspace",
+            "title": "sccion statistics for one workspace",
             "mimeType": "application/json",
         }]}),
         Some((TTL_ENVIRONMENT, CacheScope::Shared)),
@@ -248,14 +248,14 @@ fn resources_read(params: &Value, backend: &dyn Backend) -> Result<Value, (i64, 
         .and_then(Value::as_str)
         .ok_or((ERR_INVALID_PARAMS, "resources/read needs a uri".to_string()))?;
 
-    let (body, scope, ttl) = if uri == "sccache://environment" {
+    let (body, scope, ttl) = if uri == "sccion://environment" {
         let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
         (
             serde_json::to_value(backend.environment(&cwd)).unwrap_or_default(),
             CacheScope::Shared,
             TTL_ENVIRONMENT,
         )
-    } else if let Some(handle) = uri.strip_prefix("sccache://stats/") {
+    } else if let Some(handle) = uri.strip_prefix("sccion://stats/") {
         let stats = stats_for(handle, backend)?;
         // Keyed by a handle, so it describes one caller's build and must never
         // be reused for another.
@@ -324,7 +324,7 @@ fn tools_call(params: &Value, backend: &dyn Backend) -> Result<Value, (i64, Stri
             // that hit it only noticed because the counts came back suspiciously
             // round.
             let requested = args.get("limit").and_then(Value::as_u64).unwrap_or(50);
-            let limit = requested.min(sccache::api::MAX_MISS_RECORDS as u64) as usize;
+            let limit = requested.min(sccion::api::MAX_MISS_RECORDS as u64) as usize;
             let needle = args.get("output").and_then(Value::as_str);
             let records = backend
                 .miss_records(Some(&handle), limit)
@@ -333,7 +333,7 @@ fn tools_call(params: &Value, backend: &dyn Backend) -> Result<Value, (i64, Stri
             // a needle that matches few records would otherwise make a truncated
             // fetch look like a complete answer, which is the failure this field
             // exists to prevent.
-            let truncated = records.len() == limit && limit < sccache::api::MAX_MISS_RECORDS;
+            let truncated = records.len() == limit && limit < sccion::api::MAX_MISS_RECORDS;
             let records: Vec<_> = records
                 .into_iter()
                 .filter(|r| match needle {
@@ -380,7 +380,7 @@ fn tools_call(params: &Value, backend: &dyn Backend) -> Result<Value, (i64, Stri
             // work the caller should not have to do.
             let mut by_reason: std::collections::BTreeMap<String, Vec<String>> = Default::default();
             for r in &records {
-                if let sccache::api::Classification::Uncacheable(why) = &r.classification {
+                if let sccion::api::Classification::Uncacheable(why) = &r.classification {
                     by_reason
                         .entry(why.clone())
                         .or_default()
@@ -402,7 +402,7 @@ fn tools_call(params: &Value, backend: &dyn Backend) -> Result<Value, (i64, Stri
                     "reasons": reasons,
                     "note": "These will not start hitting as the cache warms. Each is a \
                              property of the compilation as invoked -- the fix is in the \
-                             build, or in sccache.",
+                             build, or in sccion.",
                 }),
                 CacheScope::Private,
                 TTL_STATS,
@@ -515,9 +515,9 @@ fn arg_str(args: &Value, name: &str) -> Result<String, (i64, String)> {
 /// path, or only a file name, should still find it rather than be told it does
 /// not exist.
 fn latest_for_input<'a>(
-    records: &'a [sccache::api::MissRecord],
+    records: &'a [sccion::api::MissRecord],
     input: &str,
-) -> Option<&'a sccache::api::MissRecord> {
+) -> Option<&'a sccion::api::MissRecord> {
     let needle = input.replace('\\', "/").to_lowercase();
     records.iter().rev().find(|r| {
         r.input
@@ -538,13 +538,13 @@ fn not_traced(input: &str) -> (i64, String) {
 }
 
 /// The one failure worth spelling out, because the fix is a build away.
-fn needs_tracing(record: &sccache::api::MissRecord) -> String {
+fn needs_tracing(record: &sccion::api::MissRecord) -> String {
     let input = record.input.as_deref().unwrap_or(&record.output);
     // Two quite different reasons, and telling a caller to set a variable it
     // has already set is worse than saying nothing. A key that came out of a
     // preprocessor cache entry was never computed from parts at all, so there
     // is nothing to break down however much tracing is on.
-    if record.direct == sccache::api::DirectState::Hit {
+    if record.direct == sccion::api::DirectState::Hit {
         format!(
             "{input:?} was served from a preprocessor cache entry, so its key came \
              from that entry rather than being computed from parts -- there is \
@@ -578,14 +578,14 @@ fn stats_for(handle: &str, backend: &dyn Backend) -> Result<Value, (i64, String)
 
 /// A daemon that refused says so; one that was never reached does not.
 ///
-/// Reporting "no sccache daemon answered" for a daemon that answered perfectly
+/// Reporting "no sccion daemon answered" for a daemon that answered perfectly
 /// clearly sends the caller looking for a process that is running fine.
 fn unavailable(e: anyhow::Error) -> (i64, String) {
-    match e.downcast_ref::<sccache::api::Refused>() {
+    match e.downcast_ref::<sccion::api::Refused>() {
         Some(refused) => (ERR_INVALID_PARAMS, refused.to_string()),
         None => (
             ERR_DAEMON_UNAVAILABLE,
-            format!("no sccache daemon answered: {e}"),
+            format!("no sccion daemon answered: {e}"),
         ),
     }
 }
@@ -601,7 +601,7 @@ fn handle_error(e: anyhow::Error) -> (i64, String) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sccache::api::{Classification, DirectState, MissRecord, ServerInfo, WorkspaceInfo};
+    use sccion::api::{Classification, DirectState, MissRecord, ServerInfo, WorkspaceInfo};
 
     /// A daemon that is not there, so the dispatcher can be checked on its own.
     struct Fake;
@@ -654,7 +654,7 @@ mod tests {
                 workspace: Some("D:/wt".into()),
                 agent: Some("agent-7".into()),
                 command_digest: Some("abc".into()),
-                components: Some(sccache::api::KeyComponents {
+                components: Some(sccion::api::KeyComponents {
                     compiler: "c0".into(),
                     arguments: "a0".into(),
                     extra_files: "x0".into(),
@@ -664,7 +664,7 @@ mod tests {
                 }),
             }])
         }
-        fn environment(&self, _cwd: &Path) -> sccache::api::EnvReport {
+        fn environment(&self, _cwd: &Path) -> sccion::api::EnvReport {
             unimplemented!("not reached by these tests")
         }
     }
@@ -781,7 +781,7 @@ mod tests {
 
         let r = call(
             "resources/read",
-            json!({"uri": "sccache://stats/abc", "_meta": meta(PROTOCOL_VERSION)}),
+            json!({"uri": "sccion://stats/abc", "_meta": meta(PROTOCOL_VERSION)}),
         );
         assert_eq!(r["result"]["cacheScope"], "private");
 
@@ -813,7 +813,7 @@ mod tests {
             fn miss_records(&self, _: Option<&str>, _: usize) -> anyhow::Result<Vec<MissRecord>> {
                 unimplemented!()
             }
-            fn environment(&self, cwd: &Path) -> sccache::api::EnvReport {
+            fn environment(&self, cwd: &Path) -> sccion::api::EnvReport {
                 *self.0.lock().unwrap() = Some(cwd.to_path_buf());
                 empty_report()
             }
@@ -870,17 +870,17 @@ mod tests {
 
     /// Enough of a report to be serialised; the contents are `checkenv`'s
     /// business and are tested there.
-    fn empty_report() -> sccache::api::EnvReport {
-        let volume = sccache::api::VolumeReport {
+    fn empty_report() -> sccion::api::EnvReport {
+        let volume = sccion::api::VolumeReport {
             path: "D:/wt".into(),
             root: Some("D:\\".into()),
             filesystem: "ReFS".into(),
             dev_drive: "trusted".into(),
             supports_block_cloning: true,
         };
-        sccache::api::EnvReport {
-            sccache_version: "test".into(),
-            sccache_path: None,
+        sccion::api::EnvReport {
+            sccion_version: "test".into(),
+            sccion_path: None,
             cache: volume.clone(),
             working_directory: volume,
             same_volume: true,
@@ -888,10 +888,10 @@ mod tests {
             max_cache_size: 0,
             compression: "none".into(),
             project_config: None,
-            preprocessor_cache_mode: sccache::api::Setting {
+            preprocessor_cache_mode: sccion::api::Setting {
                 name: "use_preprocessor_cache_mode".into(),
                 value: true,
-                origin: sccache::api::Origin::Machine,
+                origin: sccion::api::Origin::Machine,
                 machine_value: None,
                 note: None,
             },
@@ -1009,7 +1009,7 @@ mod tests {
                 r[0].components = None;
                 Ok(r)
             }
-            fn environment(&self, _: &Path) -> sccache::api::EnvReport {
+            fn environment(&self, _: &Path) -> sccion::api::EnvReport {
                 unimplemented!()
             }
         }

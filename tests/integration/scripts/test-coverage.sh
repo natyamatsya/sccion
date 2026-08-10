@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 
-SCCACHE="${SCCACHE_PATH:-/sccache/target/debug/sccache}"
+SCCACHE="${SCCACHE_PATH:-/sccion/target/debug/sccion}"
 export RUSTFLAGS="-Cinstrument-coverage"
 export LLVM_PROFILE_FILE="${LLVM_PROFILE_FILE:-coverage-%p-%m.profraw}"
 export CARGO_INCREMENTAL=0
@@ -11,11 +11,11 @@ echo "Testing: Rust Coverage Instrumentation"
 echo "=========================================="
 
 echo "Copying test crate to writable location..."
-cp -r /sccache/tests/test-crate /build/
+cp -r /sccion/tests/test-crate /build/
 
 cd /build/test-crate
 
-# Start sccache server
+# Start sccion server
 "$SCCACHE" --start-server || true
 
 echo "Build 1: Cache miss expected (with coverage instrumentation)"

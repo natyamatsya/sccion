@@ -1,14 +1,14 @@
 x-common-env: &common-env
   RUST_BACKTRACE: full
-  RUSTC_WRAPPER: ${SCCACHE_PATH:-/sccache/target/debug/sccache}
+  RUSTC_WRAPPER: ${SCCACHE_PATH:-/sccion/target/debug/sccion}
   RUST_LOG: debug
-  SCCACHE_PATH: ${SCCACHE_PATH:-/sccache/target/debug/sccache}
+  SCCACHE_PATH: ${SCCACHE_PATH:-/sccion/target/debug/sccion}
   LLVM_PROFILE_FILE: ${LLVM_PROFILE_FILE:-}
 
 x-test-runner: &test-runner
   user: "${UID:-1000}:${GID:-1000}"
   volumes:
-    - ../../:/sccache:ro
+    - ../../:/sccion:ro
     - ../../target/integration-cargo-cache:/usr/local/cargo/registry:rw
     - ../../target/integration-coverage:/coverage:rw
   tmpfs:
@@ -119,7 +119,7 @@ services:
   test-redis-deprecated:
     <<: *test-runner
     image: rust:latest
-    entrypoint: /sccache/tests/integration/scripts/test-backend.sh
+    entrypoint: /sccion/tests/integration/scripts/test-backend.sh
     depends_on:
       redis:
         condition: service_healthy
@@ -135,7 +135,7 @@ services:
   test-redis:
     <<: *test-runner
     image: rust:latest
-    entrypoint: /sccache/tests/integration/scripts/test-backend.sh
+    entrypoint: /sccion/tests/integration/scripts/test-backend.sh
     depends_on:
       redis:
         condition: service_healthy
@@ -151,7 +151,7 @@ services:
   test-memcached-deprecated:
     <<: *test-runner
     image: rust:latest
-    entrypoint: /sccache/tests/integration/scripts/test-backend.sh
+    entrypoint: /sccion/tests/integration/scripts/test-backend.sh
     depends_on:
       memcached:
         condition: service_healthy
@@ -167,7 +167,7 @@ services:
   test-memcached:
     <<: *test-runner
     image: rust:latest
-    entrypoint: /sccache/tests/integration/scripts/test-backend.sh
+    entrypoint: /sccion/tests/integration/scripts/test-backend.sh
     depends_on:
       memcached:
         condition: service_healthy
@@ -183,7 +183,7 @@ services:
   test-s3:
     <<: *test-runner
     image: rust:latest
-    entrypoint: /sccache/tests/integration/scripts/test-backend.sh
+    entrypoint: /sccion/tests/integration/scripts/test-backend.sh
     depends_on:
       minio:
         condition: service_healthy
@@ -206,7 +206,7 @@ services:
   test-azblob:
     <<: *test-runner
     image: rust:latest
-    entrypoint: /sccache/tests/integration/scripts/test-backend.sh
+    entrypoint: /sccion/tests/integration/scripts/test-backend.sh
     depends_on:
       azurite:
         condition: service_healthy
@@ -225,7 +225,7 @@ services:
   test-webdav:
     <<: *test-runner
     image: rust:latest
-    entrypoint: /sccache/tests/integration/scripts/test-backend.sh
+    entrypoint: /sccion/tests/integration/scripts/test-backend.sh
     depends_on:
       - webdav
     environment:
@@ -242,7 +242,7 @@ services:
   test-gcc:
     <<: *test-runner
     image: gcc:latest
-    entrypoint: /sccache/tests/integration/scripts/test-gcc.sh
+    entrypoint: /sccion/tests/integration/scripts/test-gcc.sh
     environment:
       <<: *common-env
       SCCACHE_DIR: /tmp/sccache
@@ -253,7 +253,7 @@ services:
   test-clang:
     <<: *test-runner
     image: silkeh/clang:21-trixie
-    entrypoint: /sccache/tests/integration/scripts/test-clang.sh
+    entrypoint: /sccion/tests/integration/scripts/test-clang.sh
     environment:
       <<: *common-env
       SCCACHE_DIR: /tmp/sccache
@@ -264,7 +264,7 @@ services:
   test-cmake:
     <<: *test-runner
     image: silkeh/clang:21-trixie
-    entrypoint: /sccache/tests/integration/scripts/test-cmake.sh
+    entrypoint: /sccion/tests/integration/scripts/test-cmake.sh
     environment:
       <<: *common-env
       SCCACHE_DIR: /build/sccache
@@ -277,7 +277,7 @@ services:
     build:
       context: .
       dockerfile: cmake-modules.Dockerfile
-    entrypoint: /sccache/tests/integration/scripts/test-cmake-modules.sh
+    entrypoint: /sccion/tests/integration/scripts/test-cmake-modules.sh
     environment:
       <<: *common-env
       SCCACHE_DIR: /build/sccache
@@ -290,7 +290,7 @@ services:
     build:
       context: .
       dockerfile: cmake-modules-v4.Dockerfile
-    entrypoint: /sccache/tests/integration/scripts/test-cmake-modules-v4.sh
+    entrypoint: /sccion/tests/integration/scripts/test-cmake-modules-v4.sh
     environment:
       <<: *common-env
       SCCACHE_DIR: /build/sccache
@@ -301,7 +301,7 @@ services:
   test-autotools:
     <<: *test-runner
     image: gcc:latest
-    entrypoint: /sccache/tests/integration/scripts/test-autotools.sh
+    entrypoint: /sccion/tests/integration/scripts/test-autotools.sh
     environment:
       <<: *common-env
       SCCACHE_DIR: /build/sccache
@@ -312,7 +312,7 @@ services:
   test-coverage:
     <<: *test-runner
     image: rust:latest
-    entrypoint: /sccache/tests/integration/scripts/test-coverage.sh
+    entrypoint: /sccion/tests/integration/scripts/test-coverage.sh
     environment:
       <<: *common-env
       SCCACHE_DIR: /build/sccache
@@ -323,7 +323,7 @@ services:
   test-zstd:
     <<: *test-runner
     image: rust:latest
-    entrypoint: /sccache/tests/integration/scripts/test-zstd.sh
+    entrypoint: /sccion/tests/integration/scripts/test-zstd.sh
     environment:
       <<: *common-env
       CARGO_INCREMENTAL: "0"
@@ -334,7 +334,7 @@ services:
   test-basedirs:
     <<: *test-runner
     image: gcc:latest
-    entrypoint: /sccache/tests/integration/scripts/test-basedirs.sh
+    entrypoint: /sccion/tests/integration/scripts/test-basedirs.sh
     depends_on:
       redis:
         condition: service_healthy
@@ -357,7 +357,7 @@ services:
   test-multilevel:
     <<: *test-runner
     image: rust:latest
-    entrypoint: /sccache/tests/integration/scripts/test-multilevel.sh
+    entrypoint: /sccion/tests/integration/scripts/test-multilevel.sh
     depends_on:
       redis:
         condition: service_healthy
@@ -380,7 +380,7 @@ services:
   test-multilevel-chain:
     <<: *test-runner
     image: rust:latest
-    entrypoint: /sccache/tests/integration/scripts/test-multilevel-chain.sh
+    entrypoint: /sccion/tests/integration/scripts/test-multilevel-chain.sh
     depends_on:
       redis:
         condition: service_healthy
@@ -400,4 +400,4 @@ volumes:
 
 networks:
   default:
-    name: sccache-integration-tests
+    name: sccion-integration-tests

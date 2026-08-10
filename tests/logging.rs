@@ -25,7 +25,7 @@ use tempfile::TempDir;
 
 // Get the path to the sccache binary
 fn sccache_bin() -> PathBuf {
-    PathBuf::from(env!("CARGO_BIN_EXE_sccache"))
+    PathBuf::from(env!("CARGO_BIN_EXE_sccion"))
 }
 
 #[test]

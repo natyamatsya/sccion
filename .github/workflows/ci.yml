@@ -250,7 +250,7 @@ jobs:
 
 
   build:
-    name: build ${{ matrix.binary || 'sccache' }} ${{ matrix.target }}
+    name: build ${{ matrix.binary || 'sccion' }} ${{ matrix.target }}
     runs-on: ${{ matrix.os }}
     container: ${{ fromJson(matrix.container || '{"image":null}') }}
     timeout-minutes: 30
@@ -276,7 +276,7 @@ jobs:
             container: '{"image": "messense/rust-musl-cross:loongarch64-musl"}'
             rustflags: -Ctarget-feature=+crt-static
           - os: ubuntu-22.04
-            binary: sccache-dist
+            binary: sccion-dist
             extra_args: --no-default-features --features="dist-server"
             target: x86_64-unknown-linux-musl
             container: '{"image": "messense/rust-musl-cross:x86_64-musl"}'
@@ -284,7 +284,7 @@ jobs:
             target: aarch64-unknown-linux-musl
             container: '{"image": "messense/rust-musl-cross:aarch64-musl"}'
           - os: ubuntu-22.04
-            binary: sccache-dist
+            binary: sccion-dist
             extra_args: --no-default-features --features="dist-server"
             target: aarch64-unknown-linux-musl
             container: '{"image": "messense/rust-musl-cross:aarch64-musl"}'
@@ -349,7 +349,7 @@ jobs:
 
       - name: Build (s390x-musl with build-std)
         if: ${{ matrix.target == 's390x-unknown-linux-musl' }}
-        run: cargo +nightly build --locked --release --bin ${{ matrix.binary || 'sccache' }} --target ${{ matrix.target }} --features=openssl/vendored ${{ matrix.extra_args }} -Zbuild-std
+        run: cargo +nightly build --locked --release --bin ${{ matrix.binary || 'sccion' }} --target ${{ matrix.target }} --features=openssl/vendored ${{ matrix.extra_args }} -Zbuild-std
         env:
           MACOSX_DEPLOYMENT_TARGET: ${{ matrix.macosx_deployment_target }}
           DEVELOPER_DIR: ${{ matrix.developer_dir }}
@@ -359,7 +359,7 @@ jobs:
 
       - name: Build
         if: ${{ matrix.target != 's390x-unknown-linux-musl' }}
-        run: cargo build --locked --release --bin ${{ matrix.binary || 'sccache' }} --target ${{ matrix.target }} --features=openssl/vendored ${{ matrix.extra_args }}
+        run: cargo build --locked --release --bin ${{ matrix.binary || 'sccion' }} --target ${{ matrix.target }} --features=openssl/vendored ${{ matrix.extra_args }}
         env:
           MACOSX_DEPLOYMENT_TARGET: ${{ matrix.macosx_deployment_target }}
           DEVELOPER_DIR: ${{ matrix.developer_dir }}
@@ -378,8 +378,8 @@ jobs:
       - name: Upload artifacts
         uses: actions/upload-artifact@v7
         with:
-          name: ${{ matrix.binary || 'sccache' }}-${{ steps.id.outputs.id }}-${{ matrix.target }}
-          path: target/${{ matrix.target }}/release/${{ matrix.binary || 'sccache' }}${{ endsWith(matrix.target, '-msvc') && '.exe' || '' }}
+          name: ${{ matrix.binary || 'sccion' }}-${{ steps.id.outputs.id }}-${{ matrix.target }}
+          path: target/${{ matrix.target }}/release/${{ matrix.binary || 'sccion' }}${{ endsWith(matrix.target, '-msvc') && '.exe' || '' }}
           if-no-files-found: error
 
 
@@ -469,12 +469,12 @@ jobs:
 
       - name: Create release assets
         run: |
-          for d in sccache-*; do
-            chmod +x "$d/sccache"*
+          for d in sccion-*; do
+            chmod +x "$d/sccion"*
             cp README.md LICENSE "$d/"
             tar -zcvf "$d.tar.gz" "$d"
             echo -n "$(shasum -ba 256 "$d.tar.gz" | cut -d " " -f 1)" > "$d.tar.gz.sha256"
-            if [[ $d =~ sccache-.*-pc-windows-.* ]]; then
+            if [[ $d =~ sccion-.*-pc-windows-.* ]]; then
               zip -r "$d.zip" "$d"
               echo -n "$(shasum -ba 256 "$d.zip" | cut -d " " -f 1)" > "$d.zip.sha256"
             fi
@@ -484,7 +484,7 @@ jobs:
         run: |
           sudo apt-get update && sudo apt-get install -y hub
           tag_name=${GITHUB_REF#refs/tags/}
-          for f in sccache-*.tar.gz* sccache-*.zip*; do
+          for f in sccion-*.tar.gz* sccion-*.zip*; do
               if [[ -f "$f" ]]; then
                 files="$files -a $f";
               fi

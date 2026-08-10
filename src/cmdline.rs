@@ -64,7 +64,7 @@ pub enum Command {
     StopServer,
     /// Zero cache statistics and exit.
     ZeroStats,
-    /// Report the environment sccache will run in, and exit.
+    /// Report the environment sccion will run in, and exit.
     CheckEnv(StatsFormat),
     /// Show the status of the distributed client.
     DistStatus,
@@ -149,7 +149,7 @@ fn get_clap_command() -> clap::Command {
                 .help("zero statistics counters")
                 .action(ArgAction::SetTrue),
             flag_infer_long("check-env")
-                .help("report the environment sccache will run in and exit")
+                .help("report the environment sccion will run in and exit")
                 .action(ArgAction::SetTrue),
             flag_infer_long("dist-auth")
                 .help("authenticate for distributed compilation")
@@ -195,8 +195,7 @@ fn get_clap_command() -> clap::Command {
 pub fn try_parse() -> Result<Command> {
     trace!("parse");
 
-    let cwd =
-        env::current_dir().context("sccache: Couldn't determine current working directory")?;
+    let cwd = env::current_dir().context("sccion: Couldn't determine current working directory")?;
 
     // We only care if it's `1`
     let internal_start_server = env::var(ENV_VAR_INTERNAL_START_SERVER).as_deref() == Ok("1");
@@ -214,9 +213,16 @@ pub fn try_parse() -> Result<Command> {
                 .map(|s| s.to_lowercase())
             {
                 // If the executable has its standard name, do nothing.
-                Some(ref e) if e == env!("CARGO_PKG_NAME") => {}
+                //
+                // `sccache` counts as standard too. A compatibility symlink is
+                // the obvious way to keep an existing
+                // `CMAKE_CXX_COMPILER_LAUNCHER=sccache` working across the
+                // rename, and without this the name would be taken for a
+                // compiler to wrap -- sending us to look for another `sccache`
+                // on the PATH, and failing in a way that names no cause.
+                Some(ref e) if e == env!("CARGO_PKG_NAME") || e == "sccache" => {}
                 // Otherwise, if it was copied/linked under a different $name, act
-                // as if it were invoked with `sccache $name`, but avoid $name resolving
+                // as if it were invoked with `sccion $name`, but avoid $name resolving
                 // to ourselves again if it's in the PATH.
                 _ => {
                     if let (Some(path), Some(exe_filename)) = (env::var_os("PATH"), exe.file_name())

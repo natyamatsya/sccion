@@ -93,7 +93,7 @@ async fn read_server_startup_status<R: AsyncReadExt + Unpin>(
 #[cfg(not(windows))]
 fn run_server_process(startup_timeout: Option<Duration>) -> Result<ServerStartup> {
     trace!("run_server_process");
-    let tempdir = tempfile::Builder::new().prefix("sccache").tempdir()?;
+    let tempdir = tempfile::Builder::new().prefix("sccion").tempdir()?;
     let socket_path = tempdir.path().join("sock");
     let runtime = new_client_runtime()?;
     let exe_path = env::current_exe()?;
@@ -328,7 +328,7 @@ pub(crate) fn connect_or_start_server(
                 ServerStartup::Ok { addr: actual_addr } => {
                     if addr.to_string() != actual_addr {
                         // bail as the next connect_with_retry will fail
-                        bail!("sccache: Listening on address {actual_addr} instead of {addr}");
+                        bail!("sccion: Listening on address {actual_addr} instead of {addr}");
                     }
                 }
                 ServerStartup::AddrInUse => {
@@ -468,10 +468,10 @@ fn handle_compile_finished(
         trace!("compiler exited with status {}", ret);
         Ok(ret)
     } else if let Some(signal) = response.signal {
-        println!("sccache: Compiler killed by signal {}", signal);
+        println!("sccion: Compiler killed by signal {}", signal);
         Ok(-2)
     } else {
-        println!("sccache: Missing compiler exit status!");
+        println!("sccion: Missing compiler exit status!");
         Ok(-3)
     }
 }
@@ -598,7 +598,7 @@ where
 
     Ok(status.code().unwrap_or_else(|| {
         if let Some(sig) = status_signal(status) {
-            println!("sccache: Compile terminated by signal {}", sig);
+            println!("sccion: Compile terminated by signal {}", sig);
         }
         // Arbitrary.
         2
@@ -755,12 +755,12 @@ pub fn run_command(cmd: Command) -> Result<i32> {
         }
         Command::StartServer => {
             trace!("Command::StartServer");
-            println!("sccache: Starting the server...");
+            println!("sccion: Starting the server...");
             let startup =
                 run_server_process(startup_timeout).context("failed to start server process")?;
             match startup {
                 ServerStartup::Ok { addr } => {
-                    println!("sccache: Listening on address {addr}");
+                    println!("sccion: Listening on address {addr}");
                 }
                 ServerStartup::TimedOut => bail!("Timed out waiting for server startup"),
                 ServerStartup::AddrInUse => bail!("Server startup failed: Address in use"),
@@ -769,7 +769,7 @@ pub fn run_command(cmd: Command) -> Result<i32> {
         }
         Command::StopServer => {
             trace!("Command::StopServer");
-            println!("Stopping sccache server...");
+            println!("Stopping sccion server...");
             let stats = daemon.shutdown().context("couldn't connect to server")?;
             stats.print(false);
         }
@@ -899,7 +899,7 @@ pub fn run_command(cmd: Command) -> Result<i32> {
                 .for_each(|incr_str| match env::var(incr_str) {
                     Ok(incr_val) if incr_val == "1" => {
                         println!(
-                            "sccache: incremental compilation is prohibited: Unset {} to continue.",
+                            "sccion: incremental compilation is prohibited: Unset {} to continue.",
                             incr_str
                         );
                         std::process::exit(1);

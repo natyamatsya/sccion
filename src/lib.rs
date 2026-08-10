@@ -63,14 +63,14 @@ pub mod verify;
 
 use std::env;
 
-/// VERSION is the pkg version of sccache.
+/// VERSION is the pkg version of sccion.
 ///
 /// This version is safe to be used in cache services to indicate the version
-/// that sccache ie.
+/// that sccion ie.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// Used to denote the environment variable that controls
-/// logging for sccache, and sccache-dist.
+/// logging for sccion, and sccion-dist.
 pub const LOGGING_ENV: &str = "SCCACHE_LOG";
 
 pub fn main() {
@@ -82,9 +82,9 @@ pub fn main() {
             // If the error is from clap then let them handle formatting and exiting
             Ok(clap_err) => clap_err.exit(),
             Err(some_other_err) => {
-                println!("sccache: {some_other_err}");
+                println!("sccion: {some_other_err}");
                 for source in some_other_err.chain().skip(1) {
-                    println!("sccache: caused by: {source}");
+                    println!("sccion: caused by: {source}");
                 }
                 std::process::exit(1);
             }
@@ -94,9 +94,9 @@ pub fn main() {
     std::process::exit(match commands::run_command(command) {
         Ok(s) => s,
         Err(e) => {
-            eprintln!("sccache: error: {}", e);
+            eprintln!("sccion: error: {}", e);
             for e in e.chain().skip(1) {
-                eprintln!("sccache: caused by: {}", e);
+                eprintln!("sccion: caused by: {}", e);
             }
             2
         }

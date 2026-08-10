@@ -11,7 +11,7 @@ on: [ push, pull_request ]
 env:
   RUST_BACKTRACE: full
   RUST_LOG: debug
-  SCCACHE_PATH: /home/runner/.cargo/bin/sccache
+  SCCACHE_PATH: /home/runner/.cargo/bin/sccion
   ACTIONS_CACHE_SERVICE_V2: on
 
 jobs:
@@ -33,7 +33,7 @@ jobs:
       - uses: actions/upload-artifact@v7
         with:
           name: integration-tests
-          path: ./target/debug/sccache
+          path: ./target/debug/sccion
 
   integration-tests:
     runs-on: ubuntu-24.04
@@ -73,7 +73,7 @@ jobs:
 
     env:
       SCCACHE_GHA_ENABLED: "on"
-      RUSTC_WRAPPER: /home/runner/.cargo/bin/sccache
+      RUSTC_WRAPPER: /home/runner/.cargo/bin/sccion
 
     steps:
       - name: Clone repository
@@ -120,7 +120,7 @@ jobs:
     runs-on: windows-2022
     env:
       TARGET: x86_64-pc-windows-msvc
-      SCCACHE_EXE: ${{ github.workspace }}\\target\\x86_64-pc-windows-msvc\\debug\\sccache.exe
+      SCCACHE_EXE: ${{ github.workspace }}\\target\\x86_64-pc-windows-msvc\\debug\\sccion.exe
       SCCACHE_LOG: "debug"
       SCCACHE_ERROR_LOG: "${{ github.workspace }}\\server_log.txt"
 
@@ -137,7 +137,7 @@ jobs:
           target: $TARGET
 
       - name: Build
-        run: cargo build --bin sccache --target $env:TARGET --features=vendored-openssl
+        run: cargo build --bin sccion --target $env:TARGET --features=vendored-openssl
 
       - name: Compile MSVC (no cache)
         shell: bash
@@ -303,7 +303,7 @@ jobs:
   xcode:
     runs-on: macos-latest
     env:
-      SCCACHE_PATH: target/debug/sccache
+      SCCACHE_PATH: target/debug/sccion
     steps:
       - name: Clone repository
         uses: actions/checkout@v5
@@ -313,7 +313,7 @@ jobs:
         with:
           toolchain: "stable"
 
-      - name: Build sccache
+      - name: Build sccion
         run: |
           cargo build
 
@@ -324,7 +324,7 @@ jobs:
         working-directory: tests/integration/xcode
         run: |
           xcodebuild -version
-          xcodebuild -xcconfig sccache.xcconfig
+          xcodebuild -xcconfig sccion.xcconfig
 
       - name: Output
         run: |
@@ -334,7 +334,7 @@ jobs:
         working-directory: tests/integration/xcode
         run: |
           xcodebuild clean
-          xcodebuild -xcconfig sccache.xcconfig
+          xcodebuild -xcconfig sccion.xcconfig
 
       - name: Output
         run: |

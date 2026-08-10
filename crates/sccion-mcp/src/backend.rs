@@ -4,13 +4,13 @@
 //! What the adapter can ask, and who answers it.
 //!
 //! The trait exists so the dispatcher can be tested without a daemon. It is
-//! deliberately a narrow restatement of `sccache::api` rather than a second
+//! deliberately a narrow restatement of `sccion::api` rather than a second
 //! abstraction over it: every method here is one call there.
 
 use std::path::Path;
 
 use anyhow::Result;
-use sccache::api::{EnvReport, MissRecord, ServerInfo, WorkspaceInfo};
+use sccion::api::{EnvReport, MissRecord, ServerInfo, WorkspaceInfo};
 
 pub trait Backend: Send + Sync {
     fn register_workspace(&self, path: &Path) -> Result<WorkspaceInfo>;
@@ -20,15 +20,15 @@ pub trait Backend: Send + Sync {
     fn environment(&self, cwd: &Path) -> EnvReport;
 }
 
-/// The real thing: a local sccache daemon.
+/// The real thing: a local sccion daemon.
 pub struct DaemonBackend {
-    daemon: sccache::api::Daemon,
-    config: sccache::config::Config,
+    daemon: sccion::api::Daemon,
+    config: sccion::config::Config,
 }
 
 impl DaemonBackend {
     pub fn new() -> Result<Self> {
-        let config = sccache::config::Config::load()?;
+        let config = sccion::config::Config::load()?;
         // The daemon refuses too, and it is the authority -- this only turns
         // "every tool call fails" into one clear line at startup, which is what
         // an operator who disabled this on a build server should see.
@@ -39,7 +39,7 @@ impl DaemonBackend {
             );
         }
         Ok(DaemonBackend {
-            daemon: sccache::api::Daemon::from_config(&config),
+            daemon: sccion::api::Daemon::from_config(&config),
             config,
         })
     }
@@ -63,6 +63,6 @@ impl Backend for DaemonBackend {
     }
 
     fn environment(&self, cwd: &Path) -> EnvReport {
-        sccache::api::environment(&self.config, cwd)
+        sccion::api::environment(&self.config, cwd)
     }
 }

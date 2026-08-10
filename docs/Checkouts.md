@@ -22,7 +22,7 @@ Commit a `.sccache.toml` at the top of the repository:
 # Empty is the common case -- the file's own directory is the checkout root.
 ```
 
-That is the whole configuration. sccache finds the file by walking up from each
+That is the whole configuration. sccion finds the file by walking up from each
 compilation the way tools find `.clang-format`, and **the directory holding it
 supplies the root**, so one committed file is correct in every checkout of the
 project, including ones that do not exist yet. See
@@ -73,7 +73,7 @@ does not amortize across checkouts the way object entries do.
 ## Generated sources
 
 A generator that embeds anything checkout-specific in its output defeats sharing
-for whatever compiles that output, and sccache is right to miss: the inputs
+for whatever compiles that output, and sccion is right to miss: the inputs
 really are different bytes.
 
 Qt's `rcc` is the case worth knowing. It writes each resource file's

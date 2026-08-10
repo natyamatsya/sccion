@@ -21,9 +21,9 @@
 //! - LRU cache operations
 
 use divan::{Bencher, black_box};
-use sccache::cache::{CacheRead, CacheWrite};
-use sccache::lru_disk_cache::LruCache;
-use sccache::util::{Digest, TimeMacroFinder, strip_basedirs};
+use sccion::cache::{CacheRead, CacheWrite};
+use sccion::lru_disk_cache::LruCache;
+use sccion::util::{Digest, TimeMacroFinder, strip_basedirs};
 use std::io::Cursor;
 
 // =============================================================================

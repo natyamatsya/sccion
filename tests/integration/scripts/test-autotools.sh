@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 
-SCCACHE="${SCCACHE_PATH:-/sccache/target/debug/sccache}"
+SCCACHE="${SCCACHE_PATH:-/sccion/target/debug/sccion}"
 
 echo "=========================================="
 echo "Testing: Autotools Integration"
@@ -9,9 +9,9 @@ echo "=========================================="
 
 # Copy autotools project to writable location
 echo "Copying Autotools project..."
-cp -r /sccache/tests/integration/autotools /build/
+cp -r /sccion/tests/integration/autotools /build/
 
-# Start sccache server
+# Start sccion server
 "$SCCACHE" --start-server || true
 
 echo "Build 1: Cache miss expected"

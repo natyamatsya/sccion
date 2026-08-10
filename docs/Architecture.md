@@ -1,6 +1,6 @@
-# Sccache high level architecture
+# Sccion high level architecture
 
-This schema shows at a high level how sccache decides whether to compile or to
+This schema shows at a high level how sccion decides whether to compile or to
 reuse a cached result.
 
 
@@ -30,15 +30,15 @@ For more details about how hash generation works, see [the caching documentation
 
 ## Direct mode (preprocessor cache)
 
-For C/C++, sccache can also cache the *preprocessor* result, so that a cache
+For C/C++, sccion can also cache the *preprocessor* result, so that a cache
 lookup can skip preprocessing entirely. This is inspired by
 [ccache's direct mode](https://ccache.dev/manual/3.7.9.html#_the_direct_mode)
 and is described in the [local storage doc](Local.md).
 
-Before computing the object-cache key, sccache looks up a **preprocessor cache
+Before computing the object-cache key, sccion looks up a **preprocessor cache
 entry** keyed on the source file (path + contents) and the preprocessor
 arguments. That entry records every file included by the source. If the entry
-exists and all of those included files are unchanged, sccache reuses it and
+exists and all of those included files are unchanged, sccion reuses it and
 never runs the preprocessor; otherwise it preprocesses normally and stores a
 fresh entry. This step is shown as the blue region in the diagrams below and is
 enabled by default (it is skipped for non-C/C++, when disabled, or when certain
@@ -50,7 +50,7 @@ flags such as `-Wp,*` / `-Xpreprocessor` are present).
 The caching logic above is the same regardless of *where* it runs. What differs
 is which process actually runs the compiler and talks to the storage backend.
 
-sccache is split in two:
+sccion is split in two:
 
 - a short-lived **CLI process**, spawned once per compiler invocation (e.g. by
   `make -jN`), and
@@ -71,10 +71,10 @@ stderr) and the exit code travel back to the CLI.
 ```mermaid
   sequenceDiagram
       participant B as Build (make -jN)
-      participant C as sccache CLI
-      participant D as sccache daemon
+      participant C as sccion CLI
+      participant D as sccion daemon
       participant S as Storage backend
-      B->>C: sccache cc -c foo.c
+      B->>C: sccion cc -c foo.c
       C->>D: Compile request (IPC)
       rect rgba(33, 150, 243, 0.18)
           note over D,S: Direct mode — preprocessor cache (C/C++)
@@ -115,10 +115,10 @@ other backend, so the rest of the compile pipeline is unchanged.
 ```mermaid
   sequenceDiagram
       participant B as Build (make -jN)
-      participant C as sccache CLI (IpcStorage)
-      participant D as sccache daemon
+      participant C as sccion CLI (IpcStorage)
+      participant D as sccion daemon
       participant S as Storage backend
-      B->>C: sccache cc -c foo.c
+      B->>C: sccion cc -c foo.c
       C->>D: StorageHandshake (IPC)
       D-->>C: cache metadata (mode, max_size, basedirs, …)
       rect rgba(33, 150, 243, 0.18)
@@ -169,7 +169,7 @@ removed. It is currently mutually exclusive with:
   multiple concurrent CLI processes would race on the log file, and
 - **distributed compilation** (a configured scheduler URL).
 
-If either is in use, the setting is ignored and sccache stays in server-side
+If either is in use, the setting is ignored and sccion stays in server-side
 mode.
 
 ### Client-side mode and MSVC
@@ -193,5 +193,5 @@ path, and a false negative leaves behaviour unchanged.
 The restriction is expected to be lifted once the daemon can answer compiler
 information over the wire, letting the client reconstitute the descriptor without
 spawning anything. Because the fallback happens once per translation unit, it is
-reported at `debug` level rather than on stderr; `sccache --check-env` surfaces it
+reported at `debug` level rather than on stderr; `sccion --check-env` surfaces it
 as a finding.

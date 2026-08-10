@@ -1,6 +1,6 @@
-# sccache Integration Tests
+# sccion Integration Tests
 
-Docker Compose-based integration tests for sccache backends and compilers.
+Docker Compose-based integration tests for sccion backends and compilers.
 
 ## Prerequisites
 
@@ -27,7 +27,7 @@ make clean
 
 ## Binary Management
 
-Tests will automatically use existing `target/debug/sccache` binary if present.
+Tests will automatically use existing `target/debug/sccion` binary if present.
 If not found, it will build in Docker automatically.
 
 To pre-build manually:
