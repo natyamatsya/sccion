@@ -22,7 +22,7 @@ use std::path::PathBuf;
 use std::str::FromStr;
 use which::which_in;
 
-const ENV_VAR_INTERNAL_START_SERVER: &str = "SCCION_START_SERVER";
+use crate::envvar::START_SERVER as ENV_VAR_INTERNAL_START_SERVER;
 
 #[derive(Debug, Clone, ValueEnum, Default)]
 pub enum StatsFormat {

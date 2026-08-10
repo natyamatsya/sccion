@@ -108,7 +108,7 @@ fn run_server_process(startup_timeout: Option<Duration>) -> Result<ServerStartup
 
     let _child = process::Command::new(&exe_path)
         .current_dir(workdir)
-        .env("SCCION_START_SERVER", "1")
+        .env(crate::envvar::START_SERVER, "1")
         .env("SCCACHE_STARTUP_NOTIFY", &socket_path)
         .env("RUST_BACKTRACE", "1")
         // The daemon is always a storage proxy; it never runs in client-side
@@ -208,7 +208,10 @@ fn run_server_process(startup_timeout: Option<Duration>) -> Result<ServerStartup
     let mut envp = {
         let mut v = vec![];
         let extra_vars = vec![
-            (OsString::from("SCCION_START_SERVER"), OsString::from("1")),
+            (
+                OsString::from(crate::envvar::START_SERVER),
+                OsString::from("1"),
+            ),
             (
                 OsString::from("SCCACHE_STARTUP_NOTIFY"),
                 OsString::from(&pipe_name),

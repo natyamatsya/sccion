@@ -20,11 +20,115 @@
 use std::env;
 use std::ffi::{OsStr, OsString};
 
+/// This program's own name, uppercased. Every setting it reads is this, an
+/// underscore, and the setting.
+///
+/// Written out rather than computed because `concat!` and the const evaluator
+/// cannot uppercase a string, and every name below has to be a literal to be a
+/// `&'static str`. The assertion underneath is what keeps it honest.
+pub const NAME: &str = "SCCION";
+
+/// The name this was forked from, and so the older spelling of every setting.
+pub const LEGACY_NAME: &str = "SCCACHE";
+
 /// The prefix everything is spelled with.
 pub const PREFIX: &str = "SCCION_";
 
 /// The prefix inherited from sccache, still honoured.
 pub const LEGACY_PREFIX: &str = "SCCACHE_";
+
+/// Names that are shared across modules, so that the two places reading one
+/// setting cannot disagree about how it is spelled.
+///
+/// Settings read in exactly one place stay as literals there; a constant whose
+/// only use is its own definition is indirection without a reader.
+pub const DIRECT: &str = "SCCION_DIRECT";
+pub const DEPEND: &str = "SCCION_DEPEND";
+pub const START_SERVER: &str = "SCCION_START_SERVER";
+/// Set to different values to keep otherwise-identical compilations apart.
+pub const CACHE_BUSTER: &str = "SCCION_C_CUSTOM_CACHE_BUSTER";
+/// Its older spelling, needed as a `&'static str` because both are hashed into
+/// cache keys and the set that holds them is static.
+pub const LEGACY_CACHE_BUSTER: &str = "SCCACHE_C_CUSTOM_CACHE_BUSTER";
+
+/// Everything above has to still be true after the next rename.
+///
+/// This link has already been broken once: the rename to sccion changed the
+/// names at 101 call sites while the accessor still read the process
+/// environment directly, so every configured setting silently stopped being
+/// found. Nothing failed -- builds just stopped hitting the cache. A compile
+/// error is the cheapest place to catch that, so these are checked here rather
+/// than in a test that a future rename might not think to run.
+const _: () = {
+    assert!(
+        eq_ignoring_case(NAME, env!("CARGO_PKG_NAME")),
+        "the settings prefix has drifted from the package name"
+    );
+    assert!(is_name_of(PREFIX, NAME));
+    assert!(is_name_of(LEGACY_PREFIX, LEGACY_NAME));
+    assert!(starts_with(DIRECT, PREFIX));
+    assert!(starts_with(DEPEND, PREFIX));
+    assert!(starts_with(START_SERVER, PREFIX));
+    assert!(starts_with(CACHE_BUSTER, PREFIX));
+    assert!(is_legacy_spelling(LEGACY_CACHE_BUSTER, CACHE_BUSTER));
+};
+
+const fn starts_with(haystack: &str, prefix: &str) -> bool {
+    let (h, p) = (haystack.as_bytes(), prefix.as_bytes());
+    if h.len() < p.len() {
+        return false;
+    }
+    let mut i = 0;
+    while i < p.len() {
+        if h[i] != p[i] {
+            return false;
+        }
+        i += 1;
+    }
+    true
+}
+
+/// Whether `prefix` is exactly `name` followed by an underscore.
+const fn is_name_of(prefix: &str, name: &str) -> bool {
+    starts_with(prefix, name)
+        && prefix.len() == name.len() + 1
+        && prefix.as_bytes()[name.len()] == b'_'
+}
+
+/// Whether two spellings name the same setting under the two prefixes.
+const fn is_legacy_spelling(legacy: &str, name: &str) -> bool {
+    if !starts_with(name, PREFIX) || !starts_with(legacy, LEGACY_PREFIX) {
+        return false;
+    }
+    let (l, n) = (legacy.as_bytes(), name.as_bytes());
+    let (lp, np) = (LEGACY_PREFIX.len(), PREFIX.len());
+    if l.len() - lp != n.len() - np {
+        return false;
+    }
+    let mut i = 0;
+    while i < l.len() - lp {
+        if l[lp + i] != n[np + i] {
+            return false;
+        }
+        i += 1;
+    }
+    true
+}
+
+const fn eq_ignoring_case(a: &str, b: &str) -> bool {
+    let (a, b) = (a.as_bytes(), b.as_bytes());
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut i = 0;
+    while i < a.len() {
+        if a[i].to_ascii_uppercase() != b[i].to_ascii_uppercase() {
+            return false;
+        }
+        i += 1;
+    }
+    true
+}
 
 /// The `SCCACHE_` spelling of a `SCCION_` name.
 ///
@@ -88,13 +192,11 @@ pub fn name_in_use(name: &str) -> String {
 /// cannot be applied by reading the value here: the answer has to be the name
 /// that is set, or a filter someone wrote in `SCCACHE_LOG` is silently ignored
 /// and the only symptom is missing log output.
-pub fn logging_var() -> &'static str {
-    const LEGACY: &str = "SCCACHE_LOG";
+pub fn logging_var() -> String {
     if env::var_os(crate::LOGGING_ENV).is_some() {
-        crate::LOGGING_ENV
-    } else {
-        LEGACY
+        return crate::LOGGING_ENV.to_owned();
     }
+    legacy_name(crate::LOGGING_ENV).unwrap_or_else(|| crate::LOGGING_ENV.to_owned())
 }
 
 /// Whether `key` is `name` under either spelling.

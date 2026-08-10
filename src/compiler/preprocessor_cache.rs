@@ -624,8 +624,8 @@ static CACHED_ENV_VARS: LazyLock<HashSet<&'static OsStr>> = LazyLock::new(|| {
         // buster from one spelling to the other busts the cache once. For a
         // variable whose entire purpose is to bust the cache, that is the least
         // surprising behaviour available.
-        "SCCION_C_CUSTOM_CACHE_BUSTER",
-        "SCCACHE_C_CUSTOM_CACHE_BUSTER",
+        crate::envvar::CACHE_BUSTER,
+        crate::envvar::LEGACY_CACHE_BUSTER,
         "CPATH",
         "C_INCLUDE_PATH",
         "CPLUS_INCLUDE_PATH",

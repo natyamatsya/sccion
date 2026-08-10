@@ -824,7 +824,7 @@ where
             let declined = env_vars
                 .iter()
                 .find_map(|(key, val)| {
-                    crate::envvar::matches(key, "SCCION_DIRECT")
+                    crate::envvar::matches(key, crate::envvar::DIRECT)
                         .then(|| val.to_str())
                         .flatten()
                         .map(|val| matches!(val.to_lowercase().as_str(), "false" | "off" | "0"))
@@ -861,7 +861,7 @@ where
         let mut use_dependency_keying = use_preprocessor_cache_mode && !may_dist;
         if use_dependency_keying {
             let from_env = env_vars.iter().find_map(|(key, val)| {
-                crate::envvar::matches(key, "SCCION_DEPEND")
+                crate::envvar::matches(key, crate::envvar::DEPEND)
                     .then(|| val.to_str())
                     .flatten()
                     .map(|val| !matches!(val.to_lowercase().as_str(), "false" | "off" | "0"))
@@ -2000,8 +2000,8 @@ static CACHED_ENV_VARS: LazyLock<HashSet<&'static OsStr>> = LazyLock::new(|| {
         // buster from one spelling to the other busts the cache once. For a
         // variable whose entire purpose is to bust the cache, that is the least
         // surprising behaviour available.
-        "SCCION_C_CUSTOM_CACHE_BUSTER",
-        "SCCACHE_C_CUSTOM_CACHE_BUSTER",
+        crate::envvar::CACHE_BUSTER,
+        crate::envvar::LEGACY_CACHE_BUSTER,
         "MACOSX_DEPLOYMENT_TARGET",
         "IPHONEOS_DEPLOYMENT_TARGET",
         "TVOS_DEPLOYMENT_TARGET",
