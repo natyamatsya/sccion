@@ -312,6 +312,10 @@ pub fn check(config: &Config, cwd: &Path) -> EnvReport {
             ("use_ctime_for_stat".to_string(), p.use_ctime_for_stat),
             ("ignore_time_macros".to_string(), p.ignore_time_macros),
             ("skip_system_headers".to_string(), p.skip_system_headers),
+            // The one with the largest measured effect, and it was the one
+            // setting this report did not mention: on a 561-unit clang build,
+            // 206s cold against 155s.
+            ("use_dependency_keying".to_string(), p.use_dependency_keying),
         ]
     };
 
