@@ -87,6 +87,20 @@ impl CCompilerImpl for Clang {
     fn kind(&self) -> CCompilerKind {
         CCompilerKind::Clang
     }
+
+    // Clang parses through the gcc front-end, so it answers these the same way
+    // -- deliberately shared rather than copied, because a difference between
+    // the two could only ever be a bug.
+    fn dependency_report_format(
+        &self,
+        parsed_args: &ParsedArguments,
+    ) -> Option<crate::compiler::depfile::DepFileFormat> {
+        gcc::dependency_report_format_for(parsed_args)
+    }
+
+    fn dependency_report_args(&self, path: &Path) -> Vec<OsString> {
+        gcc::dependency_report_args_for(path)
+    }
     fn plusplus(&self) -> bool {
         self.clangplusplus
     }

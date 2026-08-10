@@ -99,9 +99,13 @@ impl CCompilerImpl for Msvc {
         .await
     }
 
-    fn dependency_report_format(&self) -> Option<DepFileFormat> {
+    fn dependency_report_format(&self, _parsed_args: &ParsedArguments) -> Option<DepFileFormat> {
         // clang-cl accepts the flag but reports through the existing
         // `-showIncludes` stderr path; only real cl.exe answers here.
+        //
+        // `/sourceDependencies` has no partial form to guard against -- unlike
+        // `-MMD` on the gcc side, there is no way to ask cl for a list that
+        // omits system headers -- so the arguments do not change the answer.
         (!self.is_clang).then_some(DepFileFormat::MsvcJson)
     }
 

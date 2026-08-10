@@ -342,7 +342,16 @@ pub trait CCompilerImpl: Clone + fmt::Debug + Send + Sync + 'static {
     ///
     /// `None` (the default) means the compilation's inputs can only be learned
     /// by preprocessing.
-    fn dependency_report_format(&self) -> Option<crate::compiler::depfile::DepFileFormat> {
+    ///
+    /// It takes the parsed arguments because the answer is not a property of
+    /// the compiler alone: the same compiler will report a *complete* list or a
+    /// deliberately partial one depending on which flag it was given, and a
+    /// partial list is the one shape that produces a wrong hit rather than a
+    /// miss.
+    fn dependency_report_format(
+        &self,
+        _parsed_args: &ParsedArguments,
+    ) -> Option<crate::compiler::depfile::DepFileFormat> {
         None
     }
     /// Arguments that make the compiler write that report to `path`.
@@ -979,7 +988,7 @@ where
             // stays where the compiler put it.
             if let Some(manifest_key) = preprocessor_key.clone()
                 && use_dependency_keying
-                && let Some(format) = self.compiler.dependency_report_format()
+                && let Some(format) = self.compiler.dependency_report_format(&self.parsed_args)
             {
                 return self
                     .compile_keyed_on_dependencies(

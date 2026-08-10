@@ -3014,6 +3014,12 @@ LLVM version: 6.0",
             &pool,
             PreprocessorCacheModeConfig {
                 use_preprocessor_cache_mode: preprocessor_cache_mode,
+                // These cover the preprocess-then-compile path, and the mock
+                // compiler is built for it: on the keying path sccache runs one
+                // command and then reads the report that command was supposed
+                // to write, which a canned response cannot produce. Keying has
+                // its own coverage, per compiler, in `c.rs`.
+                use_dependency_keying: false,
                 ..Default::default()
             },
             CacheMode::ReadWrite,
@@ -3148,6 +3154,12 @@ LLVM version: 6.0",
             &pool,
             PreprocessorCacheModeConfig {
                 use_preprocessor_cache_mode: preprocessor_cache_mode,
+                // These cover the preprocess-then-compile path, and the mock
+                // compiler is built for it: on the keying path sccache runs one
+                // command and then reads the report that command was supposed
+                // to write, which a canned response cannot produce. Keying has
+                // its own coverage, per compiler, in `c.rs`.
+                use_dependency_keying: false,
                 ..Default::default()
             },
             CacheMode::ReadWrite,
@@ -3276,7 +3288,8 @@ LLVM version: 6.0",
         let gcc = f.mk_bin("gcc").unwrap();
         let runtime = Runtime::new().unwrap();
         let pool = runtime.handle().clone();
-        let storage = MockStorage::new(None, preprocessor_cache_mode);
+        // As above: the preprocess path, not the keying one.
+        let storage = MockStorage::new(None, preprocessor_cache_mode).with_dependency_keying(false);
         let storage: Arc<MockStorage> = Arc::new(storage);
         let service = server::SccacheService::mock_with_storage(storage.clone(), pool.clone());
 
@@ -3457,6 +3470,12 @@ LLVM version: 6.0",
             &pool,
             PreprocessorCacheModeConfig {
                 use_preprocessor_cache_mode: preprocessor_cache_mode,
+                // These cover the preprocess-then-compile path, and the mock
+                // compiler is built for it: on the keying path sccache runs one
+                // command and then reads the report that command was supposed
+                // to write, which a canned response cannot produce. Keying has
+                // its own coverage, per compiler, in `c.rs`.
+                use_dependency_keying: false,
                 ..Default::default()
             },
             CacheMode::ReadWrite,
@@ -3587,6 +3606,12 @@ LLVM version: 6.0",
             &pool,
             PreprocessorCacheModeConfig {
                 use_preprocessor_cache_mode: preprocessor_cache_mode,
+                // These cover the preprocess-then-compile path, and the mock
+                // compiler is built for it: on the keying path sccache runs one
+                // command and then reads the report that command was supposed
+                // to write, which a canned response cannot produce. Keying has
+                // its own coverage, per compiler, in `c.rs`.
+                use_dependency_keying: false,
                 ..Default::default()
             },
             CacheMode::ReadWrite,
@@ -3686,6 +3711,12 @@ LLVM version: 6.0",
             &pool,
             PreprocessorCacheModeConfig {
                 use_preprocessor_cache_mode: preprocessor_cache_mode,
+                // These cover the preprocess-then-compile path, and the mock
+                // compiler is built for it: on the keying path sccache runs one
+                // command and then reads the report that command was supposed
+                // to write, which a canned response cannot produce. Keying has
+                // its own coverage, per compiler, in `c.rs`.
+                use_dependency_keying: false,
                 ..Default::default()
             },
             CacheMode::ReadWrite,

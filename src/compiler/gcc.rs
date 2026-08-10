@@ -17,6 +17,7 @@ use crate::compiler::args::*;
 use crate::compiler::c::{
     ArtifactDescriptor, CCompilerImpl, CCompilerKind, ParsedArguments, PreprocessorOutput,
 };
+use crate::compiler::depfile::DepFileFormat;
 use crate::compiler::{
     CCompileCommand, Cacheable, ColorMode, CompileCommand, CompilerArguments, Language,
     SingleCompileCommand, clang,
@@ -43,10 +44,49 @@ pub struct Gcc {
     pub version: Option<String>,
 }
 
+/// Whether this compilation's inputs may be keyed on what the compiler reports.
+///
+/// `-MD` names every header the compilation opened, which is what a key needs.
+/// `-MMD` deliberately leaves out the system headers -- and a dependency list
+/// that is quietly short does not cause a miss, it causes a *hit* on a stale
+/// object, because the files it omits are exactly the ones whose changes would
+/// then go unnoticed.
+///
+/// sccache cannot quietly ask for a complete report alongside a caller's
+/// partial one: `-MF` names a single file and the last one wins, so there is
+/// one report per compilation and the caller has already chosen what is in it.
+/// Refusing hands the compilation back to preprocessing, which is slower and
+/// right. Shared with clang, which parses through this front-end and must not
+/// answer differently.
+pub fn dependency_report_format_for(parsed_args: &ParsedArguments) -> Option<DepFileFormat> {
+    let omits_system_headers = parsed_args
+        .dependency_args
+        .iter()
+        .any(|a| a == OsStr::new("-MMD"));
+    (!omits_system_headers).then_some(DepFileFormat::Make)
+}
+
+/// Make the compiler report what it read, to `path`, while it compiles.
+///
+/// `-MD` rather than `-MMD` for the reason above, and it is a side effect of
+/// the compilation rather than a second pass -- which is the whole point of
+/// keying this way instead of preprocessing first.
+pub fn dependency_report_args_for(path: &Path) -> Vec<OsString> {
+    vec![OsString::from("-MD"), OsString::from("-MF"), path.into()]
+}
+
 #[async_trait]
 impl CCompilerImpl for Gcc {
     fn kind(&self) -> CCompilerKind {
         CCompilerKind::Gcc
+    }
+
+    fn dependency_report_format(&self, parsed_args: &ParsedArguments) -> Option<DepFileFormat> {
+        dependency_report_format_for(parsed_args)
+    }
+
+    fn dependency_report_args(&self, path: &Path) -> Vec<OsString> {
+        dependency_report_args_for(path)
     }
     fn plusplus(&self) -> bool {
         self.gplusplus
@@ -320,6 +360,13 @@ where
     let mut split_dwarf = false;
     let mut need_explicit_dep_target = false;
     let mut dep_path = None;
+    // `-MD` with no `-MF`: where the compiler will write anyway. Kept apart
+    // from `dep_path` so that recording it does not also make it an output.
+    let mut synthesised_depfile = None;
+    // Where the caller's dependency report lands, when preprocessing produces
+    // one at all. Dependency keying writes its report here rather than
+    // inventing a second path.
+    let mut depfile = None;
     enum DepArgumentRequirePath {
         NotNeeded,
         Missing,
@@ -729,11 +776,28 @@ where
             dependency_args.push(dep_target.unwrap_or_else(|| output.clone().into_os_string()));
         }
         if let DepArgumentRequirePath::Missing = need_explicit_dep_argument_path {
+            // `-MD` with no `-MF`: the compiler writes beside the object, and
+            // the build expects to find it there. Record where, so that
+            // dependency keying reuses it instead of pointing a second `-MF`
+            // somewhere else -- the last one wins, and the file the build asked
+            // for would simply never appear.
+            //
+            // `2a2dbb7` is that bug on the MSVC side: sccache appended its own
+            // `/sourceDependencies` after the caller's, cl took the last of the
+            // two, and the build's dependency file was silently never written.
+            // Verified against 14.44 there; `-MF` behaves the same way here.
+            let beside_object = Path::new(&output).with_extension("d");
             dependency_args.push(OsString::from("-MF"));
-            dependency_args.push(Path::new(&output).with_extension("d").into_os_string());
+            dependency_args.push(beside_object.clone().into_os_string());
+            // Deliberately *not* `dep_path`: that also registers the file as a
+            // tracked output, and whether a synthesised dependency file should
+            // be cached and restored is a separate question from where a report
+            // goes. Answering it here would change what every existing entry
+            // contains.
+            synthesised_depfile = Some(beside_object);
         }
 
-        if let Some(path) = dep_path {
+        if let Some(path) = &dep_path {
             outputs.insert(
                 "d",
                 ArtifactDescriptor {
@@ -742,6 +806,9 @@ where
                 },
             );
         }
+        // Only inside this block: without preprocessing there is no dependency
+        // file, whatever `-MF` asked for.
+        depfile = dep_path.clone().or(synthesised_depfile);
     }
 
     if let Some(path) = serialize_diagnostics {
@@ -778,7 +845,7 @@ where
         double_dash_input,
         language,
         compilation_flag,
-        depfile: None,
+        depfile,
         outputs,
         dependency_args,
         preprocessor_args,
@@ -2252,6 +2319,87 @@ mod test {
         );
         assert_eq!(ovec!["-fabc"], common_args);
         assert!(!msvc_show_includes);
+    }
+
+    /// The one shape that must never be keyed on.
+    ///
+    /// `-MMD` omits system headers, so its report is a list that is quietly
+    /// short -- and a short dependency list does not cause a miss, it causes a
+    /// hit on a stale object. There is no way to obtain a complete report
+    /// alongside it, because `-MF` names one file and the last wins, so the
+    /// only safe answer is to decline and preprocess instead.
+    #[test]
+    fn a_partial_dependency_report_is_never_keyed_on() {
+        let parsed = match parse_arguments_(
+            stringvec!["-c", "foo.c", "-o", "foo.o", "-MMD", "-MF", "foo.d"],
+            false,
+        ) {
+            CompilerArguments::Ok(p) => p,
+            o => panic!("Got unexpected parse result: {:?}", o),
+        };
+        assert!(
+            parsed.dependency_args.iter().any(|a| a == "-MMD"),
+            "the flag has to survive parsing, or nothing downstream can see it"
+        );
+        assert_eq!(dependency_report_format_for(&parsed), None);
+    }
+
+    /// `-MD` reports everything the compilation opened, which is what a key
+    /// needs, so it is keyed on -- as is a compilation that asked for no
+    /// dependency file at all, where sccache supplies its own.
+    #[test]
+    fn a_complete_dependency_report_is_keyed_on() {
+        for args in [
+            stringvec!["-c", "foo.c", "-o", "foo.o", "-MD", "-MF", "foo.d"],
+            stringvec!["-c", "foo.c", "-o", "foo.o"],
+        ] {
+            let parsed = match parse_arguments_(args.clone(), false) {
+                CompilerArguments::Ok(p) => p,
+                o => panic!("Got unexpected parse result: {:?}", o),
+            };
+            assert_eq!(
+                dependency_report_format_for(&parsed),
+                Some(DepFileFormat::Make),
+                "{args:?}"
+            );
+        }
+    }
+
+    /// Where the report is asked for, and that it is asked for as `-MD`.
+    #[test]
+    fn the_report_is_requested_beside_the_compilation() {
+        assert_eq!(
+            dependency_report_args_for(Path::new("/tmp/report.d")),
+            ovec!["-MD", "-MF", "/tmp/report.d"]
+        );
+    }
+
+    /// Keying writes its report to the file the build asked for, so the two do
+    /// not fight over `-MF` -- the last one wins, and the loser is the build.
+    /// So the parse has to say where that file is, and it used to say nothing.
+    #[test]
+    fn the_callers_dependency_file_is_recorded() {
+        let explicit = match parse_arguments_(
+            stringvec!["-c", "foo.c", "-o", "foo.o", "-MD", "-MF", "given.d"],
+            false,
+        ) {
+            CompilerArguments::Ok(p) => p,
+            o => panic!("Got unexpected parse result: {:?}", o),
+        };
+        assert_eq!(explicit.depfile, Some(PathBuf::from("given.d")));
+
+        // `-MD` with no `-MF` still writes one, beside the object.
+        let synthesised =
+            match parse_arguments_(stringvec!["-c", "foo.c", "-o", "foo.o", "-MD"], false) {
+                CompilerArguments::Ok(p) => p,
+                o => panic!("Got unexpected parse result: {:?}", o),
+            };
+        assert_eq!(synthesised.depfile, Some(PathBuf::from("foo.d")));
+        assert!(
+            !synthesised.outputs.contains_key("d"),
+            "recording where the report goes must not also make it a cached \
+             output -- that would change what every existing entry contains"
+        );
     }
 
     #[test]
