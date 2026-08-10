@@ -66,7 +66,11 @@ impl Vcs {
     /// `.git` is a directory in a clone and a *file* in a worktree, so both are
     /// accepted; a worktree is precisely the case this exists for.
     fn at(dir: &Path) -> Option<Vcs> {
-        for (marker, vcs) in [(".git", Vcs::Git), (".jj", Vcs::Jj), (".hg", Vcs::Mercurial)] {
+        for (marker, vcs) in [
+            (".git", Vcs::Git),
+            (".jj", Vcs::Jj),
+            (".hg", Vcs::Mercurial),
+        ] {
             if dir.join(marker).exists() {
                 return Some(vcs);
             }
@@ -251,7 +255,12 @@ fn read_conf(path: &Path, dir: &Path) -> Discovered {
     // location supplies the path so the file does not have to.
     match dir.to_str().map(normalize_basedir) {
         Some(Ok(b)) => out.push(b),
-        Some(Err(e)) => warn!("{}: cannot use {} as a basedir: {}", path.display(), dir.display(), e),
+        Some(Err(e)) => warn!(
+            "{}: cannot use {} as a basedir: {}",
+            path.display(),
+            dir.display(),
+            e
+        ),
         None => warn!("{}: directory is not valid UTF-8", path.display()),
     }
 
@@ -615,7 +624,11 @@ mod tests {
         std::fs::create_dir_all(&root).unwrap();
 
         write(&root, PROJECT_CONF_NAME, "expose_over_mcp = false\n");
-        assert_eq!(found(&root).expose_over_mcp, Some(false), "a refusal counts");
+        assert_eq!(
+            found(&root).expose_over_mcp,
+            Some(false),
+            "a refusal counts"
+        );
 
         write(&root, PROJECT_CONF_NAME, "expose_over_mcp = true\n");
         assert_eq!(

@@ -151,7 +151,10 @@ fn tools_list() -> Value {
         })
         .collect();
     // The list is the same for everyone and changes only when the binary does.
-    envelope::result(json!({"tools": tools}), Some((TTL_ENVIRONMENT, CacheScope::Shared)))
+    envelope::result(
+        json!({"tools": tools}),
+        Some((TTL_ENVIRONMENT, CacheScope::Shared)),
+    )
 }
 
 fn input_schema(name: &str) -> Value {
@@ -266,7 +269,10 @@ fn tools_call(params: &Value, backend: &dyn Backend) -> Result<Value, (i64, Stri
         .get("name")
         .and_then(Value::as_str)
         .ok_or((ERR_INVALID_PARAMS, "tools/call needs a name".to_string()))?;
-    let args = params.get("arguments").cloned().unwrap_or_else(|| json!({}));
+    let args = params
+        .get("arguments")
+        .cloned()
+        .unwrap_or_else(|| json!({}));
 
     let handle = || -> Result<String, (i64, String)> {
         args.get("handle")
@@ -533,7 +539,9 @@ fn needs_tracing(record: &sccache::api::MissRecord) -> String {
 fn stats_for(handle: &str, backend: &dyn Backend) -> Result<Value, (i64, String)> {
     // Asking for one record proves the handle is one this daemon minted, before
     // any of its statistics are handed over.
-    backend.miss_records(Some(handle), 1).map_err(handle_error)?;
+    backend
+        .miss_records(Some(handle), 1)
+        .map_err(handle_error)?;
     let info = backend.stats().map_err(unavailable)?;
     Ok(json!({
         "cacheHits": info.stats.cache_hits.all(),
@@ -670,7 +678,10 @@ mod tests {
     #[test]
     fn a_version_mismatch_is_refused_but_discover_still_answers() {
         let r = call("tools/list", json!({"_meta": meta("2025-11-25")}));
-        assert_eq!(r["error"]["code"], envelope::ERR_UNSUPPORTED_PROTOCOL_VERSION);
+        assert_eq!(
+            r["error"]["code"],
+            envelope::ERR_UNSUPPORTED_PROTOCOL_VERSION
+        );
 
         let r = call("server/discover", json!({"_meta": meta("2025-11-25")}));
         assert!(r["result"].is_object(), "discover must stay reachable");

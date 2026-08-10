@@ -1307,7 +1307,9 @@ where
         // stateless, replaceable and not the authority on what this machine
         // allows.
         if !crate::api::mcp_enabled() {
-            bail!("the MCP query surface is disabled on this machine (see `mcp` in the config, or SCCACHE_MCP)");
+            bail!(
+                "the MCP query surface is disabled on this machine (see `mcp` in the config, or SCCACHE_MCP)"
+            );
         }
         let found = crate::projectconf::discover(path);
         if found.expose_over_mcp == Some(false) {
@@ -1383,9 +1385,9 @@ where
         let root = crate::agent::canonical(&root);
         // Filtered before the limit is applied, so a busy neighbour cannot
         // crowd this workspace's records out of the answer.
-        Ok(self.misses.recent_where(limit, |r| {
-            r.workspace.as_deref() == Some(root.as_str())
-        }))
+        Ok(self
+            .misses
+            .recent_where(limit, |r| r.workspace.as_deref() == Some(root.as_str())))
     }
 
     /// Record a compilation refused before its arguments could be parsed.
@@ -1418,7 +1420,11 @@ where
                 key: None,
                 // The compiler's own name: the output is one of the things
                 // parsing would have told us.
-                output: exe.file_name().unwrap_or(exe.as_os_str()).to_string_lossy().into_owned(),
+                output: exe
+                    .file_name()
+                    .unwrap_or(exe.as_os_str())
+                    .to_string_lossy()
+                    .into_owned(),
                 input: None,
                 language: None,
                 workspace: crate::agent::workspace(cwd),
@@ -2459,9 +2465,7 @@ impl ServerStats {
             let mut agents: Vec<_> = self.per_agent.iter().collect();
             // Busiest first, and by name within a tie, so the order is stable
             // between two runs of the same build.
-            agents.sort_by(|(k1, a), (k2, b)| {
-                b.requests.cmp(&a.requests).then_with(|| k1.cmp(k2))
-            });
+            agents.sort_by(|(k1, a), (k2, b)| b.requests.cmp(&a.requests).then_with(|| k1.cmp(k2)));
             for (agent, s) in agents {
                 writer.write(&format!(
                     "{:<name_width$} {:>stat_width$}",

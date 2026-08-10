@@ -348,7 +348,13 @@ mod tests {
     fn malformed_source_dependencies_yield_nothing_to_cache_on() {
         // Same rule as the Make parser: an unreadable answer must reach the
         // caller as "cannot cache", never as "this compilation had no inputs".
-        for j in ["", "not json", "{}", r#"{"Data":{}}"#, r#"{"Data":{"Includes":42}}"#] {
+        for j in [
+            "",
+            "not json",
+            "{}",
+            r#"{"Data":{}}"#,
+            r#"{"Data":{"Includes":42}}"#,
+        ] {
             assert!(parse_source_dependencies(j).is_empty(), "{j:?}");
         }
     }

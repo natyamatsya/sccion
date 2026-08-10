@@ -26,10 +26,10 @@ use crate::compiler::{
 #[cfg(feature = "dist-client")]
 use crate::compiler::{DistPackagers, NoopOutputsRewriter};
 use crate::config::PreprocessorCacheModeConfig;
-use crate::missrecord::KeyComponents;
 use crate::dist;
 #[cfg(feature = "dist-client")]
 use crate::dist::pkg;
+use crate::missrecord::KeyComponents;
 use crate::mock_command::CommandCreatorSync;
 use crate::util::{
     Digest, HashToDigest, MetadataCtimeExt, TimeMacroFinder, Timestamp, decode_path, encode_path,
@@ -3159,7 +3159,12 @@ mod dependency_keying_test {
 
     /// Hash one compilation with dependency keying on, and report everything
     /// worth asserting about it.
-    fn run(cwd: &Path, arguments: &[OsString], report: Option<Vec<PathBuf>>, status: ExitStatusValue) -> Run {
+    fn run(
+        cwd: &Path,
+        arguments: &[OsString],
+        report: Option<Vec<PathBuf>>,
+        status: ExitStatusValue,
+    ) -> Run {
         run_with(cwd, arguments, report, status, Some(true))
     }
 
@@ -3282,7 +3287,12 @@ mod dependency_keying_test {
     }
 
     /// As [`run`], with a compiler whose report is written verbatim.
-    fn run_raw(cwd: &Path, arguments: &[OsString], report: Option<&str>, status: ExitStatusValue) -> Run {
+    fn run_raw(
+        cwd: &Path,
+        arguments: &[OsString],
+        report: Option<&str>,
+        status: ExitStatusValue,
+    ) -> Run {
         let seen = Arc::new(Mutex::new(Vec::new()));
         let creator = new_creator();
         next_command_calls(

@@ -207,8 +207,14 @@ fn debug_info_from_another_checkout_still_resolves_locally() {
     // cross-checkout cache hit does.
     fs::copy(a.join("m.obj"), b.join("m.obj")).unwrap();
     let mut l = Command::new(&link);
-    l.args(["/nologo", "/DEBUG", "/INCREMENTAL:NO", "/OUT:m.exe", "m.obj"])
-        .current_dir(&b);
+    l.args([
+        "/nologo",
+        "/DEBUG",
+        "/INCREMENTAL:NO",
+        "/OUT:m.exe",
+        "m.obj",
+    ])
+    .current_dir(&b);
     run(&mut l, "link in B");
 
     // Only our own translation unit. A PDB also names the sources of whatever

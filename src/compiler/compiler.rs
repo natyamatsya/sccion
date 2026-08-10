@@ -23,13 +23,12 @@ use crate::compiler::clang::Clang;
 use crate::compiler::cudafe::CudaFE;
 use crate::compiler::diab::Diab;
 use crate::compiler::gcc::Gcc;
+use crate::compiler::moc::{Moc, is_moc};
 use crate::compiler::msvc;
 use crate::compiler::msvc::Msvc;
 use crate::compiler::nvcc::Nvcc;
 use crate::compiler::nvcc::NvccHostCompiler;
 use crate::compiler::nvhpc::Nvhpc;
-use crate::compiler::moc::{Moc, is_moc};
-use crate::util::Digest as UtilDigest;
 use crate::compiler::ptxas::Ptxas;
 use crate::compiler::rust::{Rust, RustupProxy};
 use crate::compiler::tasking_vx::TaskingVX;
@@ -40,6 +39,7 @@ use crate::lru_disk_cache;
 use crate::missrecord::{self, Classification, DirectState, MissRecord};
 use crate::mock_command::{CommandChild, CommandCreatorSync, RunCommand, exit_status};
 use crate::server;
+use crate::util::Digest as UtilDigest;
 use crate::util::{fmt_duration_as_secs, resolve_compiler_avoiding_wrapper, run_input_output};
 use crate::{counted_array, dist};
 use async_trait::async_trait;
@@ -125,7 +125,8 @@ impl MissContext<'_> {
         // The same basedirs the cache keys use. Records that named absolute
         // paths could not be compared between two checkouts of one project,
         // which is the trap manifest keys fell into before `7ea3117`.
-        let basedirs = crate::compiler::c::effective_basedirs_for(self.storage.basedirs(), self.cwd);
+        let basedirs =
+            crate::compiler::c::effective_basedirs_for(self.storage.basedirs(), self.cwd);
         let relative = |p: &Path| missrecord::relative_to_basedirs(p, &basedirs);
 
         MissRecord {
@@ -933,9 +934,8 @@ where
                                     // alarm that always fires is worse than no
                                     // alarm, so compile once more and ask
                                     // whether the compiler agrees with itself.
-                                    let fresh = crate::verify::Restored::take(
-                                        differing.iter().cloned(),
-                                    );
+                                    let fresh =
+                                        crate::verify::Restored::take(differing.iter().cloned());
                                     // The wait is not padding. A COFF
                                     // timestamp has one-second granularity, so
                                     // two compiles run back to back carry the
@@ -1055,8 +1055,7 @@ where
                 // to do. Without adding that back, the compilation's whole cost
                 // goes unrecorded -- 42 µs charged for 1.34 s of work, and
                 // `Average compiler` reads 0.000 s on the fork's default path.
-                let duration_compilation =
-                    start.elapsed() + compiled_for.unwrap_or_default();
+                let duration_compilation = start.elapsed() + compiled_for.unwrap_or_default();
 
                 // The compile has now said whether this compilation could ever
                 // have been cached, which is the last thing the record was
@@ -1065,8 +1064,7 @@ where
                 if let Cacheable::No(why) = cacheable
                     && let Some(record) = pending.as_mut()
                 {
-                    record.classification =
-                        Classification::Uncacheable(why.as_str().to_owned());
+                    record.classification = Classification::Uncacheable(why.as_str().to_owned());
                 }
                 if let Some(record) = pending.take() {
                     service.record_miss(record, &env_vars);

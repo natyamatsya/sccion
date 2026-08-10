@@ -17,7 +17,9 @@
 #![allow(unused_imports, dead_code, unused_variables)]
 
 use crate::compiler::args::*;
-use crate::compiler::c::{ArtifactDescriptor, CCompilerImpl, CCompilerKind, ParsedArguments, PreprocessorOutput};
+use crate::compiler::c::{
+    ArtifactDescriptor, CCompilerImpl, CCompilerKind, ParsedArguments, PreprocessorOutput,
+};
 use crate::compiler::gcc::ArgData::*;
 use crate::compiler::{
     CCompileCommand, Cacheable, CompileCommand, CompilerArguments, Language, gcc, write_temp_file,

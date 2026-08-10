@@ -239,7 +239,11 @@ mod tests {
         let args = |v: &[&str]| v.iter().map(OsString::from).collect::<Vec<_>>();
 
         let with_deopt = known_reason_for_irreproducibility(&args(&[
-            "/c", "/Z7", "/Brepro", "/dynamicdeopt", "a.cpp",
+            "/c",
+            "/Z7",
+            "/Brepro",
+            "/dynamicdeopt",
+            "a.cpp",
         ]))
         .expect("the flag is present, so the cause is known");
         assert!(with_deopt.contains(".pmd_optdep"), "{with_deopt}");

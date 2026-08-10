@@ -791,7 +791,9 @@ pub fn run_command(cmd: Command) -> Result<i32> {
         }
         Command::ZeroStats => {
             trace!("Command::ZeroStats");
-            daemon.zero_stats().context("couldn't zero stats on server")?;
+            daemon
+                .zero_stats()
+                .context("couldn't zero stats on server")?;
             eprintln!("Statistics zeroed.");
         }
         #[cfg(feature = "dist-client")]

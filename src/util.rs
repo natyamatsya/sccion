@@ -22,15 +22,15 @@ use object::read::archive::ArchiveFile;
 use object::read::macho::{FatArch, MachOFatFile32, MachOFatFile64};
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
-use std::collections::HashMap;
-use std::sync::{LazyLock, Mutex};
 use std::cell::Cell;
+use std::collections::HashMap;
 use std::ffi::{OsStr, OsString};
 use std::hash::Hasher;
 use std::io::prelude::*;
 use std::path::{Path, PathBuf};
 use std::process::{self, Stdio};
 use std::str;
+use std::sync::{LazyLock, Mutex};
 use std::time::Duration;
 use std::time::{self, SystemTime};
 
@@ -1223,7 +1223,13 @@ pub fn strip_basedirs_in_arg<'a>(arg: &'a [u8], basedirs: &[Vec<u8>]) -> Cow<'a,
     #[cfg(target_os = "windows")]
     let haystack: Vec<u8> = arg
         .iter()
-        .map(|&b| if b == b'\\' { b'/' } else { b.to_ascii_lowercase() })
+        .map(|&b| {
+            if b == b'\\' {
+                b'/'
+            } else {
+                b.to_ascii_lowercase()
+            }
+        })
         .collect();
     #[cfg(target_os = "windows")]
     let haystack: &[u8] = &haystack;

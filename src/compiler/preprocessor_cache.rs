@@ -865,7 +865,12 @@ mod test {
         std::fs::write(t.path().join("inc").join("x.h"), "int x;\n").unwrap();
         let rt = rt();
         let got = rt
-            .block_on(includes_from_dep_file("out.o: inc/x.h\n", t.path(), true, rt.handle()))
+            .block_on(includes_from_dep_file(
+                "out.o: inc/x.h\n",
+                t.path(),
+                true,
+                rt.handle(),
+            ))
             .expect("relative path should resolve");
         assert_eq!(got[0].1, t.path().join("inc/x.h"));
     }

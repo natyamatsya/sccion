@@ -661,11 +661,13 @@ where
             let arguments = &mut self.arguments;
             Some(match self.arg_info.search(&s[..]) {
                 Some(i) => i.clone().process(&s[..], || arguments.next()),
-                None => Ok(if s.starts_with('-') || (self.slash_flags && looks_like_flag(&s)) {
-                    Argument::UnknownFlag(arg.clone())
-                } else {
-                    Argument::Raw(arg.clone())
-                }),
+                None => Ok(
+                    if s.starts_with('-') || (self.slash_flags && looks_like_flag(&s)) {
+                        Argument::UnknownFlag(arg.clone())
+                    } else {
+                        Argument::Raw(arg.clone())
+                    },
+                ),
             })
         } else {
             None

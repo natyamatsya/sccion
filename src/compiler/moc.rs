@@ -35,8 +35,8 @@ use crate::compiler::{
     SingleCompileCommand,
 };
 use crate::dist;
-use crate::mock_command::CommandCreatorSync;
 use crate::missrecord::KeyComponents;
+use crate::mock_command::CommandCreatorSync;
 use crate::util::{Digest, run_input_output, strip_basedirs_in_arg};
 
 use crate::errors::*;
@@ -150,11 +150,17 @@ pub fn parse_arguments(arguments: &[OsString]) -> CompilerArguments<ParsedMoc> {
             continue;
         }
         // Attached value form.
-        if let Some(flag) = VALUE_FLAGS.iter().find(|f| s.starts_with(**f) && s.len() > f.len()) {
+        if let Some(flag) = VALUE_FLAGS
+            .iter()
+            .find(|f| s.starts_with(**f) && s.len() > f.len())
+        {
             match *flag {
                 "-o" => output = Some(PathBuf::from(&s[2..])),
                 "--dep-file-path" => {
-                    dep_file = Some(PathBuf::from(s.trim_start_matches("--dep-file-path").trim_start_matches('=')))
+                    dep_file = Some(PathBuf::from(
+                        s.trim_start_matches("--dep-file-path")
+                            .trim_start_matches('='),
+                    ))
                 }
                 "--dep-file-rule-name" => {}
                 _ => hashed_args.push(arg.clone()),
@@ -295,8 +301,7 @@ impl MocHasher {
                 basedirs,
             ));
             for (digest, path) in includes {
-                let stripped =
-                    strip_basedirs_in_arg(path.as_os_str().as_encoded_bytes(), basedirs);
+                let stripped = strip_basedirs_in_arg(path.as_os_str().as_encoded_bytes(), basedirs);
                 m.update(&(stripped.len() as u64).to_le_bytes());
                 m.update(&stripped);
                 m.update(digest.as_bytes());
@@ -351,14 +356,18 @@ impl<T: CommandCreatorSync> CompilerHasher<T> for MocHasher {
         // 1. Ask the manifest whether everything this compilation read is
         //    unchanged. When it is, the result key falls out with nothing run.
         if config.use_preprocessor_cache_mode && cache_control == CacheControl::Default {
-            if let Ok(Some(mut seekable)) = storage.get_preprocessor_cache_entry(&manifest_key).await
+            if let Ok(Some(mut seekable)) =
+                storage.get_preprocessor_cache_entry(&manifest_key).await
             {
                 let mut buf = Vec::new();
                 if std::io::Read::read_to_end(&mut seekable, &mut buf).is_ok()
                     && let Ok(mut entry) = PreprocessorCacheEntry::read(&buf)
                 {
                     let mut updated = false;
-                    if let Some(key) = entry.lookup_result_digest(config, &mut updated, pool, &basedirs).await {
+                    if let Some(key) = entry
+                        .lookup_result_digest(config, &mut updated, pool, &basedirs)
+                        .await
+                    {
                         debug!("moc: manifest hit for {}", self.parsed.input.display());
                         return Ok(HashResult {
                             key,
@@ -459,7 +468,10 @@ impl<T: CommandCreatorSync> CompilerHasher<T> for MocHasher {
         if config.use_preprocessor_cache_mode {
             let mut entry = PreprocessorCacheEntry::new();
             entry.add_result(std::time::SystemTime::now(), &key, includes, &basedirs);
-            if let Err(e) = storage.put_preprocessor_cache_entry(&manifest_key, entry).await {
+            if let Err(e) = storage
+                .put_preprocessor_cache_entry(&manifest_key, entry)
+                .await
+            {
                 debug!("moc: failed to store manifest: {e}");
             }
         }
@@ -654,8 +666,16 @@ mod tests {
             )
         };
 
-        let (key_a, comp_a) = key_for(if cfg!(windows) { "D:/dev/wt-a" } else { "/dev/wt-a" });
-        let (key_b, comp_b) = key_for(if cfg!(windows) { "D:/dev/wt-b" } else { "/dev/wt-b" });
+        let (key_a, comp_a) = key_for(if cfg!(windows) {
+            "D:/dev/wt-a"
+        } else {
+            "/dev/wt-a"
+        });
+        let (key_b, comp_b) = key_for(if cfg!(windows) {
+            "D:/dev/wt-b"
+        } else {
+            "/dev/wt-b"
+        });
 
         assert_eq!(comp_a.arguments, comp_b.arguments, "arguments component");
         assert_eq!(comp_a.inputs, comp_b.inputs, "inputs component");

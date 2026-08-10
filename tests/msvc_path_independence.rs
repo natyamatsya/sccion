@@ -68,9 +68,7 @@ fn msvc_trims_paths_out_of_debug_info() {
             // Non-empty, not merely present: clearing a variable often leaves it
             // set to the empty string, and treating that as "required" turns an
             // ordinary developer machine into a failing build.
-            if std::env::var_os("SCCACHE_TEST_REQUIRE_MSVC")
-                .is_some_and(|v| !v.is_empty())
-            {
+            if std::env::var_os("SCCACHE_TEST_REQUIRE_MSVC").is_some_and(|v| !v.is_empty()) {
                 panic!(
                     "SCCACHE_TEST_REQUIRE_MSVC is set but cl.exe is not on PATH; \
                      run from a Visual Studio developer prompt"

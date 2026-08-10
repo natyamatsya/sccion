@@ -363,10 +363,7 @@ impl CacheRead {
                                     continue;
                                 }
                                 Err(reason) => {
-                                    trace!(
-                                        "cache_io: not cloning {}: {reason}",
-                                        path.display()
-                                    );
+                                    trace!("cache_io: not cloning {}: {reason}", path.display());
                                     tmp.as_file().set_len(0)?;
                                 }
                             }
@@ -693,7 +690,10 @@ mod tests {
         let (offset, len, _mode) = read.raw_member_span("obj").expect("aligned, on disk");
         assert_eq!(offset % u64::from(CLONE_ALIGNMENT), 0);
         assert_eq!(len, payload.len() as u64);
-        assert_eq!(&entry[offset as usize..offset as usize + len as usize], &payload[..]);
+        assert_eq!(
+            &entry[offset as usize..offset as usize + len as usize],
+            &payload[..]
+        );
     }
 
     /// The full hit path on a clone-capable volume: the extracted object's

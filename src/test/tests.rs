@@ -13,10 +13,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use crate::api::{request_shutdown, request_stats};
 use crate::cache::CacheMode;
 use crate::cache::disk::DiskCache;
 use crate::client::connect_to_server;
-use crate::api::{request_shutdown, request_stats};
 use crate::commands::do_compile;
 use crate::config::PreprocessorCacheModeConfig;
 use crate::jobserver::Client;
@@ -427,7 +427,11 @@ fn test_stats_break_down_per_caller() {
 
     let a = stats.per_agent.get("agent-a").expect("agent-a");
     let b = stats.per_agent.get("agent-b").expect("agent-b");
-    assert_eq!(stats.per_agent.len(), 2, "one bucket each, not a shared one");
+    assert_eq!(
+        stats.per_agent.len(),
+        2,
+        "one bucket each, not a shared one"
+    );
     assert_eq!(a.requests, 1);
     assert_eq!(b.requests, 1);
     assert_eq!(
@@ -623,9 +627,14 @@ fn test_a_refusal_before_parsing_is_recorded() {
     sender.send(ServerMessage::Shutdown).ok().unwrap();
     child.join().unwrap();
 
-    let text = std::fs::read_to_string(&miss_log)
-        .expect("a refusal is a miss, and a permanent one");
-    let cols: Vec<_> = text.lines().next().expect("one record").split('\t').collect();
+    let text =
+        std::fs::read_to_string(&miss_log).expect("a refusal is a miss, and a permanent one");
+    let cols: Vec<_> = text
+        .lines()
+        .next()
+        .expect("one record")
+        .split('\t')
+        .collect();
     assert!(
         cols[0].starts_with("uncacheable:"),
         "the classification has to say `stop`, not `try again`: {:?}",

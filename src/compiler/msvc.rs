@@ -21,8 +21,7 @@ use crate::compiler::c::{
 use crate::compiler::depfile::DepFileFormat;
 use crate::compiler::{
     CCompileCommand, Cacheable, ColorMode, CompileCommand, CompilerArguments, Language,
-    NotCacheable,
-    SingleCompileCommand, clang, gcc, write_temp_file,
+    NotCacheable, SingleCompileCommand, clang, gcc, write_temp_file,
 };
 use crate::mock_command::{CommandCreatorSync, RunCommand};
 use crate::util::{OsStrExt, encode_path, run_input_output};
@@ -923,9 +922,7 @@ pub fn parse_arguments(
         (None, None) => {}
     }
 
-    if dynamic_deopt
-        && let Some(obj) = outputs.get("obj")
-    {
+    if dynamic_deopt && let Some(obj) = outputs.get("obj") {
         // /dynamicdeopt (Dynamic Debugging) compiles the translation unit twice
         // and writes the deoptimized copy beside the object file, as
         // `<obj-stem>.alt.obj`. Measured: it is emitted for every translation

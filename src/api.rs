@@ -29,10 +29,10 @@ use crate::errors::*;
 use crate::protocol::{Request, Response};
 
 pub use crate::checkenv::EnvReport;
-pub use crate::protocol::WorkspaceInfo;
 pub use crate::missrecord::{
     Classification, DirectState, KeyComponents, MissRecord, RING_CAPACITY as MAX_MISS_RECORDS,
 };
+pub use crate::protocol::WorkspaceInfo;
 pub use crate::server::{AgentStats, DistInfo, ServerInfo, ServerStats};
 
 /// Whether this machine allows the MCP query surface at all.

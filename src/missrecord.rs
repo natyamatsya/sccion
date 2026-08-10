@@ -397,7 +397,12 @@ impl MissLog {
                 {
                     Ok(f) => sinks.entry(path.to_path_buf()).or_insert(f),
                     Err(e) => {
-                        warn!("Failed to open {} at {}: {}", MISS_LOG_VAR, path.display(), e);
+                        warn!(
+                            "Failed to open {} at {}: {}",
+                            MISS_LOG_VAR,
+                            path.display(),
+                            e
+                        );
                         return;
                     }
                 }
@@ -500,7 +505,10 @@ mod tests {
     fn the_sink_is_read_from_the_compilations_environment() {
         let env = vec![
             (OsString::from("PATH"), OsString::from("/bin")),
-            (OsString::from(MISS_LOG_VAR), OsString::from("D:/misses.tsv")),
+            (
+                OsString::from(MISS_LOG_VAR),
+                OsString::from("D:/misses.tsv"),
+            ),
         ];
         assert_eq!(sink_from_env(&env), Some(PathBuf::from("D:/misses.tsv")));
 
@@ -533,6 +541,9 @@ mod tests {
         assert_eq!(cols[2], "key", "the key stays in column 3");
         assert_eq!(cols[3], "foo.obj");
         assert_eq!(cols[4], "src/foo.c");
-        assert_eq!(cols[6], "-", "an absent field is a dash, never an empty column");
+        assert_eq!(
+            cols[6], "-",
+            "an absent field is a dash, never an empty column"
+        );
     }
 }
