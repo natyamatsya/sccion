@@ -1944,6 +1944,73 @@ mod tests {
         assert_eq!(&*output, input);
     }
 
+    /// Trailing separators and `..` segments are already handled, so a basedir
+    /// declared any of these ways is the same basedir.
+    ///
+    /// Recorded because M3 listed all three spellings as hazards and only one
+    /// of them turned out to be live -- the other two normalise today, and a
+    /// milestone should not spend effort on a bug it does not have.
+    #[test]
+    fn a_basedir_is_the_same_however_tidily_it_is_written() {
+        let plain = crate::config::normalize_basedir("/Users/x/proj").unwrap();
+        assert_eq!(
+            crate::config::normalize_basedir("/Users/x/proj/").unwrap(),
+            plain,
+            "a trailing separator must not make a second basedir"
+        );
+        assert_eq!(
+            crate::config::normalize_basedir("/Users/x/tmp/../proj").unwrap(),
+            plain,
+            "dot segments must not make a second basedir"
+        );
+        assert_eq!(
+            crate::config::normalize_basedir("/Users//x///proj").unwrap(),
+            plain,
+            "repeated separators must not make a second basedir"
+        );
+    }
+
+    /// The live half of M3, and the one thing still open in it.
+    ///
+    /// On a case-folding volume -- which is the macOS default, confirmed by
+    /// `--check-env` on this machine -- one checkout has more than one
+    /// spelling, and both reach the same files. Basedir matching compares
+    /// bytes, so the second spelling strips nothing and every path reaches the
+    /// key absolute.
+    ///
+    /// Measured on the real toolchain rather than inferred: from an empty
+    /// cache, one translation unit of Sourcetrail-TS compiled from
+    /// `/Users/.../Sourcetrail-TS` and then from
+    /// `/users/.../sourcetrail-ts` produced **two cache entries** -- miss, hit,
+    /// miss, hit. The same two spellings also register as two workspaces,
+    /// because `agent::canonical` normalises nothing off Windows.
+    ///
+    /// Ignored rather than deleted: it is the reproduction the fix has to
+    /// satisfy, and the fix is a decision this test does not get to make. The
+    /// matcher cannot simply fold case everywhere -- on a case-sensitive volume
+    /// `/Foo` and `/foo` are two directories, and folding them would turn a
+    /// missed hit into a wrong one. Doing it per volume means the basedir has
+    /// to carry whether its volume folds, which changes a type that crosses the
+    /// wire. Run with `cargo test -- --ignored`.
+    #[test]
+    #[ignore = "M3: basedir matching does not fold case; see the doc comment"]
+    fn a_checkout_reached_by_two_spellings_is_one_checkout() {
+        let basedir = crate::config::normalize_basedir("/Users/x/proj").unwrap();
+        let dirs = std::slice::from_ref(&basedir);
+
+        assert_eq!(
+            &*super::strip_basedirs_in_arg(b"-I/Users/x/proj/include", dirs),
+            b"-Iinclude",
+            "the spelling the basedir was declared with strips today"
+        );
+        assert_eq!(
+            &*super::strip_basedirs_in_arg(b"-I/users/x/PROJ/include", dirs),
+            b"-Iinclude",
+            "on a folding volume this names the very same directory, so it has \
+             to reach the key the same way"
+        );
+    }
+
     /// `-I<checkout root>` names the basedir with no trailing separator.
     ///
     /// CMake emits it on every moc command line, and it was the single reason
