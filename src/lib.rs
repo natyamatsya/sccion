@@ -61,6 +61,7 @@ pub mod server;
 #[doc(hidden)]
 pub mod util;
 pub mod verify;
+pub mod volume;
 
 use std::env;
 

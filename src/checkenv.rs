@@ -28,6 +28,7 @@ use std::path::{Path, PathBuf};
 use serde::Serialize;
 
 use crate::config::Config;
+use crate::volume::{case_sensitive, root as volume_root, statfs_of};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -263,96 +264,6 @@ fn bool_from_env(name: &str) -> Option<bool> {
     })
 }
 
-/// The nearest ancestor of `path` that exists, including `path` itself.
-///
-/// The cache directory may not have been created yet on a fresh machine, and
-/// "which volume will it land on" is a perfectly answerable question -- the
-/// answer is its parent's. Returning `None` there would have made every check
-/// below say `unknown` for the one case where someone most wants an answer.
-fn nearest_existing(path: &Path) -> Option<&Path> {
-    let mut here = path;
-    loop {
-        if here.exists() {
-            return Some(here);
-        }
-        here = here.parent()?;
-    }
-}
-
-#[cfg(windows)]
-fn volume_root(path: &Path) -> Option<String> {
-    let s = path.to_string_lossy().replace('/', "\\");
-    let s = s.strip_prefix(r"\\?\").unwrap_or(&s).to_string();
-    let b = s.as_bytes();
-    (b.len() >= 2 && b[1] == b':' && (b[0] as char).is_ascii_alphabetic())
-        .then(|| format!("{}:\\", (b[0] as char).to_ascii_uppercase()))
-}
-
-/// The mount point a path sits on.
-///
-/// This is what `volume_root` always meant; it just could not say it anywhere
-/// but Windows, where a drive letter *is* the volume. Returning `None` for
-/// every POSIX path made `same_volume` false by construction, so a correctly
-/// configured Mac was warned that its cache and build tree were on different
-/// volumes. A diagnostic that cries wolf on a correct machine is worse than no
-/// diagnostic.
-///
-/// Taken from `statfs` where it is available, because that is the same source
-/// `df` reports from and it distinguishes volumes that share a device number.
-/// On macOS `/` and `/System/Volumes/Data` are two APFS volumes presented under
-/// one synthesized root: `stat` gives them the same `st_dev`, and only `statfs`
-/// tells them apart.
-#[cfg(all(
-    unix,
-    any(target_os = "macos", target_os = "ios", target_os = "freebsd")
-))]
-fn volume_root(path: &Path) -> Option<String> {
-    statfs_of(path).map(|s| {
-        // SAFETY: `f_mntonname` is a NUL-terminated C string filled by the
-        // kernel, and the cast is between signed and unsigned char.
-        let raw = unsafe { std::ffi::CStr::from_ptr(s.f_mntonname.as_ptr()) };
-        raw.to_string_lossy().into_owned()
-    })
-}
-
-/// As above, for platforms without `f_mntonname`.
-///
-/// Walks up until the device number changes, which is what a mount point *is*
-/// and needs no mount table to find.
-#[cfg(all(
-    unix,
-    not(any(target_os = "macos", target_os = "ios", target_os = "freebsd"))
-))]
-fn volume_root(path: &Path) -> Option<String> {
-    use std::os::unix::fs::MetadataExt;
-    let start = nearest_existing(path)?;
-    let dev = std::fs::metadata(start).ok()?.dev();
-    let mut here = start.to_path_buf();
-    while let Some(parent) = here.parent() {
-        match std::fs::metadata(parent) {
-            Ok(m) if m.dev() == dev => here = parent.to_path_buf(),
-            _ => break,
-        }
-    }
-    Some(here.to_string_lossy().into_owned())
-}
-
-/// `statfs` for the nearest existing ancestor of `path`.
-#[cfg(all(
-    unix,
-    any(target_os = "macos", target_os = "ios", target_os = "freebsd")
-))]
-fn statfs_of(path: &Path) -> Option<libc::statfs> {
-    use std::os::unix::ffi::OsStrExt;
-    let target = nearest_existing(path)?;
-    let c_path = std::ffi::CString::new(target.as_os_str().as_bytes()).ok()?;
-    let mut buf: libc::statfs = unsafe { std::mem::zeroed() };
-    // SAFETY: `c_path` is NUL-terminated and outlives the call; `buf` is a
-    // correctly sized, writable `statfs`.
-    let rc = unsafe { libc::statfs(c_path.as_ptr(), &mut buf) };
-    (rc == 0).then_some(buf)
-}
-
 #[cfg(windows)]
 fn filesystem_name(root: &str) -> String {
     use windows_sys::Win32::Storage::FileSystem::GetVolumeInformationW;
@@ -405,7 +316,7 @@ fn filesystem_name(path: &Path) -> String {
 #[cfg(target_os = "linux")]
 fn filesystem_name(path: &Path) -> String {
     use std::os::unix::ffi::OsStrExt;
-    let Some(target) = nearest_existing(path) else {
+    let Some(target) = crate::volume::nearest_existing(path) else {
         return "unknown".into();
     };
     let Ok(c_path) = std::ffi::CString::new(target.as_os_str().as_bytes()) else {
@@ -439,54 +350,6 @@ fn filesystem_name(path: &Path) -> String {
 ))]
 fn filesystem_name(_path: &Path) -> String {
     "unknown".into()
-}
-
-/// Whether the volume distinguishes `Foo` from `foo`.
-///
-/// Probed rather than inferred from the filesystem's name, and probed on the
-/// path in question: what matters is not what APFS *can* be formatted as but
-/// whether this directory spelled two ways resolves to one file. That is
-/// exactly what basedir stripping and manifest include paths depend on, and it
-/// is a byte comparison in both.
-///
-/// Read-only, per this module's third rule: it flips the case of a component
-/// that already exists and asks whether the result is the same file, rather
-/// than creating anything to find out.
-#[cfg(unix)]
-fn case_sensitive(path: &Path) -> Option<bool> {
-    use std::os::unix::fs::MetadataExt;
-    let target = nearest_existing(path)?;
-    let name = target.file_name()?.to_str()?;
-    // A component with no letters cannot answer the question either way.
-    if !name.chars().any(|c| c.is_ascii_alphabetic()) {
-        return None;
-    }
-    let flipped: String = name
-        .chars()
-        .map(|c| {
-            if c.is_ascii_uppercase() {
-                c.to_ascii_lowercase()
-            } else {
-                c.to_ascii_uppercase()
-            }
-        })
-        .collect();
-    let here = std::fs::metadata(target).ok()?;
-    match std::fs::metadata(target.with_file_name(flipped)) {
-        // The other spelling reached the very same file: the volume folds case.
-        Ok(other) if other.dev() == here.dev() && other.ino() == here.ino() => Some(false),
-        // Either nothing is there, or something else is -- both mean the two
-        // spellings are two names, which is what case-sensitive means.
-        _ => Some(true),
-    }
-}
-
-#[cfg(windows)]
-fn case_sensitive(_path: &Path) -> Option<bool> {
-    // Per-directory case sensitivity exists on NTFS but is not what any build
-    // here relies on, and the probe above needs an inode. Unanswered rather
-    // than guessed.
-    None
 }
 
 /// Whether Spotlight indexes the volume at `mount_point`.
@@ -1100,81 +963,6 @@ mod tests {
             "unset is not `false`: it means the layer said nothing, and the \
              project or the machine still gets to decide"
         );
-    }
-
-    /// A drive letter is what a volume *is* on Windows, and nowhere else.
-    #[cfg(windows)]
-    #[test]
-    fn volume_root_handles_the_shapes_paths_actually_take() {
-        assert_eq!(volume_root(Path::new(r"D:\cache")).as_deref(), Some("D:\\"));
-        // fs::canonicalize hands back verbatim paths; missing this reported every
-        // volume as unknown and silently disabled the same-volume check.
-        assert_eq!(
-            volume_root(Path::new(r"\\?\D:\cache")).as_deref(),
-            Some("D:\\")
-        );
-        assert_eq!(volume_root(Path::new("d:/cache")).as_deref(), Some("D:\\"));
-        // A UNC path has no drive letter; claiming one would be a lie.
-        assert_eq!(volume_root(Path::new(r"\\server\share")), None);
-        assert_eq!(volume_root(Path::new("relative/path")), None);
-    }
-
-    /// The defect this replaced: `volume_root` recognised only a drive letter,
-    /// so every POSIX path answered `None`, `same_volume` was false by
-    /// construction, and a correctly configured Mac was warned that its cache
-    /// and build tree were on different volumes.
-    #[cfg(unix)]
-    #[test]
-    fn a_posix_path_gets_a_real_volume() {
-        let root = volume_root(Path::new("/")).expect("the root filesystem has a mount point");
-        assert!(
-            root.starts_with('/'),
-            "a mount point is an absolute path, got {root:?}"
-        );
-
-        // The point of the whole exercise: two paths on one filesystem agree.
-        // Anything under the temporary directory and the temporary directory
-        // itself are the same volume by construction.
-        let dir = tempfile::tempdir().unwrap();
-        let deep = dir.path().join("a/b/c");
-        assert_eq!(
-            volume_root(dir.path()),
-            volume_root(&deep),
-            "a path and its own subdirectory cannot be on different volumes"
-        );
-
-        // And it answers for a path that does not exist yet, which is the state
-        // a cache directory is in on a machine that has never run a build.
-        assert!(
-            volume_root(&deep).is_some(),
-            "the volume a directory will be created on is answerable"
-        );
-    }
-
-    /// Case folding decides whether one checkout has one cache key or two, so
-    /// the report has to know -- and has to find out without writing anything.
-    #[cfg(unix)]
-    #[test]
-    fn case_sensitivity_is_probed_not_assumed() {
-        let dir = tempfile::tempdir().unwrap();
-        let mixed = dir.path().join("MixedCase");
-        std::fs::create_dir(&mixed).unwrap();
-
-        let answer = case_sensitive(&mixed).expect("a name with letters can be probed");
-        // Whichever way this volume goes, the probe must agree with what the
-        // filesystem actually does rather than with what its type suggests.
-        let folded = dir.path().join("mixedcase");
-        assert_eq!(
-            answer,
-            !folded.exists(),
-            "the probe disagreed with the filesystem: {} exists = {}",
-            folded.display(),
-            folded.exists()
-        );
-
-        // Probing must not have created anything.
-        let entries: Vec<_> = std::fs::read_dir(dir.path()).unwrap().collect();
-        assert_eq!(entries.len(), 1, "the probe wrote to the filesystem");
     }
 
     /// A concept a platform does not have is absent, not unknown.
