@@ -89,10 +89,10 @@ fn resolve_include(stored: &OsStr, basedirs: &[Vec<u8>]) -> PathBuf {
     // One basedir is the overwhelmingly common case, and it needs no guessing:
     // asking the filesystem which root a path belongs under would be a `stat`
     // per include per lookup, on top of the one the check makes anyway.
-    if basedirs.len() == 1 {
-        if let Some(p) = rooted(&basedirs[0]) {
-            return p;
-        }
+    if basedirs.len() == 1
+        && let Some(p) = rooted(&basedirs[0])
+    {
+        return p;
     }
     basedirs
         .iter()

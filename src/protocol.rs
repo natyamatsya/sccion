@@ -16,6 +16,14 @@ use serde::{Deserialize, Serialize};
 /// Bumped to 2 when `RegisterWorkspace` and `GetMissRecords` were added. A
 /// daemon left running across the change will not be found by the new client,
 /// which is the intended outcome: stop it with `sccache --stop-server`.
+///
+/// **Only Windows actually enforces this**, because the pipe name is the only
+/// rendezvous that carries it. Off Windows the client finds the daemon on a
+/// fixed TCP port with no version in it, so a stale daemon is found and its
+/// bytes are misread -- the silent misinterpretation described above, which
+/// this constant exists to prevent and does not. Hence the allow: the constant
+/// is genuinely unreachable here, and that is the bug, not the warning.
+#[cfg_attr(not(windows), allow(dead_code))]
 pub const PROTOCOL_VERSION: u32 = 2;
 use std::ffi::OsString;
 

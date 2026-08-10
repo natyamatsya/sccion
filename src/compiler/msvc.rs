@@ -97,7 +97,6 @@ impl CCompilerImpl for Msvc {
             preprocessor_cache_mode,
         )
         .await
-        .map(Into::into)
     }
 
     fn dependency_report_format(&self) -> Option<DepFileFormat> {

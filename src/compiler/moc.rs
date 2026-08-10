@@ -160,7 +160,7 @@ pub fn parse_arguments(arguments: &[OsString]) -> CompilerArguments<ParsedMoc> {
                     dep_file = Some(PathBuf::from(
                         s.trim_start_matches("--dep-file-path")
                             .trim_start_matches('='),
-                    ))
+                    ));
                 }
                 "--dep-file-rule-name" => {}
                 _ => hashed_args.push(arg.clone()),
@@ -355,38 +355,38 @@ impl<T: CommandCreatorSync> CompilerHasher<T> for MocHasher {
 
         // 1. Ask the manifest whether everything this compilation read is
         //    unchanged. When it is, the result key falls out with nothing run.
-        if config.use_preprocessor_cache_mode && cache_control == CacheControl::Default {
-            if let Ok(Some(mut seekable)) =
+        if config.use_preprocessor_cache_mode
+            && cache_control == CacheControl::Default
+            && let Ok(Some(mut seekable)) =
                 storage.get_preprocessor_cache_entry(&manifest_key).await
+        {
+            let mut buf = Vec::new();
+            if std::io::Read::read_to_end(&mut seekable, &mut buf).is_ok()
+                && let Ok(mut entry) = PreprocessorCacheEntry::read(&buf)
             {
-                let mut buf = Vec::new();
-                if std::io::Read::read_to_end(&mut seekable, &mut buf).is_ok()
-                    && let Ok(mut entry) = PreprocessorCacheEntry::read(&buf)
+                let mut updated = false;
+                if let Some(key) = entry
+                    .lookup_result_digest(config, &mut updated, pool, &basedirs)
+                    .await
                 {
-                    let mut updated = false;
-                    if let Some(key) = entry
-                        .lookup_result_digest(config, &mut updated, pool, &basedirs)
-                        .await
-                    {
-                        debug!("moc: manifest hit for {}", self.parsed.input.display());
-                        return Ok(HashResult {
-                            key,
-                            compilation: Box::new(MocCompilation {
-                                executable: self.executable.clone(),
-                                parsed: self.parsed.clone(),
-                                env_vars,
-                                cwd,
-                                already_produced: false,
-                                stdout: Vec::new(),
-                                stderr: Vec::new(),
-                                cacheable: Cacheable::Yes,
-                            }),
-                            weak_toolchain_key: self.executable_digest.clone(),
-                            preprocessor_cache_hit: Some(true),
-                            key_components: None,
-                            compiled_for: None,
-                        });
-                    }
+                    debug!("moc: manifest hit for {}", self.parsed.input.display());
+                    return Ok(HashResult {
+                        key,
+                        compilation: Box::new(MocCompilation {
+                            executable: self.executable.clone(),
+                            parsed: self.parsed.clone(),
+                            env_vars,
+                            cwd,
+                            already_produced: false,
+                            stdout: Vec::new(),
+                            stderr: Vec::new(),
+                            cacheable: Cacheable::Yes,
+                        }),
+                        weak_toolchain_key: self.executable_digest.clone(),
+                        preprocessor_cache_hit: Some(true),
+                        key_components: None,
+                        compiled_for: None,
+                    });
                 }
             }
         }
@@ -735,7 +735,7 @@ mod tests {
         let b = parse_arguments(&os(&["-Iinc", "-o", "b/out.cpp", "in.h"]));
         match (a, b) {
             (CompilerArguments::Ok(a), CompilerArguments::Ok(b)) => {
-                assert_eq!(a.hashed_args, b.hashed_args)
+                assert_eq!(a.hashed_args, b.hashed_args);
             }
             _ => panic!("both should parse"),
         }
