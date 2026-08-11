@@ -1227,6 +1227,44 @@ mod test {
         );
     }
 
+    /// The shape CMake actually generates: `--precompile` and no `-c`.
+    ///
+    /// The test above passes both, which no generator produces -- CMake's BMI
+    /// rule is `@$DYNDEP_MODULE_MAP_FILE -o $out --precompile $in`. Parsed as
+    /// `NotCompilation`, every BMI in a modules build went straight to the
+    /// compiler: 46 of the 649 compiler edges in the stand-in workload.
+    #[test]
+    fn a_bmi_is_a_compilation_even_without_dash_c() {
+        let a = parses!(
+            "-x",
+            "c++-module",
+            "--precompile",
+            "module.cppm",
+            "-o",
+            "module.pcm"
+        );
+        assert_eq!(Some("module.cppm"), a.input.to_str());
+        assert_eq!(Language::CxxModule, a.language);
+        assert_map_contains!(
+            a.outputs,
+            (
+                "obj",
+                ArtifactDescriptor {
+                    path: PathBuf::from("module.pcm"),
+                    optional: false
+                }
+            )
+        );
+        // It has to stay in the hashed arguments. `compilation_flag` is not
+        // part of the key, so if `--precompile` moved there, a BMI and an
+        // object built from one source with one set of flags would key alike.
+        assert!(
+            a.common_args.contains(&"--precompile".into()),
+            "--precompile must be hashed: {:?}",
+            a.common_args
+        );
+    }
+
     #[test]
     fn test_parse_arguments_cxx20_module_fmodule_file() {
         // Test -fmodule-file= for importing precompiled modules

@@ -426,7 +426,27 @@ where
             Some(TooHardFlag) | Some(TooHard(_)) => {
                 cannot_cache!(arg.flag_str().expect("Can't be Argument::Raw/UnknownFlag",))
             }
-            Some(ModuleOnlyFlag) => module_only_flag = true,
+            Some(ModuleOnlyFlag) => {
+                module_only_flag = true;
+                // `--precompile` *is* the directive to compile: it runs the
+                // front end over a module interface and stops with a BMI. It
+                // was not treated as one, so every command line carrying it
+                // without `-c` parsed as `NotCompilation` and was handed
+                // straight to the compiler.
+                //
+                // That is the shape CMake emits -- `@modmap -o $out
+                // --precompile $in`, no `-c` anywhere -- and it is 46 of the
+                // 649 compiler edges in the stand-in workload's modules build.
+                // The existing test passes `-c` alongside `--precompile`, a
+                // spelling no generator produces, which is how the support
+                // looked exercised while never having met a real modules build.
+                //
+                // `compilation_flag` is deliberately left alone: it is not part
+                // of the cache key, and `--precompile` must be, or a BMI and an
+                // object built from one source with one set of flags would key
+                // the same. It stays in `common_args`, which is hashed.
+                compilation = true;
+            }
             Some(PedanticFlag) => pedantic_flag = true,
             // standard values vary, but extension values all start with "gnu"
             Some(Standard(version)) => language_extensions = version.starts_with("gnu"),
@@ -1050,11 +1070,13 @@ where
     if let Some(lang) = &language {
         arguments.extend(vec!["-x".into(), lang.into()]);
     }
-    arguments.extend(vec![
-        parsed_args.compilation_flag.clone(),
-        "-o".into(),
-        out_file.into(),
-    ]);
+    // Empty when the compilation was directed by something other than `-c` --
+    // `--precompile`, which carries itself in `common_args`. Pushing it anyway
+    // would put a zero-length argument on the command line.
+    if !parsed_args.compilation_flag.is_empty() {
+        arguments.push(parsed_args.compilation_flag.clone());
+    }
+    arguments.extend(vec!["-o".into(), out_file.into()]);
     arguments.extend_from_slice(&parsed_args.preprocessor_args);
     arguments.extend_from_slice(&parsed_args.dependency_args);
     arguments.extend_from_slice(&parsed_args.unhashed_args);
@@ -1112,8 +1134,10 @@ where
             if let Some(lang) = &language {
                 arguments.extend(vec!["-x".into(), lang.into()]);
             }
+            if !parsed_args.compilation_flag.is_empty() {
+                arguments.push(parsed_args.compilation_flag.clone().into_string().ok()?);
+            }
             arguments.extend(vec![
-                parsed_args.compilation_flag.clone().into_string().ok()?,
                 path_transformer.as_dist(&parsed_args.input)?,
                 "-o".into(),
                 path_transformer.as_dist(out_file)?,
