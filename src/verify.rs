@@ -164,13 +164,94 @@ pub fn known_reason_for_irreproducibility(arguments: &[OsString]) -> Option<&'st
              object cannot reproduce byte for byte. Verification needs a build without it",
         );
     }
-    if !has("/brepro") && !has("-brepro") {
+    // The remaining cause is COFF's, so it is MSVC's and clang-cl's. Given to
+    // every compilation regardless, this told a macOS build to set `/Brepro` --
+    // advice for an object format it does not emit, about a timestamp its
+    // objects do not carry, naming a flag its compiler does not accept.
+    //
+    // Recognised from the command line rather than from the host, because a
+    // clang-cl compilation produces a COFF object and wants the same advice
+    // wherever it runs. These spellings are MSVC's and are not paths anything
+    // would pass to a POSIX driver.
+    const MSVC_MARKERS: [&str; 7] = ["/Fo", "/Fd", "/Fp", "/Z7", "/Zi", "/nologo", "/EH"];
+    let msvc = arguments.iter().any(|a| {
+        let a = a.to_string_lossy();
+        MSVC_MARKERS.iter().any(|m| a.starts_with(m))
+    });
+    if msvc && !has("/brepro") && !has("-brepro") {
         return Some(
             "the object carries a COFF timestamp; build with /Brepro to make \
-             SCCACHE_VERIFY_HITS meaningful",
+             SCCION_VERIFY_HITS meaningful",
         );
     }
     None
+}
+
+/// The prefix-map flags, which are what makes an object independent of where
+/// it was built.
+const PREFIX_MAP_FLAGS: [&str; 3] = [
+    "-ffile-prefix-map=",
+    "-fdebug-prefix-map=",
+    "-fmacro-prefix-map=",
+];
+
+/// Why a byte difference on a verified hit might not be the cache's fault.
+///
+/// `None` when a difference is conclusive, which is when the accusation may be
+/// made. The accusation is this module's product, so it is worth being exact
+/// about when it holds.
+///
+/// The reasoning it guards is: recompile, and if the compiler reproduces its
+/// own output then a difference from the cache is the cache's. That is sound
+/// within one checkout and **unsound across two**. Basedirs deliberately make
+/// keys less specific so that a second checkout hits, and the object it is
+/// served was built somewhere else and embeds that somewhere else's paths --
+/// a documented, accepted property, not a wrong answer. Measured on two
+/// checkouts of one fixture: without a prefix-map, the hit in the second
+/// checkout was reported as `THE CACHE RETURNED THE WRONG OBJECT`, and a
+/// `WrongHit` record was written. Every sampled hit in that build would have
+/// said the same.
+///
+/// The remedy restores the accusation rather than weakening it: with
+/// `-ffile-prefix-map=<checkout>=.` the two checkouts' objects are
+/// byte-identical -- measured -- so a difference means what it says again.
+///
+/// Coverage is checked rather than assumed. A prefix-map for some other
+/// directory does not make the object checkout-independent, so the flag only
+/// counts when the path it rewrites *is* a basedir -- which is exactly the
+/// question basedir stripping already answers: strip the flag, and if the path
+/// it mapped is gone, it was one.
+pub fn cross_checkout_ambiguity(
+    arguments: &[OsString],
+    basedirs: &[Vec<u8>],
+) -> Option<&'static str> {
+    // No basedirs, no sharing across paths, nothing to be ambiguous about.
+    if basedirs.is_empty() {
+        return None;
+    }
+    let mapped_away = arguments.iter().any(|arg| {
+        let bytes = arg.as_encoded_bytes();
+        let Some(flag) = PREFIX_MAP_FLAGS
+            .iter()
+            .find(|f| bytes.starts_with(f.as_bytes()))
+        else {
+            return false;
+        };
+        // `-ffile-prefix-map=/a/proj=.` becomes `-ffile-prefix-map==.` when
+        // `/a/proj` is a basedir, and is untouched when it is not.
+        let stripped = crate::util::strip_basedirs_in_arg(bytes, basedirs);
+        stripped.starts_with(flag.as_bytes()) && stripped.get(flag.len()) == Some(&b'=')
+    });
+    if mapped_away {
+        return None;
+    }
+    Some(
+        "objects embed the absolute path of the checkout they were built in, and basedirs \
+         let this hit come from a different checkout, so a difference here cannot tell a \
+         wrong object from another checkout's paths. Build with \
+         -ffile-prefix-map=<checkout>=. -- measured to make two checkouts' objects \
+         byte-identical, which is what gives this check its meaning back",
+    )
 }
 
 #[cfg(test)]
@@ -257,6 +338,63 @@ mod tests {
         assert_eq!(
             known_reason_for_irreproducibility(&args(&["/c", "/Z7", "/Brepro", "a.cpp"])),
             None
+        );
+    }
+
+    /// The advice must fit the compiler too, not just the build.
+    #[test]
+    fn a_clang_build_is_not_told_to_set_an_msvc_flag() {
+        let args = |v: &[&str]| v.iter().map(OsString::from).collect::<Vec<_>>();
+        assert_eq!(
+            known_reason_for_irreproducibility(&args(&["-c", "-g", "a.cpp", "-o", "a.o"])),
+            None,
+            "there is no COFF timestamp on a Mach-O object and no /Brepro to set"
+        );
+        // And the MSVC case still answers, which is what `/Fo` distinguishes.
+        assert!(
+            known_reason_for_irreproducibility(&args(&["/c", "/Z7", "/Foa.obj", "a.cpp"]))
+                .is_some_and(|r| r.contains("/Brepro"))
+        );
+    }
+
+    /// The accusation is this module's product, so it has to hold where it is
+    /// made. Across two checkouts it does not: the object the cache serves was
+    /// built elsewhere and embeds those paths on purpose.
+    #[test]
+    fn a_second_checkouts_paths_are_not_an_accusation() {
+        let args = |v: &[&str]| v.iter().map(OsString::from).collect::<Vec<_>>();
+        let basedirs = vec![b"/a/proj/".to_vec()];
+
+        assert_eq!(
+            cross_checkout_ambiguity(&args(&["-c", "/a/proj/src/lib.cpp"]), &[]),
+            None,
+            "without basedirs nothing shares across paths, so a difference is conclusive"
+        );
+
+        assert!(
+            cross_checkout_ambiguity(&args(&["-c", "/a/proj/src/lib.cpp"]), &basedirs)
+                .is_some_and(|r| r.contains("-ffile-prefix-map")),
+            "with basedirs and nothing rewriting paths, it cannot tell the two apart"
+        );
+
+        assert_eq!(
+            cross_checkout_ambiguity(
+                &args(&["-ffile-prefix-map=/a/proj=.", "-c", "/a/proj/src/lib.cpp"]),
+                &basedirs
+            ),
+            None,
+            "the objects are path-independent, so the accusation holds again"
+        );
+
+        // Coverage is checked, not assumed: a map for somewhere else leaves the
+        // checkout's own paths in the object.
+        assert!(
+            cross_checkout_ambiguity(
+                &args(&["-ffile-prefix-map=/opt/sdk=.", "-c", "/a/proj/src/lib.cpp"]),
+                &basedirs
+            )
+            .is_some(),
+            "a prefix-map for another directory does not make this object portable"
         );
     }
 

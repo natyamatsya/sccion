@@ -764,9 +764,17 @@ where
         let mut pending: Option<MissRecord> = None;
         // Built here for the same reason as `pending`: everything it needs is
         // consumed below, and whether it is wanted is only known afterwards.
-        let verify_record = crate::verify::rate(&env_vars)
-            .is_some()
-            .then(|| miss.record(Classification::Hit));
+        let verifying = crate::verify::rate(&env_vars).is_some();
+        let verify_record = verifying.then(|| miss.record(Classification::Hit));
+        // Whether an accusation would hold, decided here for the same reason:
+        // `storage`, `cwd` and `arguments` are all consumed below, and this
+        // needs all three.
+        let verify_ambiguity = verifying
+            .then(|| {
+                let basedirs = crate::compiler::c::effective_basedirs_for(storage.basedirs(), &cwd);
+                crate::verify::cross_checkout_ambiguity(&arguments, &basedirs)
+            })
+            .flatten();
 
         let lookup = match cache_status.await {
             (Ok(Ok(Cache::Hit(mut entry))), duration) => {
@@ -955,7 +963,19 @@ where
                                             // than accuse.
                                             _ => false,
                                         };
-                                    if reproducible {
+                                    // "The compiler agrees with itself, so the
+                                    // difference is the cache's" holds within
+                                    // one checkout and not across two: basedirs
+                                    // exist to let a second checkout hit, and
+                                    // the object it gets was built elsewhere
+                                    // and says so in its debug info. Accusing
+                                    // there would fire on every sampled hit of
+                                    // a cross-checkout build -- measured -- and
+                                    // an alarm that always fires is the thing
+                                    // this module's own comments say not to
+                                    // build.
+                                    let ambiguous = verify_ambiguity;
+                                    if reproducible && ambiguous.is_none() {
                                         error!(
                                             "[{}]: THE CACHE RETURNED THE WRONG OBJECT. The \
                                              compiler reproduces its own output, and it does \
@@ -968,6 +988,13 @@ where
                                         }) {
                                             service.record_miss(alarm, &env_vars);
                                         }
+                                    } else if let Some(why) = ambiguous.filter(|_| reproducible) {
+                                        warn!(
+                                            "[{}]: {} cannot be verified: {}.",
+                                            out_pretty,
+                                            differing.len(),
+                                            why,
+                                        );
                                     } else {
                                         // Name the cause when it is known. The
                                         // advice this used to give -- build with
