@@ -1337,6 +1337,12 @@ where
             );
         };
 
+        // Registered under the filesystem's own spelling, not the caller's.
+        // The table is what makes registration idempotent, and it compares
+        // paths -- so without this, one checkout reached by two spellings gets
+        // two handles, and every figure asked for through them is half a build.
+        let root = crate::agent::canonical_path(&root);
+
         let mut table = self.workspaces.lock().unwrap_or_else(|e| e.into_inner());
         let handle = match table.iter().find(|(_, r)| **r == root) {
             Some((handle, _)) => handle.clone(),
