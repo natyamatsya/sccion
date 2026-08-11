@@ -1290,13 +1290,26 @@ pub fn strip_basedirs_in_arg<'a>(arg: &'a [u8], basedirs: &[Vec<u8>]) -> Cow<'a,
             // argument was the whole reason 379 of 462 moc invocations keyed
             // differently and shared nothing.
             //
-            // Accept the separator-less form only at the very end of the
-            // argument, where there is no following component for it to run
-            // into -- which is what keeps the boundary rule intact.
+            // Accept the separator-less form only where there is no following
+            // component for it to run into -- which is what keeps the boundary
+            // rule intact. Two places qualify:
+            //
+            //   - the end of the argument, which is `-I<checkout root>`;
+            //   - immediately before `=`, which is
+            //     `-ffile-prefix-map=<root>=.` and its `-fdebug-` and
+            //     `-fmacro-` siblings. Measured: adding that flag to two
+            //     checkouts of one fixture made their objects byte-identical
+            //     and turned the second checkout's hit into a miss, because
+            //     the root inside the flag never matched.
+            //
+            // A following byte that could continue a path name -- anything
+            // else -- is refused, so `/a/proj` still does not strip out of
+            // `/a/project`.
             None => match sorted.iter().find(|(n, folds)| {
+                let (rest, body) = (&haystack[i..], &n[..n.len().saturating_sub(1)]);
                 n.len() > 1
-                    && haystack.len() - i == n.len() - 1
-                    && starts_with_on(&haystack[i..], &n[..n.len() - 1], *folds)
+                    && starts_with_on(rest, body, *folds)
+                    && matches!(rest.get(body.len()), None | Some(b'='))
             }) {
                 Some((n, _)) => {
                     matched = true;
@@ -2087,6 +2100,43 @@ mod tests {
         assert!(super::starts_with_on(b"/Users/x/", b"/Users/x/", false));
         // Length is not folded away by either.
         assert!(!super::starts_with_on(b"/Users/", b"/users/x/", true));
+    }
+
+    /// `-ffile-prefix-map=<root>=.` names the basedir followed by `=`.
+    ///
+    /// The flag whose entire purpose is to make objects path-independent was
+    /// the one flag that pinned the key to a path. Measured on two checkouts of
+    /// one fixture: without the flag the second checkout hit; adding it to both
+    /// builds turned that hit into a miss, while making the two objects
+    /// byte-identical -- so the flag bought reproducibility and paid for it by
+    /// destroying the sharing it was added to make verifiable.
+    ///
+    /// The cause is the trailing separator every basedir carries: `/a/proj/`
+    /// does not occur in `-ffile-prefix-map=/a/proj=.`, because here the root
+    /// is followed by `=`.
+    #[test]
+    fn a_basedir_can_be_named_with_an_equals_after_it() {
+        let basedir = b"/a/proj/".to_vec();
+        let dirs = std::slice::from_ref(&basedir);
+
+        for flag in [
+            &b"-ffile-prefix-map=/a/proj=."[..],
+            &b"-fdebug-prefix-map=/a/proj=/build"[..],
+            &b"-fmacro-prefix-map=/a/proj="[..],
+        ] {
+            let out = super::strip_basedirs_in_arg(flag, dirs);
+            assert!(
+                !out.windows(7).any(|w| w == b"/a/proj"),
+                "the root survived in {:?}",
+                String::from_utf8_lossy(&out)
+            );
+        }
+
+        // The boundary rule still holds. A sibling directory whose name merely
+        // starts with the basedir is a different directory, and mapping it is a
+        // different compilation.
+        let out = super::strip_basedirs_in_arg(b"-ffile-prefix-map=/a/project=.", dirs);
+        assert_eq!(&*out, b"-ffile-prefix-map=/a/project=.");
     }
 
     /// `-I<checkout root>` names the basedir with no trailing separator.
