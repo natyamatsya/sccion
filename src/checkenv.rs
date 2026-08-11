@@ -667,19 +667,20 @@ pub fn check(config: &Config, cwd: &Path) -> EnvReport {
     }
 
     // Not a misconfiguration, and deliberately not a warning -- it is a fact
-    // about the volume, and the reason basedir matching asks the volume rather
-    // than the platform (see `crate::volume`). Reported because the two things
-    // that key off a path no longer agree about it: cache keys fold here,
-    // workspace identity does not.
+    // about the volume, and the reason basedir matching and workspace identity
+    // both ask the volume rather than the platform (see `crate::volume` and
+    // `crate::agent::canonical_path`). Reported because it is the fact those
+    // two turn on, and because someone reading a build that behaves this way
+    // should be able to see why from here.
     if cache.case_sensitive == Some(false) || working_directory.case_sensitive == Some(false) {
         findings.push(
             Level::Info,
             "This volume folds case, so one directory has more than one spelling.".to_string(),
             Some(
-                "Cache entries are shared across spellings: basedir matching folds case on a \
-                 volume that folds it. Per-checkout figures are not -- `--show-stats` and miss \
-                 records still register each spelling as its own workspace, so spell build \
-                 directories consistently if you read those.",
+                "Nothing to do: cache entries are shared across spellings, and `--show-stats` \
+                 attributes all of them to one workspace under the name the filesystem stores. \
+                 Objects served across spellings carry the stored spelling in their debug info, \
+                 as they already do across worktrees.",
             ),
         );
     }
