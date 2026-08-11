@@ -520,7 +520,7 @@ where
                 match seen_arch {
                     Some(s) if &s != arch && dont_cache_multiarch => {
                         cannot_cache!(
-                            "multiple different -arch, and SCCACHE_CACHE_MULTIARCH not set"
+                            "multiple different -arch, and SCCION_CACHE_MULTIARCH not set"
                         )
                     }
                     _ => {}
@@ -2561,7 +2561,7 @@ mod test {
     fn test_parse_arguments_multiarch_cache_disabled() {
         assert_eq!(
             CompilerArguments::CannotCache(
-                "multiple different -arch, and SCCACHE_CACHE_MULTIARCH not set",
+                "multiple different -arch, and SCCION_CACHE_MULTIARCH not set",
                 None
             ),
             parse_arguments_(
