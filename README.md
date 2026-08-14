@@ -120,6 +120,17 @@ Running sccion is like running ccache: prefix your compilation commands with it,
 sccion gcc -o foo.o -c foo.c
 ```
 
+In a repository, run `sccion --init` once and commit what it writes. That file's
+*location* is its content: the directory holding it becomes the root every
+compilation's paths are recorded relative to, so two checkouts of the project
+share cache entries instead of each warming its own. Measured on this repository
+across two worktrees of one commit: 559 of 561 compilations shared, 288 s down to
+18 s. See [Sharing one cache between checkouts](docs/Checkouts.md).
+
+The commands take dashes -- `--init`, `--check-env`, `--show-stats` -- because
+everything that is not a flag is passed through to be compiled, and a subcommand
+would shadow any compiler that happened to share its name.
+
 If you want to use sccion for caching Rust builds you can define `build.rustc-wrapper` in the
 [cargo configuration file](https://doc.rust-lang.org/cargo/reference/config.html).  For example, you can set it globally
 in `$HOME/.cargo/config.toml` by adding:

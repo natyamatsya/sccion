@@ -374,6 +374,47 @@ fn is_msvc_like(exe: &Path) -> bool {
         .unwrap_or(false)
 }
 
+/// Finish a compile, saying so if what was handed over was never a compiler.
+fn with_hint(res: Result<i32>, exe: &OsStr) -> Result<i32> {
+    let res = res.context("failed to execute compile");
+    match (res.is_err(), mistyped_command_hint(exe)) {
+        (true, Some(hint)) => res.context(hint),
+        _ => res,
+    }
+}
+
+/// A hint for `sccion init`, which is not the command it looks like.
+///
+/// This program's job is to run whatever it is handed, so the first non-flag
+/// argument is a compiler -- always, and it has to be, because a subcommand
+/// grammar here would shadow any real compiler that happened to share a name.
+/// That is why the commands are spelled `--init` and `--check-env`. But
+/// `sccion init` is what everyone types first, and "cannot find binary path" is
+/// a bad answer to it: correct, and no help at all.
+fn mistyped_command_hint(exe: &OsStr) -> Option<String> {
+    // The flags from `cmdline`, as someone would type them without the dashes.
+    const COMMANDS: &[&str] = &[
+        "init",
+        "check-env",
+        "show-stats",
+        "show-adv-stats",
+        "start-server",
+        "stop-server",
+        "zero-stats",
+        "dist-auth",
+        "dist-status",
+        "package-toolchain",
+    ];
+    let word = exe.to_str()?;
+    COMMANDS.contains(&word).then(|| {
+        format!(
+            "`{word}` is one of sccion's own commands rather than a compiler; \
+             it is spelled `sccion --{word}`. Everything else is passed \
+             through to be compiled, which is why the commands take dashes."
+        )
+    })
+}
+
 /// Send a `Compile` request to the server, and return the server response if successful.
 fn request_compile<W, X, Y>(
     conn: &mut ServerConnection,
@@ -791,6 +832,12 @@ pub fn run_command(cmd: Command) -> Result<i32> {
                 return Ok(1);
             }
         }
+        Command::Init => {
+            trace!("Command::Init");
+            // No daemon is contacted: this writes a file for a repository, and
+            // says nothing about the machine or its cache.
+            println!("{}", crate::init::run(&env::current_dir()?)?.report());
+        }
         Command::ZeroStats => {
             trace!("Command::ZeroStats");
             daemon
@@ -950,7 +997,7 @@ pub fn run_command(cmd: Command) -> Result<i32> {
                     &mut io::stdout(),
                     &mut io::stderr(),
                 );
-                return res.context("failed to execute compile");
+                return with_hint(res, exe.as_ref());
             }
             let res = do_compile(
                 || {
@@ -967,7 +1014,7 @@ pub fn run_command(cmd: Command) -> Result<i32> {
                 &mut io::stdout(),
                 &mut io::stderr(),
             );
-            return res.context("failed to execute compile");
+            return with_hint(res, exe.as_ref());
         }
     }
 

@@ -47,6 +47,7 @@ mod compiler;
 pub mod config;
 pub mod dist;
 pub mod envvar;
+pub mod init;
 mod jobserver;
 #[cfg(windows)]
 pub mod pipe;

@@ -66,6 +66,8 @@ pub enum Command {
     ZeroStats,
     /// Report the environment sccion will run in, and exit.
     CheckEnv(StatsFormat),
+    /// Write a `.sccion.toml` for the tree this was run in, and exit.
+    Init,
     /// Show the status of the distributed client.
     DistStatus,
     /// Perform a login to authenticate for distributed compilation.
@@ -151,6 +153,9 @@ fn get_clap_command() -> clap::Command {
             flag_infer_long("check-env")
                 .help("report the environment sccion will run in and exit")
                 .action(ArgAction::SetTrue),
+            flag_infer_long("init")
+                .help("write a .sccion.toml for this checkout and exit")
+                .action(ArgAction::SetTrue),
             flag_infer_long("dist-auth")
                 .help("authenticate for distributed compilation")
                 .action(ArgAction::SetTrue),
@@ -184,6 +189,7 @@ fn get_clap_command() -> clap::Command {
                     "stop-server",
                     "zero-stats",
                     "check-env",
+                    "init",
                     "package-toolchain",
                     "CMD",
                 ])
@@ -299,6 +305,8 @@ pub fn try_parse() -> Result<Command> {
                         .cloned()
                         .unwrap_or(StatsFormat::Text),
                 ))
+            } else if matches.get_flag("init") {
+                Ok(Command::Init)
             } else if matches.get_flag("zero-stats") {
                 Ok(Command::ZeroStats)
             } else if matches.get_flag("dist-auth") {

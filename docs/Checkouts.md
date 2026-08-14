@@ -16,11 +16,23 @@ subject of most of this page.
 
 ## Turning it on
 
-Commit a `.sccion.toml` at the top of the repository:
+```bash
+sccion --init      # writes .sccion.toml at the top of the checkout
+git add .sccion.toml
+```
+
+The file it writes is comments and nothing else, which is the common case: the
+directory holding it is the root, so an empty file already does the whole job.
+Every setting it carries is listed in it, commented out. Writing it by hand is
+equally fine:
 
 ```toml
 # Empty is the common case -- the file's own directory is the checkout root.
 ```
+
+`--init` never edits a file that is already there, and it declines when one
+further up the tree already governs the directory: a second file deeper down
+would move the root and strand every key computed against the first.
 
 That is the whole configuration. sccion finds the file by walking up from each
 compilation the way tools find `.clang-format`, and **the directory holding it
