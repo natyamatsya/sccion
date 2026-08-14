@@ -81,7 +81,7 @@ scheduler_url = "http://127.0.0.1:10600"
 #toolchains = []
 # Size of the local toolchain cache, in bytes (5GB here, 10GB if unspecified).
 toolchain_cache_size = 5368709120
-cache_dir = "/home/user/.cache/sccache-dist-client"
+cache_dir = "/home/user/.cache/sccion-dist-client"
 
 [dist.auth]
 type = "token"

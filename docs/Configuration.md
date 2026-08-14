@@ -44,7 +44,7 @@ scheduler_url = "http://1.2.3.4:10600"
 toolchains = []
 # the maximum size of the toolchain cache in bytes
 toolchain_cache_size = 5368709120
-cache_dir = "/home/user/.cache/sccache-dist-client"
+cache_dir = "/home/user/.cache/sccion-dist-client"
 
 [dist.auth]
 type = "token"
@@ -178,9 +178,14 @@ key_prefix = "cosprefix"
 sccion looks for its configuration file at the path indicated by env variable `SCCION_CONF`.
 
 If no such env variable is set, sccion looks at default locations as below:
-- Linux: `~/.config/sccion/config`
-- macOS: `~/Library/Application Support/Mozilla.sccache/config`
-- Windows: `%APPDATA%\Mozilla\sccion\config\config`
+- Linux and macOS: `~/.config/sccion/config`
+- Windows: `%APPDATA%\sccion\config`
+
+If none of those exists, the locations sccache used are read as well —
+`~/.config/sccache/config`, `~/Library/Application Support/Mozilla.sccache/config`
+(and the `~/Library/Preferences/Mozilla.sccache/config` that predated it), or
+`%APPDATA%\Mozilla\sccache\config\config` — so a configuration file written
+years ago is still found.
 
 The latest `cache.XXX` entries may be found here: https://github.com/mozilla/sccache/blob/ffe3070f77ef3301c8ff718316e4ab017ec83042/src/config.rs#L300.
 

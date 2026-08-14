@@ -63,9 +63,18 @@ byteorder = "1.5"
 bytes = "1"
 chrono = "0.4"
 clap = { version = "4.5.13", features = ["derive", "env", "wrap_help"] }
+# Kept only to find where sccache put things, so a machine that has been
+# building for years is not asked to warm a cache from nothing. New paths come
+# from `etcetera`.
 directories = "6.0"
 encoding_rs = "0.8"
 env_logger = "0.11"
+# Where a command-line tool keeps its things: XDG on Linux *and* macOS, which
+# is the convention a cache you `du` and delete from a terminal belongs to.
+# `directories` is platform-native everywhere, and its macOS answer --
+# ~/Library/Caches -- is the right one for a GUI application and a surprising
+# one here.
+etcetera = "0.11"
 filetime = "0.2"
 flate2 = { version = "1.0", optional = true, default-features = false, features = [
   "rust_backend",

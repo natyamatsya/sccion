@@ -1,6 +1,10 @@
 # Local
 
-sccion defaults to using local disk storage. You can set the `SCCION_DIR` environment variable to change the disk cache location. By default it will use a sensible location for the current platform: `~/.cache/sccion` on Linux, `%LOCALAPPDATA%\Mozilla\sccion` on Windows, and `~/Library/Caches/Mozilla.sccache` on MacOS.
+sccion defaults to using local disk storage. You can set the `SCCION_DIR` environment variable to change the disk cache location. By default it uses `~/.cache/sccion` on Linux **and macOS**, and `%LOCALAPPDATA%\sccion` on Windows.
+
+macOS gets the XDG location rather than `~/Library/Caches` deliberately. A compiler cache is something you `du`, watch, and delete when an experiment goes wrong, and each of those is worse when the directory is somewhere the shell does not go by habit. It also makes one instruction — "clear `~/.cache/sccion`" — true on both Unixes.
+
+**If sccache already left a cache on this machine**, that directory keeps being used instead: `~/.cache/sccache`, `~/Library/Caches/Mozilla.sccache`, or `%LOCALAPPDATA%\Mozilla\sccache`, whichever the platform has. Moving the default out from under a warm cache would report no error at all — only a build that suddenly misses everything, which is the failure this program exists to make visible. Delete the old directory to migrate; the next build starts filling the new one, cold.
 
 The default cache size is 10 gigabytes. To change this, set `SCCION_CACHE_SIZE`, for example `SCCION_CACHE_SIZE="1G"`.
 

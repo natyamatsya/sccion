@@ -17,6 +17,7 @@ use crate::cache::{CacheMode, ObjectEncoding};
 #[cfg(target_os = "windows")]
 use crate::util::normalize_win_path;
 use directories::ProjectDirs;
+use etcetera::{BaseStrategy, choose_base_strategy};
 use fs::File;
 use fs_err as fs;
 #[cfg(any(feature = "dist-client", feature = "dist-server"))]
@@ -91,27 +92,73 @@ pub struct MultiLevelConfig {
 static CACHED_CONFIG_PATH: LazyLock<PathBuf> = LazyLock::new(CachedConfig::file_config_path);
 static CACHED_CONFIG: Mutex<Option<CachedFileConfig>> = Mutex::new(None);
 
-const ORGANIZATION: &str = "Mozilla";
-const APP_NAME: &str = "sccache";
-const DIST_APP_NAME: &str = "sccache-dist-client";
+/// This program's own directory, under whichever base the platform gives.
+const APP_NAME: &str = "sccion";
+const DIST_APP_NAME: &str = "sccion-dist-client";
+
+/// The names sccache used. Only ever read, and only for as long as machines
+/// have directories under them.
+const LEGACY_ORGANIZATION: &str = "Mozilla";
+const LEGACY_APP_NAME: &str = "sccache";
+const LEGACY_DIST_APP_NAME: &str = "sccache-dist-client";
+
 const TEN_GIGS: u64 = 10 * 1024 * 1024 * 1024;
 
 pub const INSECURE_DIST_CLIENT_TOKEN: &str = "dangerously_insecure_client";
 
+/// Where a command-line program keeps things on this platform.
+///
+/// `etcetera`'s base strategy is XDG on Linux *and macOS* -- `~/.cache/sccion`
+/// on both -- and `%LOCALAPPDATA%` on Windows. That is deliberate rather than
+/// incidental: the alternative, `directories`, is platform-native everywhere,
+/// and its macOS answer is `~/Library/Caches/Mozilla.sccache`. That is the
+/// correct location for an application bundle and the wrong one for a cache
+/// whose whole interface is a terminal -- somewhere you `du` it, watch it, and
+/// delete it when an experiment goes wrong. `etcetera` says as much itself: it
+/// keeps the Apple directories for `choose_native_strategy`, which is what a
+/// GUI would call.
+fn base_dirs() -> impl BaseStrategy {
+    choose_base_strategy().expect("Unable to determine the home directory")
+}
+
+/// Where sccache would have put the same thing.
+fn legacy_dirs(app_name: &str) -> Option<ProjectDirs> {
+    ProjectDirs::from("", LEGACY_ORGANIZATION, app_name)
+}
+
+/// `new`, unless only `legacy` exists.
+///
+/// A rename must not strand a warm cache. A machine that has been building for
+/// years has one under sccache's name, and moving the default out from under it
+/// would report no error at all -- just a build that suddenly misses
+/// everything, which is the failure this whole program exists to make visible.
+/// So the old directory keeps being used while it is there, and only a machine
+/// with neither gets the new one. It is the same new-then-old order
+/// [`config_file`] has always used for the configuration file.
+fn prefer_existing(new: PathBuf, legacy: PathBuf) -> PathBuf {
+    if !new.exists() && legacy.exists() {
+        legacy
+    } else {
+        new
+    }
+}
+
 // Unfortunately this means that nothing else can use the sccion cache dir as
 // this top level directory is used directly to store sccion cached objects...
 pub fn default_disk_cache_dir() -> PathBuf {
-    ProjectDirs::from("", ORGANIZATION, APP_NAME)
-        .expect("Unable to retrieve disk cache directory")
-        .cache_dir()
-        .to_owned()
+    let new = base_dirs().cache_dir().join(APP_NAME);
+    match legacy_dirs(LEGACY_APP_NAME) {
+        Some(legacy) => prefer_existing(new, legacy.cache_dir().to_owned()),
+        None => new,
+    }
 }
 // ...whereas subdirectories are used of this one
 pub fn default_dist_cache_dir() -> PathBuf {
-    ProjectDirs::from("", ORGANIZATION, DIST_APP_NAME)
-        .expect("Unable to retrieve dist cache directory")
-        .cache_dir()
-        .to_owned()
+    let new = base_dirs().cache_dir().join(DIST_APP_NAME);
+    match legacy_dirs(LEGACY_DIST_APP_NAME) {
+        Some(legacy) => prefer_existing(new, legacy.cache_dir().to_owned()),
+        None => new,
+    }
 }
 
 /// What the disk cache means by "preprocessor cache mode was not mentioned".
@@ -1352,27 +1399,32 @@ fn config_from_env() -> Result<EnvConfig> {
     })
 }
 
-// The directories crate changed the location of `config_dir` on macos in version 3,
-// so we also check the config in `preference_dir` (new in that version), which
-// corresponds to the old location, for compatibility with older setups.
+/// Newest location first, and every older one after it.
+///
+/// There are three, because this file has moved twice: to `~/.config/sccion` on
+/// Unix now, from sccache's `directories` location, which itself moved on macOS
+/// when that crate reorganised in version 3 -- `preference_dir` is where it was
+/// before. A configuration file is written once and read for years, so each
+/// step keeps reading what the one before it wrote.
 fn config_file(env_var: &str, leaf: &str) -> PathBuf {
     if let Some(env_value) = env::var_os(env_var) {
         return env_value.into();
     }
-    let dirs =
-        ProjectDirs::from("", ORGANIZATION, APP_NAME).expect("Unable to get config directory");
-    // If the new location exists, use that.
-    let path = dirs.config_dir().join(leaf);
-    if path.exists() {
-        return path;
+    let new = base_dirs().config_dir().join(APP_NAME).join(leaf);
+    if new.exists() {
+        return new;
     }
-    // If the old location exists, use that.
-    let path = dirs.preference_dir().join(leaf);
-    if path.exists() {
-        return path;
+    if let Some(legacy) = legacy_dirs(LEGACY_APP_NAME) {
+        for path in [
+            legacy.config_dir().join(leaf),
+            legacy.preference_dir().join(leaf),
+        ] {
+            if path.exists() {
+                return path;
+            }
+        }
     }
-    // Otherwise, use the new location.
-    dirs.config_dir().join(leaf)
+    new
 }
 
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -1760,6 +1812,46 @@ fn naming_one_preprocessor_setting_leaves_the_mode_on() {
             .preprocessor_cache_mode
             .use_preprocessor_cache_mode
     );
+}
+
+/// The rename must not strand a warm cache: a machine already building under
+/// sccache's directory keeps it, and only one with neither directory gets the
+/// new name. Getting this backwards reports no error -- just a build that
+/// suddenly misses everything.
+#[test]
+fn a_populated_legacy_directory_wins_and_nothing_else_does() {
+    let tmp = tempfile::tempdir().expect("a temporary directory");
+    let new = tmp.path().join("sccion");
+    let legacy = tmp.path().join("Mozilla.sccache");
+
+    // Neither exists yet: a fresh machine gets the new name.
+    assert_eq!(prefer_existing(new.clone(), legacy.clone()), new);
+
+    // Only the old one exists: keep using what is warm.
+    fs::create_dir(&legacy).expect("legacy cache directory");
+    assert_eq!(prefer_existing(new.clone(), legacy.clone()), legacy);
+
+    // Both exist: the new one has already been chosen once, so it stays chosen.
+    fs::create_dir(&new).expect("new cache directory");
+    assert_eq!(prefer_existing(new.clone(), legacy), new);
+}
+
+/// Whatever the base strategy answers, this program's things live under a
+/// directory named after it -- not one named after the project it was forked
+/// from.
+#[test]
+fn the_defaults_are_named_after_this_program() {
+    for dir in [default_disk_cache_dir(), default_dist_cache_dir()] {
+        let name = dir
+            .file_name()
+            .expect("a cache directory has a final component")
+            .to_string_lossy()
+            .into_owned();
+        assert!(
+            name.starts_with(APP_NAME) || name.contains(LEGACY_APP_NAME),
+            "{name} is neither this program's directory nor sccache's"
+        );
+    }
 }
 
 #[test]

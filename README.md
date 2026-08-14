@@ -412,10 +412,15 @@ sccache contributors. In summary, sccion adds:
 * **Measurement** — see [docs/Benchmarks.md](docs/Benchmarks.md).
 
 **Names.** The binaries are `sccion`, `sccion-dist` and `sccion-mcp`. Settings
-are spelled `SCCION_*` and are read under `SCCACHE_*` as well; the configuration
-file's location and the cache directory keep their upstream names outright. The
-project file is `.sccion.toml` with no fallback, because it is this fork's own
-invention and has no upstream spelling to honour. sccion
+are spelled `SCCION_*` and are read under `SCCACHE_*` as well. The cache and the
+configuration file are `~/.cache/sccion` and `~/.config/sccion/config` on Linux
+and macOS alike, and under `%LOCALAPPDATA%` and `%APPDATA%` on Windows: the
+convention a command-line program follows, rather than the per-platform one that
+would put a cache you manage from a terminal in `~/Library/Caches`. Wherever
+sccache already left either of them, that path keeps being read instead — a
+rename may not strand a warm cache, nor a configuration file written years ago.
+The project file is `.sccion.toml` with no fallback, because it is this fork's
+own invention and has no upstream spelling to honour. sccion
 is not affiliated with or endorsed by Mozilla, and the Mozilla name and the
 sccache trade marks are used here only to identify the work this one is derived
 from.
