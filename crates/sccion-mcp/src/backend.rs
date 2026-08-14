@@ -66,3 +66,184 @@ impl Backend for DaemonBackend {
         sccion::api::environment(&self.config, cwd)
     }
 }
+
+/// Daemons that answer from a script, so the questions can be tested without
+/// one running.
+///
+/// Here rather than in a test module of their own because both the query layer
+/// and the server surface need them, and two fakes that drifted apart would
+/// make one of the two test suites quietly meaningless.
+#[cfg(test)]
+pub mod fake {
+    use std::path::{Path, PathBuf};
+    use std::sync::Mutex;
+
+    use anyhow::Result;
+    use sccion::api::{
+        Classification, DirectState, EnvReport, MissRecord, ServerInfo, WorkspaceInfo,
+    };
+
+    use super::Backend;
+
+    /// One workspace, one uncacheable record, and a handle named `nope` that
+    /// nothing minted.
+    pub struct Fake;
+
+    impl Backend for Fake {
+        fn register_workspace(&self, path: &Path) -> Result<WorkspaceInfo> {
+            Ok(WorkspaceInfo {
+                handle: "d34db33f".repeat(4),
+                root: path.to_string_lossy().into_owned(),
+                vcs: "git".into(),
+            })
+        }
+
+        fn describe_workspace(&self, handle: &str) -> Result<WorkspaceInfo> {
+            if handle == "nope" {
+                anyhow::bail!("unknown workspace handle");
+            }
+            Ok(WorkspaceInfo {
+                handle: handle.to_owned(),
+                root: "D:/wt".into(),
+                vcs: "git".into(),
+            })
+        }
+
+        fn stats(&self) -> Result<ServerInfo> {
+            Ok(ServerInfo {
+                stats: Default::default(),
+                cache_location: "D:/cache".into(),
+                cache_size: Some(1),
+                max_cache_size: Some(2),
+                use_preprocessor_cache_mode: true,
+                version: "test".into(),
+                basedirs: vec![],
+            })
+        }
+
+        fn miss_records(&self, handle: Option<&str>, _limit: usize) -> Result<Vec<MissRecord>> {
+            if handle == Some("nope") {
+                anyhow::bail!("unknown workspace handle");
+            }
+            Ok(vec![MissRecord {
+                seq: 1,
+                classification: Classification::Uncacheable("time_macros".into()),
+                direct: DirectState::Off,
+                key: None,
+                output: "foo.obj".into(),
+                input: Some("src/foo.c".into()),
+                language: Some("C/C++".into()),
+                workspace: Some("D:/wt".into()),
+                agent: Some("agent-7".into()),
+                command_digest: Some("abc".into()),
+                components: Some(sccion::api::KeyComponents {
+                    compiler: "c0".into(),
+                    arguments: "a0".into(),
+                    extra_files: "x0".into(),
+                    env: "e0".into(),
+                    working_directory: "w0".into(),
+                    inputs: "i0".into(),
+                }),
+            }])
+        }
+
+        fn environment(&self, _cwd: &Path) -> EnvReport {
+            empty_report()
+        }
+    }
+
+    /// Answers like [`Fake`], but its records carry no key components.
+    pub struct Untraced;
+
+    impl Backend for Untraced {
+        fn register_workspace(&self, path: &Path) -> Result<WorkspaceInfo> {
+            Fake.register_workspace(path)
+        }
+
+        fn describe_workspace(&self, handle: &str) -> Result<WorkspaceInfo> {
+            Fake.describe_workspace(handle)
+        }
+
+        fn stats(&self) -> Result<ServerInfo> {
+            Fake.stats()
+        }
+
+        fn miss_records(&self, handle: Option<&str>, limit: usize) -> Result<Vec<MissRecord>> {
+            let mut r = Fake.miss_records(handle, limit)?;
+            r[0].components = None;
+            Ok(r)
+        }
+
+        fn environment(&self, cwd: &Path) -> EnvReport {
+            Fake.environment(cwd)
+        }
+    }
+
+    /// Records which directory the environment report was asked about.
+    #[derive(Default)]
+    pub struct Located(Mutex<Option<PathBuf>>);
+
+    impl Located {
+        pub fn asked_about(&self) -> Option<PathBuf> {
+            self.0.lock().unwrap().clone()
+        }
+    }
+
+    impl Backend for Located {
+        fn register_workspace(&self, path: &Path) -> Result<WorkspaceInfo> {
+            Fake.register_workspace(path)
+        }
+
+        fn describe_workspace(&self, handle: &str) -> Result<WorkspaceInfo> {
+            Fake.describe_workspace(handle)
+        }
+
+        fn stats(&self) -> Result<ServerInfo> {
+            Fake.stats()
+        }
+
+        fn miss_records(&self, handle: Option<&str>, limit: usize) -> Result<Vec<MissRecord>> {
+            Fake.miss_records(handle, limit)
+        }
+
+        fn environment(&self, cwd: &Path) -> EnvReport {
+            *self.0.lock().unwrap() = Some(cwd.to_path_buf());
+            empty_report()
+        }
+    }
+
+    /// Enough of a report to be serialised; the contents are `checkenv`'s
+    /// business and are tested there.
+    pub fn empty_report() -> EnvReport {
+        let volume = sccion::api::VolumeReport {
+            path: "D:/wt".into(),
+            root: Some("D:\\".into()),
+            filesystem: "ReFS".into(),
+            dev_drive: Some("trusted".into()),
+            supports_block_cloning: true,
+            case_sensitive: Some(true),
+            spotlight_indexed: None,
+        };
+        EnvReport {
+            sccion_version: "test".into(),
+            sccion_path: None,
+            cache: volume.clone(),
+            working_directory: volume,
+            same_volume: true,
+            cache_location: "D:/cache".into(),
+            max_cache_size: 0,
+            compression: "none".into(),
+            project_config: None,
+            preprocessor_cache_mode: sccion::api::Setting {
+                name: "use_preprocessor_cache_mode".into(),
+                value: true,
+                origin: sccion::api::Origin::Machine,
+                machine_value: None,
+                note: None,
+            },
+            preprocessor_cache_settings: vec![],
+            defender: None,
+            findings: vec![],
+        }
+    }
+}

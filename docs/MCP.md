@@ -77,8 +77,10 @@ stderr under `SCCION_LOG`. It needs a running daemon and will not start one:
 starting a daemon in order to ask it for statistics reports the statistics of
 the daemon just started, which is a confident zero rather than an answer.
 
-The adapter holds no state and can be restarted between any two requests. The
-sccion daemon is the state.
+The adapter keeps nothing of its own: every answer is fetched from the daemon
+when it is asked for, and the daemon is the state. A client on a revision that
+still has a session does get one, because that is what its protocol says — the
+SDK holds it, no answer depends on it, and a restarted process starts clean.
 
 ## Tools
 
@@ -112,8 +114,9 @@ a workspace".
 
 A handle is a capability. Holding one grants read access to that workspace's
 build state, so it is minted by the daemon, unguessable, and never derived from
-anything a caller supplies. There are no sessions in this protocol revision, so
-nothing else scopes it: it lives as long as the daemon does.
+anything a caller supplies. Nothing else scopes it — not even a protocol session,
+where the client's revision has one, since the daemon that mints handles knows
+nothing about connections: it lives as long as the daemon does.
 
 ### `explain_miss` and the classification
 
@@ -163,35 +166,53 @@ examples. "141 permanent misses" is a fact about a build, and reading it out of
 
 ## Protocol revision
 
-Built to **2026-07-28**, which removed protocol-level sessions and the
-`initialize` handshake. The consequences are visible in the interface:
+The protocol is **`rmcp`'s**, the official Rust SDK. This crate implements none
+of it, which is a deliberate reversal: it used to carry a hand-written envelope
+built to 2026-07-28 alone, and that is precisely how it came to be unreachable
+from every editor in the field, all of which open with the `initialize` that
+revision removed. A second implementation of a specification that revises
+quarterly is a maintenance cost that buys a way to be wrong on your own.
 
-- There is no connection setup. Every request carries its own
-  `_meta.io.modelcontextprotocol/protocolVersion`; every result carries
-  `serverInfo` and a `resultType`.
-- `server/discover` is implemented and is the one endpoint that cannot be
-  skipped. It is exempt from the version check, since it is how a client finds
-  out what to speak.
-- Cross-call state is a server-minted handle passed as an ordinary tool
-  argument, which is what `register_workspace` is.
-- `ttlMs` and `cacheScope` are on every list and read result. Anything keyed by
-  a handle is `private` — marking it shareable would let one caller's build state
-  be served into another's context.
-- There is no logging, ping, or subscription surface. Those were removed or
-  deprecated; the migration for logging is stderr, which is where this logs.
-- Adapter error codes stay in `-32000`..=`-32019`; `-32020`..=`-32099` is
-  reserved for the specification.
+What the SDK brings:
 
-Every one of those is asserted by a test in `crates/sccion-mcp`, and the rules
-live in one file (`envelope.rs`) so the next revision is a diff there rather
-than an audit of the whole adapter.
+- **Both lifecycles, negotiated per connection.** A client that opens with
+  `initialize` gets a session; one that speaks 2026-07-28 sends no handshake at
+  all, opening with `server/discover` or any request carrying the required
+  `_meta`. Neither is configured — the client chooses, and one binary answers.
+- **`server/discover`** reports every revision the SDK implements
+  (`2024-11-05` through `2026-07-28`), so discovery describes the server that is
+  actually answering.
+- **The envelope**: `resultType` on every result, `ttlMs` and `cacheScope` on
+  the discovery and list results, and the `_meta` validation the newer lifecycle
+  requires. The next revision is a version bump here rather than a diff to an
+  envelope of our own.
 
-**One thing is unverified.** The specification names an
-`UnsupportedProtocolVersionError` but its spec-assigned numeric code was not
-available when this was written. An implementation-defined code (`-32003`) is
-used deliberately in the meantime: a wrong guess there can never collide with a
-specification assignment, whereas an invented number in the reserved range
-could. This is the item to re-check against the published specification.
+What this repository still decides, in `server.rs`, because none of it is the
+protocol's business:
+
+- **Every tool reads.** `readOnlyHint` and `destructiveHint: false` on all
+  eight, asserted by a test. No tool can evict an entry, change configuration or
+  start a compilation.
+- **A handle is a capability**, so a tool that cannot resolve one refuses rather
+  than falling back to the machine or to the adapter's own directory.
+- **`cacheScope: private`** on anything keyed by a handle — the statistics
+  resource — because a result that describes one caller's build must not be
+  served into another's context. `public` is for the environment report alone,
+  which is the same answer for everybody.
+- **A stable tool list**, sorted by name, so a client that caches it is not
+  re-fetching over a reordering.
+- **Two invented error codes**, `-32001` (unknown handle) and `-32002` (no
+  daemon), both inside the implementation-defined `-32000`..=`-32019` range;
+  `-32020`..=`-32099` is reserved for the specification and nothing here may use
+  it. Every other failure reuses a code the SDK already assigns.
+
+**One thing to know about tool results.** `CallToolResult` has no
+`ttlMs`/`cacheScope` in the 2026-07-28 schema — they belong to the discovery and
+list results — so a tool answer carries no cache marking. The previous adapter
+put one there anyway, which was a field the specification does not define. The
+`private` intent survives in what the tools refuse rather than on the wire; the
+statistics *resource*, which does carry the field, is the one to read when a
+caller wants it stated.
 
 ## Not implemented, deliberately
 

@@ -15,21 +15,29 @@
 //! could already talk to the daemon, which is why this is a security decision
 //! and not just the simpler one.
 //!
-//! **The adapter holds no state.** There is no session in this protocol
-//! revision and no connection setup phase, so there is nothing to warm up and
-//! nothing to lose: the sccion daemon is the state and this is a translator in
-//! front of it. It can be killed between any two requests without consequence.
-//! An adapter that invented a cache of its own would be inventing a bug.
+//! **The adapter holds no state of its own.** The sccion daemon is the state
+//! and this is a translator in front of it; an adapter that invented a cache of
+//! its own would be inventing a bug. `rmcp` keeps what a protocol revision
+//! requires -- a client that opens with `initialize` gets a session, because
+//! that revision has one -- but no answer here depends on it.
+//!
+//! **The protocol is the SDK's.** `rmcp` implements the MCP revisions and
+//! negotiates between them per connection, so an editor that opens with
+//! `initialize` and one that speaks 2026-07-28 with no handshake at all are
+//! both answered by this one binary, and the next revision is a version bump
+//! rather than a second implementation of a moving specification.
 
 mod backend;
-mod dispatch;
-mod envelope;
+mod queries;
+mod server;
 
-use std::io::{BufRead, Write};
+use std::sync::Arc;
 
 use anyhow::Result;
+use rmcp::{ServiceExt, transport::stdio};
 
-fn main() -> Result<()> {
+#[tokio::main(flavor = "current_thread")]
+async fn main() -> Result<()> {
     // Logging goes to stderr and nowhere else, under the same `SCCACHE_LOG` as
     // the rest of sccion. The protocol's logging surface is deprecated and its
     // own migration guidance is "use stderr", so there is nothing to add on the
@@ -49,31 +57,9 @@ fn main() -> Result<()> {
         }
     };
 
-    let stdin = std::io::stdin();
-    let mut stdout = std::io::stdout();
-    for line in stdin.lock().lines() {
-        let line = line?;
-        if line.trim().is_empty() {
-            continue;
-        }
-        let response = match serde_json::from_str::<serde_json::Value>(&line) {
-            Ok(request) => dispatch::handle(&request, &backend),
-            Err(e) => {
-                // Parse errors have no id to answer against, so the standard
-                // JSON-RPC null-id form is the only correct reply.
-                eprintln!("sccion-mcp: unparseable request: {e}");
-                Some(envelope::err(
-                    serde_json::Value::Null,
-                    -32700,
-                    format!("parse error: {e}"),
-                ))
-            }
-        };
-        if let Some(response) = response {
-            serde_json::to_writer(&mut stdout, &response)?;
-            stdout.write_all(b"\n")?;
-            stdout.flush()?;
-        }
-    }
+    let service = server::SccionServer::new(Arc::new(backend))
+        .serve(stdio())
+        .await?;
+    service.waiting().await?;
     Ok(())
 }
