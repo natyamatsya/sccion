@@ -28,7 +28,14 @@ use std::path::{Path, PathBuf};
 use serde::Serialize;
 
 use crate::config::Config;
-use crate::volume::{case_sensitive, root as volume_root, statfs_of};
+use crate::volume::{case_sensitive, root as volume_root};
+// Gated exactly as its definition is: `statfs_of` hands back a `libc::statfs`,
+// which only the BSD-shaped platforms have.
+#[cfg(all(
+    unix,
+    any(target_os = "macos", target_os = "ios", target_os = "freebsd")
+))]
+use crate::volume::statfs_of;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 #[serde(rename_all = "lowercase")]
