@@ -57,7 +57,11 @@ backon = { version = "1", default-features = false, features = [
   "std-blocking-sleep",
 ] }
 base64 = "0.23"
-bincode = "1"
+# Vendored: see crates/bincode. bincode is unmaintained -- its last release is a
+# `compile_error!` -- and this encoding is the preprocessor cache on disk and
+# every client/daemon message. Copying 3 770 frozen lines answers that without
+# a format change; every alternative answered it with a migration.
+bincode = { package = "sccion-bincode", path = "crates/bincode" }
 blake3 = "1"
 byteorder = "1.5"
 bytes = "1"
@@ -270,6 +274,7 @@ dist-tests = ["dist-client", "dist-server"]
 [workspace]
 exclude = ["tests/test-crate"]
 members = [
+  "crates/bincode",
   "crates/sccion-mcp",
   "scripts/bench",
   "tests/integration/randomize_readdir",
