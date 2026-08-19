@@ -73,6 +73,20 @@ fn portable_path(path: PathBuf, basedirs: &[Vec<u8>]) -> OsString {
     }
 }
 
+/// How many includes to stat at once when the cache runs dry.
+///
+/// A `stat` here costs ~13 us of filter-stack latency and almost no CPU, so
+/// they overlap nearly perfectly. The batch is what keeps the loop's cheap
+/// exit: the loop still stops at the first include that does not match, and a
+/// stale first file costs one batch rather than a whole entry.
+///
+/// Larger batches buy more overlap and waste more on an early miss, so the
+/// batch starts small and doubles as the entry proves itself: a stale *first*
+/// include costs eight stats rather than a hundred and twenty-eight, while an
+/// entry that keeps matching reaches full width within a few batches.
+const STAT_BATCH_MAX: usize = 128;
+const STAT_BATCH_MIN: usize = 8;
+
 /// What one lookup has already learned about the files on disk.
 ///
 /// Keyed by the *stored* path, so a hit skips resolving as well as stat'ing.
@@ -298,6 +312,49 @@ impl PreprocessorCacheEntry {
         None
     }
 
+    /// Stat the next batch of unknown includes at once.
+    ///
+    /// The work is waiting, not computing, so it goes to the blocking pool
+    /// where waiting is what the threads are for. Failures are recorded exactly
+    /// as the sequential path records them, so this changes when the answers
+    /// arrive and not what they are.
+    async fn prefetch_stats(
+        rest: &[IncludeEntry],
+        validated: usize,
+        basedirs: &[Vec<u8>],
+        pool: &tokio::runtime::Handle,
+        seen: &mut StatCache,
+    ) {
+        let wanted: Vec<OsString> = rest
+            .iter()
+            .map(|i| i.path.clone())
+            .filter(|p| !seen.contains_key(p))
+            // Twice what this result has already got right, so reading ahead is
+            // always bounded by work that has already paid off.
+            .take((validated * 2).clamp(STAT_BATCH_MIN, STAT_BATCH_MAX))
+            .collect();
+        if wanted.len() < 2 {
+            // One file is not worth a thread; the caller resolves it inline.
+            return;
+        }
+
+        let mut tasks = Vec::with_capacity(wanted.len());
+        for stored in wanted {
+            let basedirs: Vec<Vec<u8>> = basedirs.to_vec();
+            tasks.push(pool.spawn_blocking(move || {
+                let (path, meta) = resolve_and_stat(&stored, &basedirs);
+                (stored, path, meta.map_err(|e| e.kind()))
+            }));
+        }
+        for task in tasks {
+            // A panicked or cancelled stat is simply not cached; the loop then
+            // resolves that one inline and behaves as it always did.
+            if let Ok((stored, path, meta)) = task.await {
+                seen.insert(stored, (path, meta));
+            }
+        }
+    }
+
     /// A result matches if all of its include files exist on disk and have not changed.
     ///
     /// Done in two passes. The first is sequential and cheap -- a `stat` per
@@ -328,6 +385,12 @@ impl PreprocessorCacheEntry {
         let mut needs_contents = Vec::new();
 
         for (index, include) in includes.iter().enumerate() {
+            // Read ahead when the cache runs dry. Everything the batch learns
+            // lands in `seen`, so the comparison below is unchanged -- it just
+            // stops finding the cache empty.
+            if !seen.contains_key(&include.path) {
+                Self::prefetch_stats(&includes[index..], index, basedirs, pool, seen).await;
+            }
             let (candidate, stat) = match seen.get(&include.path) {
                 Some((path, meta)) => (path.clone(), meta.clone()),
                 None => {
@@ -1660,6 +1723,21 @@ mod lookup_cost {
             let mut entry = entry_with_late_misses(&files, misses, &[]);
             let (ms, hit) = time_lookup(&mut entry, config, &[], 5).await;
             println!("  {n:>5} includes / {misses} late miss(es)       {ms:>8.2} ms  hit: {hit}");
+        }
+
+        // The shape a prefetch makes worse: a miss on the *first* include, which
+        // the lazy loop settles in one `stat` and a prefetch pays for in full.
+        {
+            let (_root, files) = tree(8, 62);
+            let n = files.len();
+            let mut entry = entry_over(&files, 1, &[]);
+            if let Some(v) = entry.results.values_mut().next()
+                && let Some(first) = v.first_mut()
+            {
+                first.file_size = first.file_size.wrapping_add(1);
+            }
+            let (ms, hit) = time_lookup(&mut entry, config, &[], 5).await;
+            println!("  {n:>5} includes / miss on file 1     {ms:>8.2} ms  hit: {hit}");
         }
 
         // Basedirs: the multi-basedir path adds an `exists` per candidate.
