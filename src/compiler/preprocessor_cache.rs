@@ -72,33 +72,53 @@ fn portable_path(path: PathBuf, basedirs: &[Vec<u8>]) -> OsString {
     }
 }
 
-/// Where a recorded include is on *this* machine.
+/// Where a recorded include is, and what it looks like, in one pass.
 ///
-/// The counterpart of [`portable_path`]. A stored path that is still absolute
-/// was outside every basedir and is used as it stands.
-fn resolve_include(stored: &OsStr, basedirs: &[Vec<u8>]) -> PathBuf {
+/// [`resolve_include`] asks `exists` of each candidate and the caller then asks
+/// `symlink_metadata` of the winner: two syscalls to learn one thing, on a path
+/// whose whole cost is syscalls. `symlink_metadata` answers both questions at
+/// once -- a candidate that can be stat'd is the candidate that exists -- so
+/// trying it directly halves the calls whenever more than one basedir is
+/// configured. With one basedir, or an absolute stored path, there is no guess
+/// to make and this is exactly what the old code did.
+fn resolve_and_stat(
+    stored: &OsStr,
+    basedirs: &[Vec<u8>],
+) -> (PathBuf, std::io::Result<std::fs::Metadata>) {
     let path = Path::new(stored);
     if path.is_absolute() || basedirs.is_empty() {
-        return path.to_path_buf();
+        let owned = path.to_path_buf();
+        let meta = std::fs::symlink_metadata(&owned);
+        return (owned, meta);
     }
     let rooted = |basedir: &Vec<u8>| {
         std::str::from_utf8(basedir)
             .ok()
             .map(|root| Path::new(root).join(path))
     };
-    // One basedir is the overwhelmingly common case, and it needs no guessing:
-    // asking the filesystem which root a path belongs under would be a `stat`
-    // per include per lookup, on top of the one the check makes anyway.
     if basedirs.len() == 1
         && let Some(p) = rooted(&basedirs[0])
     {
-        return p;
+        let meta = std::fs::symlink_metadata(&p);
+        return (p, meta);
     }
-    basedirs
-        .iter()
-        .filter_map(rooted)
-        .find(|candidate| candidate.exists())
-        .unwrap_or_else(|| path.to_path_buf())
+    let mut last: Option<(PathBuf, std::io::Error)> = None;
+    for candidate in basedirs.iter().filter_map(rooted) {
+        match std::fs::symlink_metadata(&candidate) {
+            Ok(meta) => return (candidate, Ok(meta)),
+            Err(e) => last = Some((candidate, e)),
+        }
+    }
+    // Nothing resolved. Report against the stored path, as before, so the log
+    // line names what was recorded rather than the last guess that failed.
+    match last {
+        Some((_, e)) => (path.to_path_buf(), Err(e)),
+        None => {
+            let owned = path.to_path_buf();
+            let meta = std::fs::symlink_metadata(&owned);
+            (owned, meta)
+        }
+    }
 }
 
 #[derive(Clone, Deserialize, Serialize, Debug, Default, PartialEq, Eq)]
@@ -275,17 +295,19 @@ impl PreprocessorCacheEntry {
         pool: &tokio::runtime::Handle,
         basedirs: &[Vec<u8>],
     ) -> bool {
-        // Resolved once: every check below is against the files of the checkout
-        // being compiled, not of whichever one happened to write the entry.
-        let resolved: Vec<PathBuf> = includes
-            .iter()
-            .map(|include| resolve_include(&include.path, basedirs))
-            .collect();
+        // Resolved against the files of the checkout being compiled, not of
+        // whichever one happened to write the entry -- and resolved *as we go*.
+        // The loop below returns on the first file that does not match, so
+        // resolving all of them up front made an early miss pay for a whole
+        // entry it never looked at.
+        let mut resolved: Vec<PathBuf> = Vec::with_capacity(includes.len());
         let mut needs_contents = Vec::new();
 
         for (index, include) in includes.iter().enumerate() {
+            let (candidate, stat) = resolve_and_stat(&include.path, basedirs);
+            resolved.push(candidate);
             let path = resolved[index].as_path();
-            let meta = match std::fs::symlink_metadata(path) {
+            let meta = match stat {
                 Ok(meta) => {
                     if meta.len() != include.file_size {
                         return false;
@@ -1413,5 +1435,217 @@ mod test {
             )),
             "a change to any include must be detected, not just the first"
         );
+    }
+}
+
+/// A stopwatch on the real lookup, for the optimisation work.
+///
+/// Not part of the suite -- `#[ignore]`d, run deliberately:
+///
+/// ```text
+/// cargo test --release --lib lookup_cost -- --ignored --nocapture
+/// ```
+///
+/// It builds a tree shaped like a translation unit's includes, records an entry
+/// against it, and times `lookup_result_digest` on the stat-only path, which is
+/// the common case with `file_stat_matches` on and the one that dominates a
+/// preprocessor cache hit. Release matters: a debug build measures rustc.
+#[cfg(test)]
+mod lookup_cost {
+    use super::*;
+    use std::time::Duration;
+
+    /// `dirs` directories of `per_dir` files each, which is how includes
+    /// actually sit -- clustered, not scattered.
+    fn tree(dirs: usize, per_dir: usize) -> (tempfile::TempDir, Vec<PathBuf>) {
+        let root = tempfile::tempdir().expect("tempdir");
+        let mut files = Vec::with_capacity(dirs * per_dir);
+        for d in 0..dirs {
+            let dir = root.path().join(format!("include_{d}"));
+            std::fs::create_dir_all(&dir).expect("mkdir");
+            for f in 0..per_dir {
+                let p = dir.join(format!("header_{f}.hpp"));
+                std::fs::write(&p, format!("#pragma once\n// {d}/{f}\n").repeat(8)).expect("write");
+                files.push(p);
+            }
+        }
+        (root, files)
+    }
+
+    fn stat_only_config() -> PreprocessorCacheModeConfig {
+        PreprocessorCacheModeConfig {
+            use_preprocessor_cache_mode: true,
+            file_stat_matches: true,
+            use_ctime_for_stat: true,
+            ignore_time_macros: false,
+            ..Default::default()
+        }
+    }
+
+    /// One entry holding `results` results, each naming every file, which is the
+    /// shape that makes repeated work visible: results in one entry are
+    /// different preprocessor outcomes of the same translation unit, so their
+    /// include sets overlap almost entirely.
+    /// Results that miss, and miss as late as possible.
+    ///
+    /// `lookup_result_digest` walks results newest-first and returns on the
+    /// first match, so extra results are free when the newest one hits. They
+    /// cost only when earlier ones miss -- and a miss is cheapest when found on
+    /// the first file. The expensive shape is a miss discovered on the *last*
+    /// file, which a stale size on the final include produces.
+    fn entry_with_late_misses(
+        files: &[PathBuf],
+        misses: usize,
+        basedirs: &[Vec<u8>],
+    ) -> PreprocessorCacheEntry {
+        let start = SystemTime::now() + Duration::from_secs(60);
+        let mut entry = PreprocessorCacheEntry::new();
+        for r in 0..=misses {
+            let included: Vec<(String, PathBuf)> = files
+                .iter()
+                .enumerate()
+                .map(|(i, p)| (format!("{:064x}", (r * 1_000_003 + i) as u128), p.clone()))
+                .collect();
+            entry.add_result(start, &format!("result_{r:03}"), included, basedirs);
+        }
+        // Break the last include of every result but the oldest, so each stats
+        // everything before deciding against itself.
+        let keys: Vec<String> = entry.results.keys().cloned().collect();
+        for key in keys.iter().skip(1) {
+            if let Some(v) = entry.results.get_mut(key)
+                && let Some(last) = v.last_mut()
+            {
+                last.file_size = last.file_size.wrapping_add(1);
+            }
+        }
+        entry
+    }
+
+    fn entry_over(
+        files: &[PathBuf],
+        results: usize,
+        basedirs: &[Vec<u8>],
+    ) -> PreprocessorCacheEntry {
+        // Ahead of every file's mtime, so mtime and ctime are recorded and the
+        // lookup can settle by `stat` without opening anything.
+        let start = SystemTime::now() + Duration::from_secs(60);
+        let mut entry = PreprocessorCacheEntry::new();
+        for r in 0..results {
+            let included = files
+                .iter()
+                .enumerate()
+                .map(|(i, p)| (format!("{:064x}", (r * 1_000_003 + i) as u128), p.clone()));
+            entry.add_result(start, &format!("result_{r:03}"), included, basedirs);
+        }
+        entry
+    }
+
+    async fn time_lookup(
+        entry: &mut PreprocessorCacheEntry,
+        config: PreprocessorCacheModeConfig,
+        basedirs: &[Vec<u8>],
+        rounds: usize,
+    ) -> (f64, bool) {
+        let pool = tokio::runtime::Handle::current();
+        let mut best = f64::MAX;
+        let mut hit = false;
+        for _ in 0..rounds {
+            let mut updated = false;
+            let t = std::time::Instant::now();
+            let got = entry
+                .lookup_result_digest(config, &mut updated, &pool, basedirs)
+                .await;
+            let ms = t.elapsed().as_secs_f64() * 1e3;
+            hit = got.is_some();
+            if ms < best {
+                best = ms;
+            }
+        }
+        (best, hit)
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    #[ignore = "a stopwatch, not an assertion; run it deliberately"]
+    async fn lookup_cost_by_shape() {
+        let config = stat_only_config();
+        println!("\nlookup_result_digest, stat-only path, best of 5\n");
+
+        // One result: the cost of a single first pass.
+        for (dirs, per_dir) in [(4usize, 50usize), (8, 62), (16, 125)] {
+            let (_root, files) = tree(dirs, per_dir);
+            let n = files.len();
+            let mut entry = entry_over(&files, 1, &[]);
+            let (ms, hit) = time_lookup(&mut entry, config, &[], 5).await;
+            println!(
+                "  {n:>5} includes / {dirs:>2} dirs / 1 result    {ms:>8.2} ms  ({:>5.1} us each)  hit: {hit}",
+                ms * 1000.0 / n as f64
+            );
+        }
+
+        // Diagnose before optimising: is the stored path even relative? If a
+        // basedir did not strip, `resolve_include` returns early on
+        // `is_absolute` and the multi-basedir cost never arises at all.
+        {
+            let (_root, files) = tree(1, 2);
+            let root_bytes = files[0]
+                .parent()
+                .and_then(|p| p.parent())
+                // Normalised the way `Config` stores basedirs: forward slashes,
+                // lowercase, trailing separator. Anything else silently fails to
+                // strip, and then every stored path stays absolute and this
+                // measures nothing.
+                .map(|p| {
+                    let mut b = p
+                        .to_string_lossy()
+                        .replace(std::path::MAIN_SEPARATOR, "/")
+                        .to_lowercase();
+                    b.push('/');
+                    b.into_bytes()
+                })
+                .expect("root");
+            let entry = entry_over(&files, 1, &[root_bytes.clone()]);
+            let stored = entry.results.values().next().unwrap()[0].path.clone();
+            println!(
+                "  stored path with a basedir is relative: {}  ({stored:?})",
+                Path::new(&stored).is_relative()
+            );
+        }
+
+        // Several results over the same files: what a memo would collapse.
+        let (_root, files) = tree(8, 62);
+        let n = files.len();
+        for misses in [0usize, 2, 7] {
+            let mut entry = entry_with_late_misses(&files, misses, &[]);
+            let (ms, hit) = time_lookup(&mut entry, config, &[], 5).await;
+            println!("  {n:>5} includes / {misses} late miss(es)       {ms:>8.2} ms  hit: {hit}");
+        }
+
+        // Basedirs: the multi-basedir path adds an `exists` per candidate.
+        let (_root, files) = tree(8, 62);
+        let root_bytes = files[0]
+            .parent()
+            .and_then(|p| p.parent())
+            // Normalised the way `Config` stores basedirs: forward slashes,
+            // lowercase, trailing separator. Anything else silently fails to
+            // strip, and then every stored path stays absolute and this
+            // measures nothing.
+            .map(|p| {
+                let mut b = p
+                    .to_string_lossy()
+                    .replace(std::path::MAIN_SEPARATOR, "/")
+                    .to_lowercase();
+                b.push('/');
+                b.into_bytes()
+            })
+            .expect("root");
+        for count in [1usize, 3] {
+            let basedirs: Vec<Vec<u8>> = std::iter::repeat_n(root_bytes.clone(), count).collect();
+            let mut entry = entry_over(&files, 1, &basedirs);
+            let (ms, hit) = time_lookup(&mut entry, config, &basedirs, 5).await;
+            println!(
+                "  {:>5} includes / {count} basedir(s)         {ms:>8.2} ms  hit: {hit}",
+                files.len()
+            );
+        }
     }
 }
