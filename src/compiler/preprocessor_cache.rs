@@ -20,6 +20,7 @@
 //! that `ccache` uses for its "direct mode", though the on-disk format is
 //! different.
 
+use std::collections::HashMap;
 use std::{
     collections::{BTreeMap, HashSet},
     ffi::{OsStr, OsString},
@@ -71,6 +72,13 @@ fn portable_path(path: PathBuf, basedirs: &[Vec<u8>]) -> OsString {
         Err(_) => path.into_os_string(),
     }
 }
+
+/// What one lookup has already learned about the files on disk.
+///
+/// Keyed by the *stored* path, so a hit skips resolving as well as stat'ing.
+/// The error is kept as an [`std::io::ErrorKind`] because `io::Error` is not
+/// `Clone`, and the kind is what the caller logs.
+type StatCache = HashMap<OsString, (PathBuf, Result<std::fs::Metadata, std::io::ErrorKind>)>;
 
 /// Where a recorded include is, and what it looks like, in one pass.
 ///
@@ -264,10 +272,25 @@ impl PreprocessorCacheEntry {
         pool: &tokio::runtime::Handle,
         basedirs: &[Vec<u8>],
     ) -> Option<String> {
+        // One `stat` per distinct file, not one per file *per result*.
+        //
+        // Results in an entry are different preprocessor outcomes of the same
+        // translation unit, so their include sets overlap almost entirely. The
+        // loop below stops at the first result that matches, which makes the
+        // repetition invisible when the newest one hits -- and expensive
+        // exactly when it does not, since every result that misses re-stats
+        // files the previous one just asked about.
+        //
+        // Scoped to this lookup, so it is a snapshot of one moment rather than
+        // one per result. That is the more consistent reading of a tree, not a
+        // weaker one.
+        let mut seen: StatCache = HashMap::new();
+
         // Check newest result first since it's more likely to match.
         for (digest, includes) in self.results.iter_mut().rev() {
             let result_matches =
-                Self::result_matches(digest, includes, config, updated, pool, basedirs).await;
+                Self::result_matches(digest, includes, config, updated, pool, basedirs, &mut seen)
+                    .await;
             if result_matches {
                 return Some(digest.clone());
             }
@@ -294,6 +317,7 @@ impl PreprocessorCacheEntry {
         updated: &mut bool,
         pool: &tokio::runtime::Handle,
         basedirs: &[Vec<u8>],
+        seen: &mut StatCache,
     ) -> bool {
         // Resolved against the files of the checkout being compiled, not of
         // whichever one happened to write the entry -- and resolved *as we go*.
@@ -304,7 +328,17 @@ impl PreprocessorCacheEntry {
         let mut needs_contents = Vec::new();
 
         for (index, include) in includes.iter().enumerate() {
-            let (candidate, stat) = resolve_and_stat(&include.path, basedirs);
+            let (candidate, stat) = match seen.get(&include.path) {
+                Some((path, meta)) => (path.clone(), meta.clone()),
+                None => {
+                    let (path, meta) = resolve_and_stat(&include.path, basedirs);
+                    // The error is kept as its kind: `io::Error` is not `Clone`,
+                    // and the kind is what the log line below actually says.
+                    let meta = meta.map_err(|e| e.kind());
+                    seen.insert(include.path.clone(), (path.clone(), meta.clone()));
+                    (path, meta)
+                }
+            };
             resolved.push(candidate);
             let path = resolved[index].as_path();
             let meta = match stat {
@@ -1411,6 +1445,10 @@ mod test {
                 &mut updated,
                 runtime.handle(),
                 &[],
+                // A fresh cache per call, which is what a lookup gets. Sharing
+                // one across these two would hide the very change the second
+                // assertion is looking for.
+                &mut StatCache::new(),
             )),
             "nothing has changed yet, so the entry should match"
         );
@@ -1432,6 +1470,10 @@ mod test {
                 &mut updated,
                 runtime.handle(),
                 &[],
+                // A fresh cache per call, which is what a lookup gets. Sharing
+                // one across these two would hide the very change the second
+                // assertion is looking for.
+                &mut StatCache::new(),
             )),
             "a change to any include must be detected, not just the first"
         );
@@ -1603,7 +1645,7 @@ mod lookup_cost {
                     b.into_bytes()
                 })
                 .expect("root");
-            let entry = entry_over(&files, 1, &[root_bytes.clone()]);
+            let entry = entry_over(&files, 1, std::slice::from_ref(&root_bytes));
             let stored = entry.results.values().next().unwrap()[0].path.clone();
             println!(
                 "  stored path with a basedir is relative: {}  ({stored:?})",
