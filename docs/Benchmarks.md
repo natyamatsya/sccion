@@ -147,6 +147,36 @@ looks enormous next to a copy that did not need to exist, and the ratio says
 nothing about the encoder. Find the denominator first; the answer here was to
 stop copying, and it cost one annotation.
 
+### The candidate that actually is a drop-in
+
+wincode, with `serde-wincode`, is the alternative bincode's own farewell points
+at. Measured against the pinned bytes, it passes the part that matters: the
+encoding is **identical** — on primitives, on `OsString`, on `Option` in both
+arms, on `BTreeMap` and `HashMap`, on enums in unit, struct and boxed form, on
+`Result<Option<Vec<u8>>, String>`, on empty strings and empty vectors — and it
+reads bytes bincode wrote. A cache would survive the swap, and so would a
+daemon mid-flight.
+
+`OsString` is worth naming, because it is what `IncludeEntry::path` is and what
+rkyv cannot represent at all.
+
+What it is not is faster. Both encoders measured in one binary, three runs, on
+the same data:
+
+| entry | encode | decode |
+| --- | --- | --- |
+| 50 includes | 0.46-0.47x | 0.79-0.85x |
+| 500 includes | 0.37-0.39x | 1.45-1.53x |
+| 10 000 includes | 0.42x | 0.92-0.98x |
+
+Encoding is consistently around two and a half times slower; decoding is a wash
+outside the middle size. (A first run showed encode at 1.16x and was simply
+wrong — cold. It is quoted here as a reminder to run the thing three times.)
+
+So wincode is the destination rather than the reason to leave. When bincode has
+to go, this is the move that costs no format change, no version bump and no
+cold cache; it is not an argument for going today.
+
 ## Checking the machine
 
 ```
