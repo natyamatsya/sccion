@@ -118,15 +118,34 @@ byte for byte.
 
 The same measurement found a real cost somewhere else. In client-side mode
 `StoragePutRaw` and `StorageGetRaw` carry whole zip entries between client and
-daemon, and an 8 MiB object cost 5.2 milliseconds to decode and 4.4 to encode —
-not because of bincode, but because the blob was nested inside a serialized
-message. `bincode::deserialize` on the frame allocated a second buffer and copied
-the payload out of the first.
+daemon, and an 8 MiB object cost 4.4 milliseconds to encode and 8.3 to decode.
+Not because of bincode: because `Vec<u8>` through serde is a *sequence* of
+`u8`, so the encoder went round the serializer once per byte, eight million
+times, to move bytes that were already contiguous.
 
-That is the shape of finding worth looking for. rkyv appeared to win it by a
-factor of a thousand, which is what a zero-copy encoder always looks like next to
-a copy that did not need to happen — the fix is to stop copying, and it needs no
-new dependency and no change of format.
+`serde_bytes` asks for `serialize_bytes`, which bincode implements as the same
+length prefix followed by one `write_all` — identical bytes on the wire, which
+is why it could be done to a live protocol at all, and why `wire_format` in
+`src/protocol.rs` now asserts those bytes against a recording made before the
+change.
+
+| payload | encode before | after | decode before | after |
+| --- | --- | --- | --- | --- |
+| 64 KiB | 43.1 us | 7.9 us (5.5x) | 51.6 us | 4.7 us (10.9x) |
+| 1 MiB | 562 us | 299 us (1.9x) | 952 us | 134 us (7.1x) |
+| 8 MiB | 4 400 us | 889 us (5.0x) | 8 332 us | 870 us (9.6x) |
+| 32 MiB | 17 811 us | 3 583 us (5.0x) | 33 701 us | 3 621 us (9.3x) |
+
+About 11 milliseconds off the round trip for an 8 MiB object. rkyv encoded the
+same 8 MiB in 894 microseconds; `serde_bytes` does it in 889, with no new
+dependency and no change of format. rkyv still wins the decode outright by
+borrowing instead of copying — but it is now winning against one memcpy at
+9.6 GB/s, not against work that should never have happened.
+
+**That is the shape of finding worth looking for.** A zero-copy encoder always
+looks enormous next to a copy that did not need to exist, and the ratio says
+nothing about the encoder. Find the denominator first; the answer here was to
+stop copying, and it cost one annotation.
 
 ## Checking the machine
 
