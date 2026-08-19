@@ -25,6 +25,12 @@
 //! greater than or equal to `1.26.0` and disabled for targets which do not support it
 
 #![doc(html_root_url = "https://docs.rs/bincode/1.3.3")]
+// The six `unsafe` blocks this was vendored with were all pre-1.32 workarounds:
+// float bit-casts before `from_bits`/`to_bits`, and integer loads and stores
+// before `from_ne_bytes`/`to_ne_bytes`. One of them cited rust-lang/rust#22776
+// as the reason it could not be written safely, which stopped being true years
+// ago. Forbidden rather than merely absent, so it stays that way.
+#![forbid(unsafe_code)]
 // VENDORED: `crate_name` and `crate_type` removed. The package is renamed to
 // `sccion-bincode`, and `#![crate_name = "bincode"]` contradicts that -- rustc
 // rejects the mismatch outright. Both attributes are the deprecated way of

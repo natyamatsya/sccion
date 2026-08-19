@@ -2,7 +2,6 @@
 
 use std::io;
 use std::io::Result;
-use std::ptr::copy_nonoverlapping;
 
 #[derive(Copy, Clone)]
 pub struct LittleEndian;
@@ -20,22 +19,19 @@ macro_rules! read_num_bytes {
     ($ty:ty, $size:expr, $src:expr, $which:ident) => {{
         assert!($size == ::std::mem::size_of::<$ty>());
         assert!($size <= $src.len());
-        let mut data: $ty = 0;
-        unsafe {
-            copy_nonoverlapping($src.as_ptr(), &mut data as *mut $ty as *mut u8, $size);
-        }
-        data.$which()
+        // Was `copy_nonoverlapping` into a zeroed integer. `from_ne_bytes` is the
+        // same load spelled safely; the asserts above still fix the length.
+        <$ty>::from_ne_bytes($src[..$size].try_into().unwrap()).$which()
     }};
 }
 
 macro_rules! write_num_bytes {
     ($ty:ty, $size:expr, $n:expr, $dst:expr, $which:ident) => {{
         assert!($size <= $dst.len());
-        unsafe {
-            // N.B. https://github.com/rust-lang/rust/issues/22776
-            let bytes = *(&$n.$which() as *const _ as *const [u8; $size]);
-            copy_nonoverlapping((&bytes).as_ptr(), $dst.as_mut_ptr(), $size);
-        }
+        // Was a transmute to `[u8; $size]`, whose comment cited
+        // rust-lang/rust#22776 as the reason it could not be written safely.
+        // `to_ne_bytes` closed that in 1.32: same bytes, same order.
+        $dst[..$size].copy_from_slice(&$n.$which().to_ne_bytes());
     }};
 }
 
@@ -157,12 +153,12 @@ pub trait ByteOrder: Clone + Copy {
 
     #[inline]
     fn read_f32(buf: &[u8]) -> f32 {
-        unsafe { *(&Self::read_u32(buf) as *const u32 as *const f32) }
+        f32::from_bits(Self::read_u32(buf))
     }
 
     #[inline]
     fn read_f64(buf: &[u8]) -> f64 {
-        unsafe { *(&Self::read_u64(buf) as *const u64 as *const f64) }
+        f64::from_bits(Self::read_u64(buf))
     }
 
     #[inline]
@@ -182,14 +178,12 @@ pub trait ByteOrder: Clone + Copy {
 
     #[inline]
     fn write_f32(buf: &mut [u8], n: f32) {
-        let n = unsafe { *(&n as *const f32 as *const u32) };
-        Self::write_u32(buf, n)
+        Self::write_u32(buf, n.to_bits())
     }
 
     #[inline]
     fn write_f64(buf: &mut [u8], n: f64) {
-        let n = unsafe { *(&n as *const f64 as *const u64) };
-        Self::write_u64(buf, n)
+        Self::write_u64(buf, n.to_bits())
     }
 
     serde_if_integer128! {
