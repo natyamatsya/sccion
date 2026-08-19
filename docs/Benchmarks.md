@@ -177,6 +177,43 @@ So wincode is the destination rather than the reason to leave. When bincode has
 to go, this is the move that costs no format change, no version bump and no
 cold cache; it is not an argument for going today.
 
+### What vendoring cost
+
+bincode is now vendored in `crates/bincode`, renamed, migrated from edition
+2015 to 2024, and stripped of its six `unsafe` blocks --
+`copy_nonoverlapping` into a zeroed integer became `from_ne_bytes`, a transmute
+to `[u8; N]` became `to_ne_bytes`, and the float pointer-casts became
+`f32::from_bits`. Those are load and store paths, so they are exactly where a
+regression would hide.
+
+Both crates were measured in one binary, three runs. First the part that has to
+hold: the bytes are **identical** on every integer width, on floats including
+negative zero, infinity and a NaN with a payload, on the preprocessor cache
+entry and on a `serde_bytes` blob -- and each crate reads the other's output.
+
+| shape | encode | decode |
+| --- | --- | --- |
+| 50 includes | 1.05-1.08x | 1.03-1.05x |
+| 500 includes | 0.98-1.02x | 1.08-1.10x |
+| 10 000 includes | 1.01-1.10x | **1.15-1.20x** |
+| 1 MiB blob | 1.01-1.24x | 1.00x |
+| 8 MiB blob | 1.00x | 1.00x |
+
+Above 1.00x means the vendored crate is faster. It is never slower, and it
+decodes a full-size cache entry 15 to 20 per cent quicker -- `from_ne_bytes` is
+a load the compiler can see through, where `copy_nonoverlapping` into a zeroed
+local is a memcpy it has to reason about. The blob path is unchanged because it
+is already one `memcpy` and nothing else.
+
+So the modernisation was free, and the byte-for-byte checks say it was safe.
+
+One measurement note, since this page is about those: the nine-encoder sweep
+above cannot answer this question. Run ten encoders in sequence and each one
+meets a different allocator and cache state, and bincode's decode column swings
+by forty per cent between runs. Two implementations alternating in one binary
+is stable to a few per cent. Comparisons are only as good as what is held
+still.
+
 ## Checking the machine
 
 ```
