@@ -18,7 +18,7 @@
 //! checkout gives correct per-caller numbers without the callers having to
 //! cooperate, or even know sccache is there.
 
-use std::ffi::{OsStr, OsString};
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
 /// What a caller sets to name itself.

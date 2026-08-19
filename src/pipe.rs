@@ -81,7 +81,7 @@ pub fn current_user_sid() -> Option<String> {
         if ok == 0 {
             return None;
         }
-        let user = &*(buf.as_ptr() as *const TOKEN_USER);
+        let user = &*buf.as_ptr().cast::<TOKEN_USER>();
         let mut raw: *mut u16 = std::ptr::null_mut();
         if ConvertSidToStringSidW(user.User.Sid, &mut raw) == 0 || raw.is_null() {
             return None;
@@ -227,16 +227,14 @@ fn create_instance(name: &str, first: bool) -> io::Result<NamedPipeServer> {
 impl Acceptor for NamedPipeListener {
     type Socket = NamedPipeServer;
 
-    fn accept(&self) -> impl std::future::Future<Output = io::Result<Self::Socket>> + Send {
-        async move {
-            let mut rx = self.connections.lock().await;
-            match rx.recv().await {
-                Some(result) => result,
-                None => Err(io::Error::new(
-                    io::ErrorKind::BrokenPipe,
-                    "named pipe listener stopped",
-                )),
-            }
+    async fn accept(&self) -> io::Result<Self::Socket> {
+        let mut rx = self.connections.lock().await;
+        match rx.recv().await {
+            Some(result) => result,
+            None => Err(io::Error::new(
+                io::ErrorKind::BrokenPipe,
+                "named pipe listener stopped",
+            )),
         }
     }
 

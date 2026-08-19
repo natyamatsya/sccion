@@ -32,7 +32,7 @@
 //! being the limit.
 
 use std::collections::{HashMap, VecDeque};
-use std::ffi::{OsStr, OsString};
+use std::ffi::OsString;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;

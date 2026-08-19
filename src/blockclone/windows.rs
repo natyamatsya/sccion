@@ -382,7 +382,7 @@ pub fn clone_region_into(
     if !can_clone {
         return Err(CloneError::Unsupported);
     }
-    if src_offset % cluster_size != 0 {
+    if !src_offset.is_multiple_of(cluster_size) {
         // The writer aligns to 4096; a volume with larger clusters (ReFS also
         // ships 64K) sees a misaligned offset and must copy instead.
         return Err(CloneError::Refused(format!(
