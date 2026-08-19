@@ -122,7 +122,7 @@ reqwest = { version = "0.13.4", features = [
 semver = "1.0"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0.151"
-sha2 = { version = "0.10.8", optional = true }
+sha2 = { version = "0.11.0", optional = true }
 shlex = "2.0.1"
 strip-ansi-escapes = "0.2"
 tar = "0.4.40"
@@ -144,7 +144,7 @@ url = { version = "2", optional = true }
 uuid = { version = "1.9", features = ["v4"] }
 walkdir = "2"
 which = "8"
-zip = { version = "0.6", default-features = false }
+zip = { version = "8", default-features = false }
 zstd = "0.13"
 
 # dist-server only
@@ -165,23 +165,23 @@ version-compare = { version = "0.1.1", optional = true }
 assert_cmd = "2.0.13"
 cc = "1.0"
 chrono = "0.4.42"
-divan = { package = "codspeed-divan-compat", version = "4" }
+divan = { package = "codspeed-divan-compat", version = "5" }
 filetime = "0.2"
 predicates = "3.1.4"
 serial_test = "3.1"
 temp-env = "0.3.6"
 test-case = "3.3.1"
-thirtyfour = "0.36"
+thirtyfour = "0.37"
 
 # Reading PDBs is how the debug-information tests confirm that a cache hit from
 # another checkout still points a debugger at the right sources -- checked by
 # resolving the recorded paths and comparing source checksums, rather than by
 # someone stepping through a debugger by hand.
 [target.'cfg(windows)'.dev-dependencies]
-md-5 = "0.10"
+md-5 = "0.11"
 pdb = "0.8"
-sha1 = "0.10"
-sha2 = "0.10"
+sha1 = "0.11"
+sha2 = "0.11"
 
 [target.'cfg(unix)'.dependencies]
 daemonix = "0.1"

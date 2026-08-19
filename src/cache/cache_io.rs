@@ -21,7 +21,7 @@ use std::fmt;
 use std::io::{Cursor, Read, Seek, Write};
 use std::path::{Path, PathBuf};
 use tempfile::NamedTempFile;
-use zip::write::FileOptions;
+use zip::write::SimpleFileOptions;
 use zip::{CompressionMethod, ZipArchive, ZipWriter};
 
 /// Marks a cache entry object whose payload follows verbatim.
@@ -294,10 +294,14 @@ impl CacheRead {
         if member.compression() != CompressionMethod::Stored {
             return None;
         }
-        if member.data_start() % u64::from(CLONE_ALIGNMENT) != 0 {
+        // `data_start` is `None` until the member's local header has been read.
+        // Unproven is the same as unaligned here: both mean the offset cannot be
+        // trusted, and a clone from an offset nobody checked is shifted garbage.
+        let data_start = member.data_start()?;
+        if !data_start.is_multiple_of(u64::from(CLONE_ALIGNMENT)) {
             return None;
         }
-        Some((member.data_start(), member.size(), member.unix_mode()))
+        Some((data_start, member.size(), member.unix_mode()))
     }
 
     /// Returns how many objects were materialized by cloning rather than
@@ -492,7 +496,7 @@ impl CacheWrite {
         // store inside the member -- a zstd frame, a marker byte followed by
         // the bytes verbatim, or (clone-ready) the bytes alone under a prefixed
         // name. See `ObjectEncoding` and `RAW_PREFIX`.
-        let opts = FileOptions::default().compression_method(CompressionMethod::Stored);
+        let opts = SimpleFileOptions::default().compression_method(CompressionMethod::Stored);
         let opts = if let Some(mode) = mode {
             opts.unix_permissions(mode)
         } else {
@@ -515,7 +519,10 @@ impl CacheWrite {
                 from.take(RAW_THRESHOLD + 1).read_to_end(&mut head)?;
                 if head.len() as u64 > RAW_THRESHOLD {
                     self.zip
-                        .start_file_aligned(format!("{RAW_PREFIX}{name}"), opts, CLONE_ALIGNMENT)
+                        .start_file(
+                            format!("{RAW_PREFIX}{name}"),
+                            opts.with_alignment(CLONE_ALIGNMENT),
+                        )
                         .context("Failed to start clone-ready cache entry object")?;
                     self.zip.write_all(&head)?;
                     std::io::copy(from, &mut self.zip)?;
@@ -550,7 +557,7 @@ impl CacheWrite {
 
     /// Finish writing data to the cache entry writer, and return the data.
     pub fn finish(self) -> Result<Vec<u8>> {
-        let CacheWrite { mut zip } = self;
+        let CacheWrite { zip } = self;
         let cur = zip.finish().context("Failed to finish cache entry zip")?;
         Ok(cur.into_inner())
     }
@@ -599,12 +606,12 @@ mod tests {
         let mut zip = ZipArchive::new(Cursor::new(entry.clone())).unwrap();
         let member = zip.by_name("raw/obj").expect("clone-ready member");
         assert_eq!(
-            member.data_start() % u64::from(CLONE_ALIGNMENT),
+            member.data_start().unwrap() % u64::from(CLONE_ALIGNMENT),
             0,
             "payload must start on a cluster boundary"
         );
         assert_eq!(member.size(), payload.len() as u64, "no marker, no padding");
-        let start = member.data_start() as usize;
+        let start = member.data_start().unwrap() as usize;
         drop(member);
         assert_eq!(
             &entry[start..start + payload.len()],
@@ -649,7 +656,7 @@ mod tests {
         // would: manual zip construction, ordinary start_file.
         let payload = big_payload();
         let mut zip = ZipWriter::new(Cursor::new(Vec::new()));
-        let opts = FileOptions::default().compression_method(CompressionMethod::Stored);
+        let opts = SimpleFileOptions::default().compression_method(CompressionMethod::Stored);
         zip.start_file("raw/obj", opts).unwrap();
         zip.write_all(&payload).unwrap();
         let entry = zip.finish().unwrap().into_inner();
@@ -926,7 +933,8 @@ mod tests {
         fn write_entry(name: &str, body: &[u8], encoding: ObjectEncoding) -> Vec<u8> {
             let mut w = CacheWrite::new();
             {
-                let opts = FileOptions::default().compression_method(CompressionMethod::Stored);
+                let opts =
+                    SimpleFileOptions::default().compression_method(CompressionMethod::Stored);
                 w.zip.start_file(name, opts).unwrap();
                 match encoding {
                     ObjectEncoding::Zstd(level) => {
