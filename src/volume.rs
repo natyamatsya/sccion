@@ -107,8 +107,23 @@ pub fn nearest_existing(path: &Path) -> Option<&Path> {
     }
 }
 
+/// The drive letter a path sits on.
+///
+/// Relative paths are resolved first. The POSIX implementations below get
+/// that for free -- `statfs` and `stat` answer against the current directory
+/// -- but this one is a test on a string, so `.` and `./cache` answered
+/// `None`, and `None` on either side makes `same_volume` false by
+/// construction. That is the same cry-wolf failure the POSIX case was
+/// written to fix, and a cache directory configured relative reaches it:
+/// `dir` is deserialised as given and never made absolute.
+///
+/// `std::path::absolute` rather than `canonicalize`: it is lexical, so it
+/// answers for a cache directory that does not exist yet, and it leaves
+/// verbatim and UNC paths alone.
 #[cfg(windows)]
 pub fn root(path: &Path) -> Option<String> {
+    let absolute = std::path::absolute(path);
+    let path = absolute.as_deref().unwrap_or(path);
     let s = path.to_string_lossy().replace('/', "\\");
     let s = s.strip_prefix(r"\\?\").unwrap_or(&s).to_string();
     let b = s.as_bytes();
@@ -245,7 +260,14 @@ mod tests {
         assert_eq!(root(Path::new("d:/cache")).as_deref(), Some("D:\\"));
         // A UNC path has no drive letter; claiming one would be a lie.
         assert_eq!(root(Path::new(r"\\server\share")), None);
-        assert_eq!(root(Path::new("relative/path")), None);
+        // A relative path is on the volume the process is on -- which is what
+        // `statfs` answers for one on Unix -- not on no volume at all.
+        let cwd = std::env::current_dir().expect("a process has a current directory");
+        assert_eq!(
+            root(Path::new("relative/path")),
+            root(&cwd),
+            "a relative path resolves against the current directory"
+        );
     }
 
     /// The defect this replaced: `root` recognised only a drive letter, so every
