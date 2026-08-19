@@ -17,10 +17,7 @@
 use crate::cache::CacheMode;
 use crate::errors::*;
 use opendal::Operator;
-use opendal::{
-    layers::{HttpClientLayer, LoggingLayer},
-    services::Gcs,
-};
+use opendal::{layers::LoggingLayer, services::Gcs};
 use reqwest::Client;
 use serde::Deserialize;
 use url::Url;
@@ -75,9 +72,8 @@ impl GCSCache {
         }
 
         let op = Operator::new(builder)?
-            .layer(HttpClientLayer::new(set_user_agent()))
-            .layer(LoggingLayer::default())
-            .finish();
+            .with_context(set_user_agent())
+            .layer(LoggingLayer::default());
         Ok(op)
     }
 }

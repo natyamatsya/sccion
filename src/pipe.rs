@@ -59,7 +59,7 @@ pub fn current_user_sid() -> Option<String> {
     // two-call pattern sizes the buffer before filling it, and the string SID is
     // copied out before being freed with LocalFree as the API requires.
     unsafe {
-        let mut token: HANDLE = 0;
+        let mut token: HANDLE = std::ptr::null_mut();
         if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) == 0 {
             return None;
         }

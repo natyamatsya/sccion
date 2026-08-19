@@ -15,7 +15,7 @@
 
 use crate::compiler;
 use async_trait::async_trait;
-use rand::{RngCore, rngs::OsRng};
+use rand::{Rng, rand_core::UnwrapErr, rngs::SysRng};
 use serde::{Deserialize, Serialize};
 use std::ffi::OsString;
 use std::fmt;
@@ -387,7 +387,7 @@ impl FromStr for ServerId {
 pub struct ServerNonce(u64);
 impl ServerNonce {
     pub fn new() -> Self {
-        ServerNonce(OsRng.next_u64())
+        ServerNonce(UnwrapErr(SysRng).next_u64())
     }
 }
 

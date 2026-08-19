@@ -1010,7 +1010,7 @@ fn normpath(path: &str) -> String {
     use windows_sys::Win32::Storage::FileSystem::GetFinalPathNameByHandleW;
     File::open(path)
         .and_then(|f| {
-            let handle = f.as_raw_handle() as _;
+            let handle = f.as_raw_handle().cast();
             let size = unsafe { GetFinalPathNameByHandleW(handle, ptr::null_mut(), 0, 0) };
             if size == 0 {
                 return Err(io::Error::last_os_error());

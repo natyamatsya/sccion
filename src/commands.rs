@@ -148,7 +148,7 @@ fn redirect_stderr(f: File) {
     use windows_sys::Win32::System::Console::{STD_ERROR_HANDLE, SetStdHandle};
     // Ignore errors here.
     unsafe {
-        SetStdHandle(STD_ERROR_HANDLE, f.into_raw_handle() as _);
+        SetStdHandle(STD_ERROR_HANDLE, f.into_raw_handle().cast());
     }
 }
 
@@ -243,8 +243,8 @@ fn run_server_process(startup_timeout: Option<Duration>) -> Result<ServerStartup
     // TODO: Expose `bInheritHandles` argument of `CreateProcessW` through the
     //       standard library's `Command` type and then use that instead.
     let mut pi = PROCESS_INFORMATION {
-        hProcess: 0,
-        hThread: 0,
+        hProcess: ptr::null_mut(),
+        hThread: ptr::null_mut(),
         dwProcessId: 0,
         dwThreadId: 0,
     };

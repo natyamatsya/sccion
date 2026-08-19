@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use opendal::Operator;
-use opendal::layers::{HttpClientLayer, LoggingLayer};
+use opendal::layers::LoggingLayer;
 use opendal::services::Cos;
 
 use crate::errors::*;
@@ -32,9 +32,8 @@ impl COSCache {
         }
 
         let op = Operator::new(builder)?
-            .layer(HttpClientLayer::new(set_user_agent()))
-            .layer(LoggingLayer::default())
-            .finish();
+            .with_context(set_user_agent())
+            .layer(LoggingLayer::default());
         Ok(op)
     }
 }

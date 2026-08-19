@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use opendal::Operator;
-use opendal::layers::{HttpClientLayer, LoggingLayer};
+use opendal::layers::LoggingLayer;
 use opendal::services::Oss;
 
 use crate::errors::*;
@@ -39,13 +39,12 @@ impl OSSCache {
         if no_credentials {
             // Allow anonymous access to OSS so that OpenDAL will not
             // throw error when no credentials are provided.
-            builder = builder.allow_anonymous();
+            builder = builder.skip_signature();
         }
 
         let op = Operator::new(builder)?
-            .layer(HttpClientLayer::new(set_user_agent()))
-            .layer(LoggingLayer::default())
-            .finish();
+            .with_context(set_user_agent())
+            .layer(LoggingLayer::default());
         Ok(op)
     }
 }

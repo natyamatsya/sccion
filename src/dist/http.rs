@@ -241,7 +241,7 @@ mod server {
     use crate::util::{new_reqwest_blocking_client, num_cpus};
     use byteorder::{BigEndian, ReadBytesExt};
     use flate2::read::ZlibDecoder as ZlibReadDecoder;
-    use rand::{RngCore, rngs::OsRng};
+    use rand::{Rng, rand_core::UnwrapErr, rngs::SysRng};
     use rouille::accept;
     use serde::{Deserialize, Serialize};
     use std::collections::HashMap;
@@ -899,7 +899,7 @@ mod server {
                 create_https_cert_and_privkey(public_addr)
                     .context("failed to create HTTPS certificate for server")?;
             let mut jwt_key = vec![0; JWT_KEY_LENGTH];
-            OsRng.fill_bytes(&mut jwt_key);
+            UnwrapErr(SysRng).fill_bytes(&mut jwt_key);
             let server_nonce = ServerNonce::new();
 
             Ok(Self {
