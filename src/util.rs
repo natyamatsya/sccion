@@ -2462,3 +2462,96 @@ mod tests {
         assert_ne!(h1, h2);
     }
 }
+
+/// What the bincode encoding is, in bytes.
+///
+/// bincode writes the preprocessor cache to disk and carries every
+/// client/server message, so its encoding is a format this project has
+/// promised, not an implementation detail. The crate is also unmaintained --
+/// its final release is a `compile_error!` -- so the encoder will have to be
+/// replaced eventually, by wincode or by something else. This is the test
+/// that says whether the replacement was a drop-in.
+///
+/// The sample is synthetic on purpose. It is not any one message; it is every
+/// shape the real messages are built from -- integers of each width, a signed
+/// negative, a string, a sequence, both `Option` arms, a map, a float, and an
+/// enum in its unit, tuple and struct forms -- because those are what an
+/// encoder change would move. Byte-for-byte equality here is the claim that
+/// a cache written by an older build is still readable.
+#[cfg(test)]
+mod bincode_format {
+    use serde::{Deserialize, Serialize};
+    use std::collections::HashMap;
+
+    #[derive(Serialize, Deserialize)]
+    enum Shape {
+        Unit,
+        Tuple(u32, String),
+        Struct { a: Option<u64>, b: Vec<u8> },
+    }
+
+    #[derive(Serialize, Deserialize)]
+    struct Sample {
+        n: u32,
+        big: u64,
+        neg: i32,
+        s: String,
+        v: Vec<u16>,
+        opt_some: Option<String>,
+        opt_none: Option<String>,
+        map: HashMap<String, u8>,
+        shapes: Vec<Shape>,
+        flag: bool,
+        f: f64,
+    }
+
+    /// One entry, so the map's encoding cannot depend on iteration order.
+    fn sample() -> Sample {
+        let mut map = HashMap::new();
+        map.insert("k".to_string(), 7u8);
+        Sample {
+            n: 1,
+            big: u64::MAX,
+            neg: -3,
+            s: "hello".into(),
+            v: vec![1, 258],
+            opt_some: Some("y".into()),
+            opt_none: None,
+            map,
+            shapes: vec![
+                Shape::Unit,
+                Shape::Tuple(9, "t".into()),
+                Shape::Struct {
+                    a: Some(5),
+                    b: vec![1, 2],
+                },
+            ],
+            flag: true,
+            f: 0.5,
+        }
+    }
+
+    /// Recorded from bincode 1, which is what every cache on disk today was
+    /// written by. A replacement encoder has to reproduce this exactly, or the
+    /// format has changed and the change has to be deliberate: a version byte,
+    /// a migration, or both.
+    const BINCODE_1: &str = "01000000fffffffffffffffffdffffff050000000000000068656c6c6f0200000000000000010002010101000000000000007900010000000000000001000000000000006b070300000000000000000000000100000009000000010000000000000074020000000105000000000000000200000000000000010201000000000000e03f";
+
+    #[test]
+    fn the_encoding_is_the_one_already_on_disk() {
+        let bytes = bincode::serialize(&sample()).expect("the sample encodes");
+        let hex: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
+        assert_eq!(
+            hex, BINCODE_1,
+            "the bincode encoding moved; caches written by an older build are no \
+             longer readable by this one"
+        );
+    }
+
+    #[test]
+    fn the_sample_still_round_trips() {
+        let bytes = bincode::serialize(&sample()).unwrap();
+        let back: Sample = bincode::deserialize(&bytes).unwrap();
+        assert_eq!(bincode::serialize(&back).unwrap(), bytes);
+    }
+}
