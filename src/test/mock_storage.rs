@@ -86,7 +86,7 @@ impl Storage for MockStorage {
         if let Some(delay) = self.delay {
             sleep(delay).await;
         }
-        let next = self.rx.lock().await.try_next().unwrap();
+        let next = self.rx.lock().await.try_recv();
 
         next.expect("MockStorage get called but no get results available")
     }
