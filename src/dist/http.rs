@@ -239,6 +239,7 @@ pub mod urls {
 #[cfg(feature = "dist-server")]
 mod server {
     use crate::util::{new_reqwest_blocking_client, num_cpus};
+    use bincode::Options as _;
     use byteorder::{BigEndian, ReadBytesExt};
     use flate2::read::ZlibDecoder as ZlibReadDecoder;
     use rand::{Rng, rand_core::UnwrapErr, rngs::SysRng};
@@ -437,6 +438,23 @@ mod server {
             )
         }
     }
+    /// A ceiling on any bincode body read off the network.
+    ///
+    /// For a `String` or a byte buffer, bincode's `IoReader` sizes its buffer from
+    /// a length field *in the payload* before reading any of it, and the default
+    /// limit is `Infinite`. Without a bound, eight bytes from an unauthenticated
+    /// client choose an allocation. Sequences are safe -- serde reads those
+    /// element by element -- and so is slice-based `deserialize`, which
+    /// bounds-checks against the slice it was handed; this is needed only where a
+    /// reader is involved, which is here. `util::bincode_limits` is the test that
+    /// a limit refuses rather than allocating and failing afterwards.
+    ///
+    /// Eight megabytes is far above anything real here: the largest of these is a
+    /// compile command with its environment, which is tens of kilobytes. The
+    /// limit costs nothing when it is not hit and is checked before the
+    /// allocation, not after.
+    const MAX_BINCODE_BODY: u64 = 8 * 1024 * 1024;
+
     fn bincode_input<O>(request: &rouille::Request) -> std::result::Result<O, RouilleBincodeError>
     where
         O: serde::de::DeserializeOwned,
@@ -450,7 +468,16 @@ mod server {
         }
 
         if let Some(mut b) = request.data() {
-            bincode::deserialize_from::<_, O>(&mut b).map_err(From::from)
+            // Not `options()`: that is varint and reject-trailing, where the
+            // free functions -- and therefore every message already on the wire --
+            // are fixint and allow-trailing. Spelled out so the limit is the only
+            // thing this changes.
+            bincode::DefaultOptions::new()
+                .with_fixint_encoding()
+                .allow_trailing_bytes()
+                .with_limit(MAX_BINCODE_BODY)
+                .deserialize_from::<_, O>(&mut b)
+                .map_err(From::from)
         } else {
             Err(RouilleBincodeError::BodyAlreadyExtracted)
         }
@@ -1002,7 +1029,14 @@ mod server {
                             .context("failed to read run job input length")) as u64;
 
                         let mut bincode_reader = body.take(bincode_length);
-                        let runjob = try_or_500_log!(req_id, bincode::deserialize_from(&mut bincode_reader)
+                        // Bounded twice: by the frame the sender declared, since the
+                        // message cannot be larger than what contains it, and by the
+                        // ceiling, since the sender chose that frame length too.
+                        let runjob = try_or_500_log!(req_id, bincode::DefaultOptions::new()
+                            .with_fixint_encoding()
+                            .allow_trailing_bytes()
+                            .with_limit(bincode_length.min(MAX_BINCODE_BODY))
+                            .deserialize_from(&mut bincode_reader)
                             .context("failed to deserialize run job request"));
                         trace!("Req {}: run_job({}): {:?}", req_id, job_id, runjob);
                         let RunJobHttpRequest { command, outputs } = runjob;

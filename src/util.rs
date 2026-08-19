@@ -2555,3 +2555,59 @@ mod bincode_format {
         assert_eq!(bincode::serialize(&back).unwrap(), bytes);
     }
 }
+
+/// A length prefix is not a promise.
+///
+/// For a `String` or a byte buffer -- anything reaching bincode's `read_vec` --
+/// `IoReader` sizes its buffer from a length field in the payload before reading
+/// any of it, and the default limit is `Infinite`. Eight bytes decide an
+/// allocation. Sequences are not affected, because serde reads those cautiously,
+/// element by element; slice-based `deserialize` is not affected either, because
+/// it bounds-checks against the slice it was handed.
+///
+/// `src/dist/http.rs` reads bincode bodies off the network through exactly the
+/// affected path and passes a limit for this reason. This is the test that the
+/// limit does what that code assumes: refuses, rather than allocating and then
+/// discovering the bytes were never sent.
+///
+/// The unbounded case is deliberately not exercised. It would do what is being
+/// described.
+#[cfg(test)]
+mod bincode_limits {
+    use bincode::Options as _;
+
+    /// Four gibibytes of `String`, promised by eight bytes and never delivered.
+    fn a_string_claiming_four_gibibytes() -> Vec<u8> {
+        (4u64 * 1024 * 1024 * 1024).to_le_bytes().to_vec()
+    }
+
+    #[test]
+    fn a_limit_refuses_before_it_allocates() {
+        let refused: Result<String, _> = bincode::DefaultOptions::new()
+            .with_fixint_encoding()
+            .allow_trailing_bytes()
+            .with_limit(1024)
+            .deserialize_from(std::io::Cursor::new(a_string_claiming_four_gibibytes()));
+
+        let err = refused.expect_err("a claim of 4 GiB inside a 1 KiB budget");
+        assert!(
+            matches!(*err, bincode::ErrorKind::SizeLimit),
+            "refused for the wrong reason: {err}. A size limit should have stopped \
+             this before the allocation; an io error means it allocated first and \
+             found out afterwards"
+        );
+    }
+
+    /// And it is a ceiling, not a wall: what fits still decodes.
+    #[test]
+    fn a_limit_lets_an_honest_message_through() {
+        let honest = bincode::serialize(&"hello".to_string()).unwrap();
+        let out: String = bincode::DefaultOptions::new()
+            .with_fixint_encoding()
+            .allow_trailing_bytes()
+            .with_limit(1024)
+            .deserialize_from(std::io::Cursor::new(&honest))
+            .expect("thirteen bytes inside a 1 KiB budget");
+        assert_eq!(out, "hello");
+    }
+}

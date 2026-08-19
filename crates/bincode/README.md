@@ -73,14 +73,22 @@ run at each:
 Lints are allowed rather than fixed, rustc's and clippy's both; one of clippy's
 is deny-by-default and fires on a test that round-trips 3.14159.
 
-## Known and not yet done
+## Two things that were known, and are now done
 
-- `IoReader::fill_buffer` in `src/de/read.rs` resizes its buffer to a
-  length taken from the payload *before* reading, and the default byte limit is
-  `Infinite`. Slice-based `deserialize` is unaffected (it bounds-checks against
-  the slice), but `deserialize_from` on network input is not. Two call sites in
-  `src/dist/http.rs` should pass `bincode::config().limit(n)`.
-- Six `unsafe` blocks in `src/byteorder.rs` are all pre-1.32 workarounds, one
-  citing rust-lang/rust#22776. `f32::from_bits`/`to_bits` and
-  `from_ne_bytes`/`to_ne_bytes` replace them exactly, after which the crate can
-  `#![forbid(unsafe_code)]`.
+- **`unsafe` is gone, and forbidden.** The six blocks in `src/byteorder.rs` were
+  all pre-1.32 workarounds -- one cited rust-lang/rust#22776 as the reason it
+  could not be written safely. `from_ne_bytes`/`to_ne_bytes` and
+  `f32::from_bits`/`to_bits` replace them exactly, and the crate now carries
+  `#![forbid(unsafe_code)]` so a seventh cannot appear quietly.
+- **Network reads are bounded.** `IoReader::fill_buffer` in `src/de/read.rs`
+  still sizes its buffer from a length field in the payload before reading it,
+  and the default limit is still `Infinite` -- that is upstream behaviour and is
+  left alone. The two call sites in `src/dist/http.rs` that read from the
+  network now pass a limit instead. `util::bincode_limits` in the main crate is
+  the test that a limit refuses before allocating rather than after.
+
+Note for anyone adding a limit elsewhere: `bincode::config()` is deprecated and
+`options()` is **not** a drop-in for it. `DefaultOptions` is varint and
+reject-trailing; the free functions, and therefore everything already written,
+are fixint and allow-trailing. Spell out
+`DefaultOptions::new().with_fixint_encoding().allow_trailing_bytes()`.
