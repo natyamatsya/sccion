@@ -1,4 +1,4 @@
-# bincode 1.3.3, vendored
+# bincode 1.3.3, vendored and migrated to edition 2024
 
 Upstream: <https://github.com/servo/bincode>, MIT, `LICENSE.md` unchanged.
 Upstream's own readme is kept as `upstream-readme.md`.
@@ -12,7 +12,6 @@ further will be published.
 This encoding is not an implementation detail here. It is the preprocessor cache
 on disk and every message between client and daemon, so changing it means a
 `FORMAT_VERSION` bump, a `PROTOCOL_VERSION` bump, and a cold cache for everyone.
-Two tests pin it: `util::bincode_format` and `protocol::wire_format`.
 
 Every alternative was measured (see `docs/Benchmarks.md`). wincode reproduces the
 format exactly but encodes about two and a half times slower. bincode 2.0.1 under
@@ -20,34 +19,68 @@ format exactly but encodes about two and a half times slower. bincode 2.0.1 unde
 unmaintained. Nothing was faster than what is already here.
 
 So the problem is *supply*, not format and not speed: an upstream that cannot be
-patched if serde or rustc moves underneath it. Copying 3 770 frozen lines with one
+patched if serde or rustc moves underneath it. Copying 3 770 lines with one
 dependency answers supply directly. Every other option answered it with a
 migration.
 
-## What was changed
+## What guards it
 
-Everything not listed here is byte-identical to the published 1.3.3.
+Not a diff against the published crate — see below. Three test suites:
+
+- **Upstream's own**, kept and passing: 4 unit, 42 integration, 4 doc.
+- **`util::bincode_format`**, which pins the encoding of every shape this project
+  stores, byte for byte, against a recording made from published 1.3.3.
+- **`protocol::wire_format`**, which does the same for the blob-carrying messages.
+
+Any change here must leave all three green. If it cannot, it is a format change,
+and it needs the version bumps that implies.
+
+## How it diverges from published 1.3.3
+
+Originally this crate was kept close to what was published, so that a diff
+against 1.3.3 would show only deliberate changes. **That property is gone**: the
+crate has been migrated from edition 2015 to edition 2024, which touched every
+file. The tests above replaced it as the safety net, which is the stronger
+guarantee anyway — they check behaviour rather than text.
+
+Packaging:
 
 - **`Cargo.toml`** — rewritten. The package is `sccion-bincode` so nothing can
   confuse it with the crates.io crate and `cargo tree` says where the code came
   from; the root manifest imports it as `bincode`, which is why no call site
-  changed. `publish = false`. Lints allowed rather than fixed, so a diff against
-  1.3.3 shows only deliberate changes.
+  changed. `publish = false`.
 - **`src/lib.rs`** — dropped `#![crate_name = "bincode"]` and two `#![crate_type]`
   attributes. The first contradicts the rename and rustc rejects the mismatch;
   all three are the deprecated way of saying what `Cargo.toml` says.
-- **`src/lib.rs`, `src/config/mod.rs`** — eight doc-example lines say
-  `sccion_bincode::` instead of `bincode::`, so the doctests compile.
-- **`tests/test.rs`** — `extern crate sccion_bincode as bincode;`, so the rest of
-  upstream's suite stays verbatim.
-- **`readme.md`** → `upstream-readme.md`, to make room for this file.
+- **`src/lib.rs`, `src/config/mod.rs`** — doc examples say `sccion_bincode::`, so
+  the doctests compile.
+- **`tests/test.rs`** — `extern crate sccion_bincode as bincode;`, and two stray
+  semicolons removed.
+- **`readme.md`** → `upstream-readme.md`.
 
-Upstream's tests all still pass: 4 unit, 42 integration, 4 doc.
+Edition migration, 2015 → 2018 → 2021 → 2024, one hop at a time with the tests
+run at each:
 
-## Updating it
+- `cargo fix --edition` for each hop: crate-relative paths became `crate::`,
+  `dyn` on trait objects, and the rest of the mechanical work.
+- The shims `cargo fix` leaves behind were then removed rather than kept:
+  twelve `r#try!(...)` became `...?` (which is what `try!` expanded to), and
+  `expr_2021` fragment specifiers went back to `expr`. These are internal macros
+  with fixed call sites, so the wider 2024 `expr` matcher costs nothing.
+- `cargo fmt` reformatted to the 2024 style edition, because `.rustfmt.toml`
+  applies repo-wide and the pre-commit hook would have done it anyway.
 
-Don't, casually. The reason this is vendored is that its output is a format
-already written to disk. Any change that touches `src/ser`, `src/de`,
-`src/config` or `src/byteorder` must leave `util::bincode_format` and
-`protocol::wire_format` passing, and if it cannot, it is a format change and
-needs the version bumps that implies.
+Lints are allowed rather than fixed, rustc's and clippy's both; one of clippy's
+is deny-by-default and fires on a test that round-trips 3.14159.
+
+## Known and not yet done
+
+- `IoReader::fill_buffer` in `src/de/read.rs` resizes its buffer to a
+  length taken from the payload *before* reading, and the default byte limit is
+  `Infinite`. Slice-based `deserialize` is unaffected (it bounds-checks against
+  the slice), but `deserialize_from` on network input is not. Two call sites in
+  `src/dist/http.rs` should pass `bincode::config().limit(n)`.
+- Six `unsafe` blocks in `src/byteorder.rs` are all pre-1.32 workarounds, one
+  citing rust-lang/rust#22776. `f32::from_bits`/`to_bits` and
+  `from_ne_bytes`/`to_ne_bytes` replace them exactly, after which the crate can
+  `#![forbid(unsafe_code)]`.

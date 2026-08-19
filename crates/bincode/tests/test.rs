@@ -13,9 +13,9 @@ use std::collections::HashMap;
 use std::fmt::{self, Debug};
 use std::result::Result as StdResult;
 
-use bincode::{
-    deserialize, deserialize_from, deserialize_in_place, serialize, serialized_size,
-    DefaultOptions, ErrorKind, Options, Result,
+use crate::bincode::{
+    DefaultOptions, ErrorKind, Options, Result, deserialize, deserialize_from,
+    deserialize_in_place, serialize, serialized_size,
 };
 use serde::de::{Deserialize, DeserializeSeed, Deserializer, SeqAccess, Visitor};
 
@@ -45,7 +45,7 @@ where
 {
     // add a new macro which calls the previous when you add a new option set
     macro_rules! all_endians {
-        ($element:expr, $options:expr) => {
+        ($element:expr_2021, $options:expr_2021) => {
             the_same_impl($element.clone(), &mut $options.with_native_endian());
             the_same_impl($element.clone(), &mut $options.with_big_endian());
             the_same_impl($element.clone(), &mut $options.with_little_endian());
@@ -53,7 +53,7 @@ where
     }
 
     macro_rules! all_integer_encodings {
-        ($element:expr, $options:expr) => {
+        ($element:expr_2021, $options:expr_2021) => {
             all_endians!($element, $options.with_fixint_encoding());
             all_endians!($element, $options.with_varint_encoding());
         };
@@ -263,7 +263,7 @@ fn deserializing_errors() {
     enum Test {
         One,
         Two,
-    };
+    }
 
     let invalid_enum = vec![0, 0, 0, 5];
 
@@ -331,27 +331,35 @@ fn too_big_char_deserialize() {
 
 #[test]
 fn too_big_serialize() {
-    assert!(DefaultOptions::new()
-        .with_fixint_encoding()
-        .with_limit(3)
-        .serialize(&0u32)
-        .is_err());
-    assert!(DefaultOptions::new()
-        .with_fixint_encoding()
-        .with_limit(4)
-        .serialize(&0u32)
-        .is_ok());
+    assert!(
+        DefaultOptions::new()
+            .with_fixint_encoding()
+            .with_limit(3)
+            .serialize(&0u32)
+            .is_err()
+    );
+    assert!(
+        DefaultOptions::new()
+            .with_fixint_encoding()
+            .with_limit(4)
+            .serialize(&0u32)
+            .is_ok()
+    );
 
-    assert!(DefaultOptions::new()
-        .with_fixint_encoding()
-        .with_limit(LEN_SIZE + 4)
-        .serialize(&"abcde")
-        .is_err());
-    assert!(DefaultOptions::new()
-        .with_fixint_encoding()
-        .with_limit(LEN_SIZE + 5)
-        .serialize(&"abcde")
-        .is_ok());
+    assert!(
+        DefaultOptions::new()
+            .with_fixint_encoding()
+            .with_limit(LEN_SIZE + 4)
+            .serialize(&"abcde")
+            .is_err()
+    );
+    assert!(
+        DefaultOptions::new()
+            .with_fixint_encoding()
+            .with_limit(LEN_SIZE + 5)
+            .serialize(&"abcde")
+            .is_ok()
+    );
 }
 
 #[test]
@@ -428,41 +436,55 @@ fn test_serialized_size_bounded() {
             == LEN_SIZE + 3 * 4
     );
     // Below
-    assert!(DefaultOptions::new()
-        .with_fixint_encoding()
-        .with_limit(0)
-        .serialized_size(&0u8)
-        .is_err());
-    assert!(DefaultOptions::new()
-        .with_fixint_encoding()
-        .with_limit(1)
-        .serialized_size(&0u16)
-        .is_err());
-    assert!(DefaultOptions::new()
-        .with_fixint_encoding()
-        .with_limit(3)
-        .serialized_size(&0u32)
-        .is_err());
-    assert!(DefaultOptions::new()
-        .with_fixint_encoding()
-        .with_limit(7)
-        .serialized_size(&0u64)
-        .is_err());
-    assert!(DefaultOptions::new()
-        .with_fixint_encoding()
-        .with_limit(7)
-        .serialized_size(&"")
-        .is_err());
-    assert!(DefaultOptions::new()
-        .with_fixint_encoding()
-        .with_limit(8 + 0)
-        .serialized_size(&"a")
-        .is_err());
-    assert!(DefaultOptions::new()
-        .with_fixint_encoding()
-        .with_limit(8 + 3 * 4 - 1)
-        .serialized_size(&vec![0u32, 1u32, 2u32])
-        .is_err());
+    assert!(
+        DefaultOptions::new()
+            .with_fixint_encoding()
+            .with_limit(0)
+            .serialized_size(&0u8)
+            .is_err()
+    );
+    assert!(
+        DefaultOptions::new()
+            .with_fixint_encoding()
+            .with_limit(1)
+            .serialized_size(&0u16)
+            .is_err()
+    );
+    assert!(
+        DefaultOptions::new()
+            .with_fixint_encoding()
+            .with_limit(3)
+            .serialized_size(&0u32)
+            .is_err()
+    );
+    assert!(
+        DefaultOptions::new()
+            .with_fixint_encoding()
+            .with_limit(7)
+            .serialized_size(&0u64)
+            .is_err()
+    );
+    assert!(
+        DefaultOptions::new()
+            .with_fixint_encoding()
+            .with_limit(7)
+            .serialized_size(&"")
+            .is_err()
+    );
+    assert!(
+        DefaultOptions::new()
+            .with_fixint_encoding()
+            .with_limit(8 + 0)
+            .serialized_size(&"a")
+            .is_err()
+    );
+    assert!(
+        DefaultOptions::new()
+            .with_fixint_encoding()
+            .with_limit(8 + 3 * 4 - 1)
+            .serialized_size(&vec![0u32, 1u32, 2u32])
+            .is_err()
+    );
 }
 
 #[test]
@@ -611,7 +633,7 @@ fn test_zero_copy_parse() {
 
 #[test]
 fn test_zero_copy_parse_deserialize_into() {
-    use bincode::BincodeRead;
+    use crate::bincode::BincodeRead;
     use std::io;
 
     /// A BincodeRead implementation for byte slices
@@ -621,8 +643,8 @@ fn test_zero_copy_parse_deserialize_into() {
 
     impl<'storage> SliceReader<'storage> {
         #[inline(always)]
-        fn unexpected_eof() -> Box<::ErrorKind> {
-            return Box::new(::ErrorKind::Io(io::Error::new(
+        fn unexpected_eof() -> Box<crate::ErrorKind> {
+            return Box::new(crate::ErrorKind::Io(io::Error::new(
                 io::ErrorKind::UnexpectedEof,
                 "",
             )));
@@ -646,7 +668,7 @@ fn test_zero_copy_parse_deserialize_into() {
         where
             V: serde::de::Visitor<'storage>,
         {
-            use ErrorKind;
+            use crate::ErrorKind;
             if length > self.slice.len() {
                 return Err(SliceReader::unexpected_eof());
             }
@@ -889,7 +911,7 @@ fn test_byte_vec_struct() {
         a: Vec<u8>,
         b: Vec<u8>,
         c: Vec<u8>,
-    };
+    }
 
     let byte_struct = ByteVecs {
         a: vec![2; 20],

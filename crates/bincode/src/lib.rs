@@ -42,11 +42,11 @@ mod error;
 mod internal;
 mod ser;
 
-pub use config::{Config, DefaultOptions, Options};
-pub use de::read::BincodeRead;
-pub use de::Deserializer;
-pub use error::{Error, ErrorKind, Result};
-pub use ser::Serializer;
+pub use crate::config::{Config, DefaultOptions, Options};
+pub use crate::de::Deserializer;
+pub use crate::de::read::BincodeRead;
+pub use crate::error::{Error, ErrorKind, Result};
+pub use crate::ser::Serializer;
 
 /// Get a default configuration object.
 ///

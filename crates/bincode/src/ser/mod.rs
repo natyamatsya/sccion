@@ -3,11 +3,11 @@ use std::u32;
 
 use serde;
 
-use byteorder::WriteBytesExt;
+use crate::byteorder::WriteBytesExt;
 
 use super::config::{IntEncoding, SizeLimit};
 use super::{Error, ErrorKind, Result};
-use config::{BincodeByteOrder, Options};
+use crate::config::{BincodeByteOrder, Options};
 use std::mem::size_of;
 
 /// An Serializer that encodes values directly into a Writer.

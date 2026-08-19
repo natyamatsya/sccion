@@ -1,10 +1,11 @@
-# Vendored from bincode 1.3.3. See README.md for why and what may be changed.
+# Vendored from bincode 1.3.3, then migrated to edition 2024.
+# See README.md for why, and for what diverges from the published crate.
 #
 # The package is renamed so that nothing can confuse it with the crates.io
 # crate, and so that `cargo tree` says where the code came from. The root
 # manifest imports it as `bincode`, which is why no call site changed.
 [package]
-edition = "2015"                # as published; see README.md
+edition = "2024"
 name = "sccion-bincode"
 publish = false
 rust-version = "1.91.0"
@@ -30,26 +31,20 @@ serde_derive = "1.0.27"
 [features]
 i128 = []
 
-# Deliberately not `workspace = true`. This is vendored third-party code kept
-# close to what was published, so that a diff against 1.3.3 shows only what we
-# meant to change. Holding it to lints written for this project's own code would
-# fill that diff with churn.
+# Deliberately not `workspace = true`. These are upstream's warnings, not this
+# project's code, and a build that always prints warnings is a build where nobody
+# reads them. What guards this crate is not lint parity but its tests: upstream's
+# 50, plus `util::bincode_format` and `protocol::wire_format`, which say the
+# encoding has not moved.
 [lints.rust]
-# Upstream ships the whole `byteorder` API and uses part of it, and has one impl
-# that a later rustc learned to warn about. Allowed rather than edited: the point
-# of vendoring is that a diff against 1.3.3 shows only deliberate changes, and a
-# build that always prints warnings is a build where nobody reads them.
+# Upstream ships the whole `byteorder` API and uses part of it.
 dead_code = "allow"
 non_local_definitions = "allow"
-# Upstream's own test suite, kept verbatim so it still means what it meant: a
-# deprecated serde macro, a stale `macro_use`, two stray semicolons.
+# Upstream's own test suite: a deprecated serde macro and a stale `macro_use`.
 deprecated = "allow"
-redundant_semicolons = "allow"
 unused_imports = "allow"
 
-# Same reasoning, for clippy. Upstream predates most of these lints, and one of
-# them (`approx_constant`, on a test that round-trips 3.14159) is deny-by-default
-# and would fail the build. Rewriting third-party code to satisfy lints it was
-# never written against is exactly the churn vendoring is supposed to avoid.
+# One of clippy's (`approx_constant`, on a test that round-trips 3.14159) is
+# deny-by-default and would fail the build outright.
 [lints.clippy]
 all = { level = "allow", priority = -1 }

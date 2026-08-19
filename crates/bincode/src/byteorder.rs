@@ -212,70 +212,70 @@ pub trait ReadBytesExt: io::Read {
     #[inline]
     fn read_u8(&mut self) -> Result<u8> {
         let mut buf = [0; 1];
-        try!(self.read_exact(&mut buf));
+        self.read_exact(&mut buf)?;
         Ok(buf[0])
     }
 
     #[inline]
     fn read_i8(&mut self) -> Result<i8> {
         let mut buf = [0; 1];
-        try!(self.read_exact(&mut buf));
+        self.read_exact(&mut buf)?;
         Ok(buf[0] as i8)
     }
 
     #[inline]
     fn read_u16<T: ByteOrder>(&mut self) -> Result<u16> {
         let mut buf = [0; 2];
-        try!(self.read_exact(&mut buf));
+        self.read_exact(&mut buf)?;
         Ok(T::read_u16(&buf))
     }
 
     #[inline]
     fn read_i16<T: ByteOrder>(&mut self) -> Result<i16> {
         let mut buf = [0; 2];
-        try!(self.read_exact(&mut buf));
+        self.read_exact(&mut buf)?;
         Ok(T::read_i16(&buf))
     }
 
     #[inline]
     fn read_u32<T: ByteOrder>(&mut self) -> Result<u32> {
         let mut buf = [0; 4];
-        try!(self.read_exact(&mut buf));
+        self.read_exact(&mut buf)?;
         Ok(T::read_u32(&buf))
     }
 
     #[inline]
     fn read_i32<T: ByteOrder>(&mut self) -> Result<i32> {
         let mut buf = [0; 4];
-        try!(self.read_exact(&mut buf));
+        self.read_exact(&mut buf)?;
         Ok(T::read_i32(&buf))
     }
 
     #[inline]
     fn read_u64<T: ByteOrder>(&mut self) -> Result<u64> {
         let mut buf = [0; 8];
-        try!(self.read_exact(&mut buf));
+        self.read_exact(&mut buf)?;
         Ok(T::read_u64(&buf))
     }
 
     #[inline]
     fn read_i64<T: ByteOrder>(&mut self) -> Result<i64> {
         let mut buf = [0; 8];
-        try!(self.read_exact(&mut buf));
+        self.read_exact(&mut buf)?;
         Ok(T::read_i64(&buf))
     }
 
     #[inline]
     fn read_f32<T: ByteOrder>(&mut self) -> Result<f32> {
         let mut buf = [0; 4];
-        try!(self.read_exact(&mut buf));
+        self.read_exact(&mut buf)?;
         Ok(T::read_f32(&buf))
     }
 
     #[inline]
     fn read_f64<T: ByteOrder>(&mut self) -> Result<f64> {
         let mut buf = [0; 8];
-        try!(self.read_exact(&mut buf));
+        self.read_exact(&mut buf)?;
         Ok(T::read_f64(&buf))
     }
 
@@ -283,14 +283,14 @@ pub trait ReadBytesExt: io::Read {
         #[inline]
         fn read_u128<T: ByteOrder>(&mut self) -> Result<u128> {
             let mut buf = [0; 16];
-            try!(self.read_exact(&mut buf));
+            self.read_exact(&mut buf)?;
             Ok(T::read_u128(&buf))
         }
 
         #[inline]
         fn read_i128<T: ByteOrder>(&mut self) -> Result<i128> {
             let mut buf = [0; 16];
-            try!(self.read_exact(&mut buf));
+            self.read_exact(&mut buf)?;
             Ok(T::read_i128(&buf))
         }
     }
