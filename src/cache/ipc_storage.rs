@@ -177,9 +177,10 @@ impl Storage for IpcStorage {
             .await?;
         match resp {
             Response::StorageGetPreprocessorEntry(Ok(None)) => Ok(None),
-            Response::StorageGetPreprocessorEntry(Ok(Some(bytes))) => Ok(Some(
-                Box::new(Cursor::new(bytes)) as Box<dyn crate::lru_disk_cache::ReadSeek>,
-            )),
+            Response::StorageGetPreprocessorEntry(Ok(Some(bytes))) => {
+                Ok(Some(Box::new(Cursor::new(bytes.into_vec()))
+                    as Box<dyn crate::lru_disk_cache::ReadSeek>))
+            }
             Response::StorageGetPreprocessorEntry(Err(e)) => {
                 bail!("IpcStorage::get_preprocessor_cache_entry: {e}")
             }

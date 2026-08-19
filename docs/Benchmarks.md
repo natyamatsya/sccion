@@ -62,6 +62,72 @@ debug information kept, so the trace resolves symbols:
 cargo build --profile profiling -p sccion
 ```
 
+## A worked example: twelve times faster, and it did not matter
+
+rkyv was evaluated as a replacement for bincode, which encodes the preprocessor
+cache on disk and every client/daemon message, and whose final release is a
+`compile_error!`. The measurement is worth keeping because of how the answer
+came out: the candidate won every comparison it was asked for and still lost.
+
+Mirror types of `PreprocessorCacheEntry` and `IncludeEntry` — blake3 hex digests
+at their real 64-character width, Windows include paths, both `Option<Timestamp>`
+arms — encoded with bincode 1 and with rkyv 0.8, release with LTO, median of
+eleven to fifteen batches after a warmup. `path` was a `String` on both sides,
+because rkyv has no `OsString` and the comparison has to be of encoders rather
+than of one encoder against a field it cannot represent.
+
+| includes | bincode encode | rkyv encode | bincode decode + walk | rkyv access + walk | on disk |
+| --- | --- | --- | --- | --- | --- |
+| 50 | 0.5 us | 1.2 us | 3.6 us | 0.6 us (6.5x) | +18.7% |
+| 500 | 4.2 us | 8.4 us | 73.2 us | 6.1 us (11.9x) | +18.1% |
+| 4 000 | 40.5 us | 168.7 us | 482 us | 58.9 us (8.2x) | +13.4% |
+| 10 000 | 302 us | 757 us | 1 011 us | 147 us (6.9x) | +13.4% |
+
+Six to twelve times faster to read, two to four times slower to write, and
+thirteen to nineteen percent larger. Validation is almost the whole of the read —
+136 of 147 microseconds at the cap — and it cannot be skipped for bytes that came
+off disk, so the unvalidated figure, ninety to a hundred and thirty times, is not
+a number to plan against.
+
+Then the denominator. `result_matches` does one `symlink_metadata` per include
+before it compares anything, and against the real Windows Kits and MSVC header
+trees on the development machine that costs **12.2 to 12.5 microseconds per
+stat, warm — about 6.1 milliseconds for 500 includes**. So for a typical
+translation unit the decode is 73 microseconds inside a 6.2 millisecond lookup:
+**1.2% of the path**. Winning it twelve times over saves 67 microseconds, near
+one percent, which is the same conclusion
+[profiling a whole build](#profiling-a-whole-build) reaches by a different route
+and the module's own comment reaches by reading the code: the cost here is
+`open()` latency through the filter stack, not anything the CPU is doing.
+
+Three structural costs sit on top of a one percent win. `IncludeEntry::path` is
+an `OsString`, which rkyv cannot archive, so the field would have to become bytes
+and answer for lossless WTF-16 on Windows. `lookup_result_digest` takes
+`&mut self` and rewrites `include.digest` in place when it re-hashes, and
+archived data cannot grow a string — so exactly the hits that update an entry
+would need a full deserialize, which measured only 1.1 to 1.5 times better than
+bincode. And rkyv is a far larger dependency surface than a bincode that has
+stopped moving.
+
+**The conclusion is to stay on bincode 1 for the cache.** The encoder will have
+to be replaced eventually, and the test that says whether a candidate is a
+drop-in is `bincode_format` in `src/util.rs`, which pins the current encoding
+byte for byte.
+
+### The part that was worth fixing
+
+The same measurement found a real cost somewhere else. In client-side mode
+`StoragePutRaw` and `StorageGetRaw` carry whole zip entries between client and
+daemon, and an 8 MiB object cost 5.2 milliseconds to decode and 4.4 to encode —
+not because of bincode, but because the blob was nested inside a serialized
+message. `bincode::deserialize` on the frame allocated a second buffer and copied
+the payload out of the first.
+
+That is the shape of finding worth looking for. rkyv appeared to win it by a
+factor of a thousand, which is what a zero-copy encoder always looks like next to
+a copy that did not need to happen — the fix is to stop copying, and it needs no
+new dependency and no change of format.
+
 ## Checking the machine
 
 ```

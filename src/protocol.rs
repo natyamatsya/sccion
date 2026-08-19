@@ -51,11 +51,19 @@ pub enum Request {
     /// Fetch raw (zip) bytes for `key`; returns `None` on a miss.
     StorageGetRaw { key: String },
     /// Store raw (zip) bytes under `key`.
-    StoragePutRaw { key: String, data: Vec<u8> },
+    StoragePutRaw {
+        key: String,
+        #[serde(with = "serde_bytes")]
+        data: Vec<u8>,
+    },
     /// Retrieve the preprocessor cache entry for `key`.
     StorageGetPreprocessorEntry { key: String },
     /// Store or overwrite the preprocessor cache entry for `key`.
-    StoragePutPreprocessorEntry { key: String, entry_bytes: Vec<u8> },
+    StoragePutPreprocessorEntry {
+        key: String,
+        #[serde(with = "serde_bytes")]
+        entry_bytes: Vec<u8>,
+    },
     /// Merge per-invocation stats into the daemon's running totals.
     RecordStats(Box<ServerStats>),
 
@@ -103,11 +111,11 @@ pub enum Response {
     /// Response for `Request::StorageGetPath`.
     StorageGetPath(GetPathResult),
     /// Response for `Request::StorageGetRaw`: zip bytes on hit, `None` on miss.
-    StorageGetRaw(Option<Vec<u8>>),
+    StorageGetRaw(#[serde(with = "serde_bytes")] Option<Vec<u8>>),
     /// Response for `Request::StoragePutRaw`.
     StoragePutRaw(Result<(), String>),
     /// Response for `Request::StorageGetPreprocessorEntry`.
-    StorageGetPreprocessorEntry(Result<Option<Vec<u8>>, String>),
+    StorageGetPreprocessorEntry(Result<Option<serde_bytes::ByteBuf>, String>),
     /// Response for `Request::StoragePutPreprocessorEntry`.
     StoragePutPreprocessorEntry(Result<(), String>),
     /// Response for `Request::RecordStats`.
@@ -158,8 +166,10 @@ pub struct CompileFinished {
     /// The signal that terminated the compile process, if available.
     pub signal: Option<i32>,
     /// The compiler's stdout.
+    #[serde(with = "serde_bytes")]
     pub stdout: Vec<u8>,
     /// The compiler's stderr.
+    #[serde(with = "serde_bytes")]
     pub stderr: Vec<u8>,
     /// The state of any compiler options passed to control color output.
     pub color_mode: ColorMode,
@@ -187,4 +197,91 @@ pub struct StorageHandshakeInfo {
     pub preprocessor_cache_mode_config: PreprocessorCacheModeConfig,
     pub cache_mode: CacheMode,
     pub max_size: Option<u64>,
+}
+
+/// The wire format, in bytes.
+///
+/// `serde_bytes` on the blob-carrying fields is an optimisation and has to stay
+/// one: bincode's `serialize_bytes` writes the same length prefix followed by
+/// the same payload that a sequence of `u8` produces, so annotating a field
+/// changes how long the encoding takes and not what it says. That is only true
+/// while it is true, and nothing else would notice if it stopped -- a client
+/// and a daemon that disagree here exchange plausible garbage rather than
+/// failing, which is why the protocol version is in the pipe name to begin
+/// with.
+///
+/// These bytes were recorded before the annotations went on.
+#[cfg(test)]
+mod wire_format {
+    use super::*;
+
+    fn hex(b: &[u8]) -> String {
+        b.iter().map(|x| format!("{x:02x}")).collect()
+    }
+
+    #[test]
+    fn the_blob_carrying_messages_encode_as_they_always_did() {
+        let put = bincode::serialize(&Request::StoragePutRaw {
+            key: "abc".into(),
+            data: vec![0u8, 1, 2, 250, 255],
+        })
+        .unwrap();
+        assert_eq!(
+            hex(&put),
+            "0800000003000000000000006162630500000000000000000102faff",
+            "StoragePutRaw"
+        );
+
+        let hit = bincode::serialize(&Response::StorageGetRaw(Some(vec![9u8, 8, 7]))).unwrap();
+        assert_eq!(
+            hex(&hit),
+            "08000000010300000000000000090807",
+            "StorageGetRaw hit"
+        );
+
+        let miss = bincode::serialize(&Response::StorageGetRaw(None)).unwrap();
+        assert_eq!(
+            hex(&miss),
+            "0800000000",
+            "StorageGetRaw miss -- the None arm is not a byte string at all"
+        );
+
+        let pre = bincode::serialize(&Response::StorageGetPreprocessorEntry(Ok(Some(
+            serde_bytes::ByteBuf::from(vec![4u8, 5, 6]),
+        ))))
+        .unwrap();
+        assert_eq!(
+            hex(&pre),
+            "0a00000000000000010300000000000000040506",
+            "StorageGetPreprocessorEntry hit -- ByteBuf must match the Vec it replaced"
+        );
+
+        let err = bincode::serialize(&Response::StorageGetPreprocessorEntry(Err(
+            "boom".to_string()
+        )))
+        .unwrap();
+        assert_eq!(
+            hex(&err),
+            "0a000000010000000400000000000000626f6f6d",
+            "StorageGetPreprocessorEntry error"
+        );
+    }
+
+    /// And they still decode to what went in.
+    #[test]
+    fn the_blob_carrying_messages_round_trip() {
+        let data = vec![0u8, 1, 2, 250, 255];
+        let bytes = bincode::serialize(&Request::StoragePutRaw {
+            key: "abc".into(),
+            data: data.clone(),
+        })
+        .unwrap();
+        match bincode::deserialize(&bytes).unwrap() {
+            Request::StoragePutRaw { key, data: got } => {
+                assert_eq!(key, "abc");
+                assert_eq!(got, data);
+            }
+            other => panic!("decoded as {other:?}"),
+        }
+    }
 }

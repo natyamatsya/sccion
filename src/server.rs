@@ -1003,7 +1003,7 @@ where
                                 use std::io::Read;
                                 let mut buf = vec![];
                                 seekable.read_to_end(&mut buf).ok()?;
-                                Some(buf)
+                                Some(serde_bytes::ByteBuf::from(buf))
                             })
                         })
                         .map_err(|e| format!("{e:#}"));
