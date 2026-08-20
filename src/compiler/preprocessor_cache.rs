@@ -81,10 +81,13 @@ fn portable_path(path: PathBuf, basedirs: &[Vec<u8>]) -> OsString {
 /// stale first file costs one batch rather than a whole entry.
 ///
 /// Larger batches buy more overlap and waste more on an early miss, so the
-/// batch starts small and doubles as the entry proves itself: a stale *first*
-/// include costs eight stats rather than a hundred and twenty-eight, while an
-/// entry that keeps matching reaches full width within a few batches.
-const STAT_BATCH_MAX: usize = 128;
+/// batch starts here and doubles as the entry proves itself: a stale *first*
+/// include costs eight stats, while an entry that keeps matching widens fast.
+///
+/// There is deliberately no ceiling. "Twice what has already matched" bounds
+/// the waste by work that has already paid off, whatever the absolute size, and
+/// a ceiling only adds batches -- each of which is a round trip through the
+/// blocking pool. Capping at 128 cost 2000 includes about 27%.
 const STAT_BATCH_MIN: usize = 8;
 
 /// One directory scan in place of a `stat` per file in it.
@@ -446,7 +449,7 @@ impl PreprocessorCacheEntry {
             .filter(|p| !caches.seen.contains_key(p))
             // Twice what this result has already got right, so reading ahead is
             // always bounded by work that has already paid off.
-            .take((validated * 2).clamp(STAT_BATCH_MIN, STAT_BATCH_MAX))
+            .take((validated * 2).max(STAT_BATCH_MIN))
             .collect();
         if wanted.len() < 2 {
             // One file is not worth a thread; the caller resolves it inline.
@@ -587,31 +590,41 @@ impl PreprocessorCacheEntry {
         // The loop below returns on the first file that does not match, so
         // resolving all of them up front made an early miss pay for a whole
         // entry it never looked at.
-        let mut resolved: Vec<PathBuf> = Vec::with_capacity(includes.len());
-        let mut needs_contents = Vec::new();
+        // Only the includes whose contents still have to be compared keep their
+        // resolved path. The stat-only path settles every file without opening
+        // one, and building a `PathBuf` per include for a second pass that
+        // usually does not happen is a clone per include thrown away.
+        let mut needs_contents: Vec<(usize, PathBuf)> = Vec::new();
 
         for (index, include) in includes.iter().enumerate() {
             // Read ahead when the cache runs dry. Everything the batch learns
-            // lands in `seen`, so the comparison below is unchanged -- it just
-            // stops finding the cache empty.
+            // lands in the cache, so the comparison below is unchanged -- it
+            // just stops finding it empty.
+            //
+            // One lookup, not a `contains_key` followed by a `get`: the stored
+            // path is hashed once per include per result, and that is the term
+            // this loop is made of.
+            // Make sure the cache holds this include, then read it by
+            // reference. Taking it by value cost a `PathBuf` clone for every
+            // include, and only the few that reach the second pass need one.
             if !caches.seen.contains_key(&include.path) {
                 Self::prefetch_stats(&includes[index..], index, basedirs, pool, caches).await;
-            }
-            let (candidate, stat) = match caches.seen.get(&include.path) {
-                Some((path, meta)) => (path.clone(), *meta),
-                None => {
+                if !caches.seen.contains_key(&include.path) {
                     let (path, meta) = resolve_and_stat(&include.path, basedirs);
                     // The error is kept as its kind: `io::Error` is not `Clone`,
                     // and the kind is what the log line below actually says.
-                    let meta = meta.map_err(|e| e.kind());
                     caches
                         .seen
-                        .insert(include.path.clone(), (path.clone(), meta));
-                    (path, meta)
+                        .insert(include.path.clone(), (path, meta.map_err(|e| e.kind())));
                 }
+            }
+            let Some((candidate, stat)) = caches.seen.get(&include.path) else {
+                // Unreachable: it was just put there. Declining is still the
+                // right answer if it somehow is not.
+                return false;
             };
-            resolved.push(candidate);
-            let path = resolved[index].as_path();
+            let stat = *stat;
+            let path = candidate.as_path();
             let meta = match stat {
                 Ok(facts) => {
                     if facts.len != include.file_size {
@@ -654,7 +667,7 @@ impl PreprocessorCacheEntry {
                 }
             }
 
-            needs_contents.push(index);
+            needs_contents.push((index, candidate.clone()));
         }
 
         // Everything was settled by `stat`. With `file_stat_matches` enabled this
@@ -664,7 +677,7 @@ impl PreprocessorCacheEntry {
         }
 
         let digested = digest_files_concurrently(
-            needs_contents.iter().map(|&index| resolved[index].clone()),
+            needs_contents.iter().map(|(_, path)| path.clone()),
             config.ignore_time_macros,
             pool,
         )
@@ -672,8 +685,8 @@ impl PreprocessorCacheEntry {
 
         // Fold sequentially, in the original order, so the outcome does not depend
         // on which file happened to finish first.
-        for (index, outcome) in needs_contents.into_iter().zip(digested) {
-            let path = resolved[index].as_path();
+        for ((index, resolved), outcome) in needs_contents.into_iter().zip(digested) {
+            let path = resolved.as_path();
             let include = &mut includes[index];
 
             let Some(contents) = outcome else {
