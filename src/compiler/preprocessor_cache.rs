@@ -2209,3 +2209,136 @@ mod lookup_cost {
         }
     }
 }
+
+/// What a cache-key change to raw digests would actually buy.
+///
+/// `dependency_result_key` hashes `digest.as_bytes()` on the *hex* form: 64
+/// bytes per include where the digest is 32. Carrying raw bytes would halve
+/// that, drop a `String` allocation per include, and remove the hex decode at
+/// `add_result`. It would also change every key.
+///
+/// Run deliberately:
+///
+/// ```text
+/// cargo test --release --lib key_cost -- --ignored --nocapture
+/// ```
+#[cfg(test)]
+mod key_cost {
+    use super::*;
+    use crate::util::{DIGEST_BYTES, Digest};
+
+    fn best<F: FnMut()>(rounds: usize, mut f: F) -> f64 {
+        for _ in 0..3 {
+            f();
+        }
+        let mut best = f64::MAX;
+        for _ in 0..rounds {
+            let t = std::time::Instant::now();
+            f();
+            best = best.min(t.elapsed().as_secs_f64() * 1e3);
+        }
+        best
+    }
+
+    /// The key, as it is computed today.
+    fn key_from_hex(
+        manifest: &str,
+        includes: &[(String, PathBuf)],
+        basedirs: &[Vec<u8>],
+    ) -> String {
+        crate::compiler::c::dependency_result_key(manifest, includes, basedirs)
+    }
+
+    /// The same function with the digest carried raw: half the bytes hashed per
+    /// include, and nothing else changed.
+    fn key_from_bytes(
+        manifest: &str,
+        includes: &[([u8; DIGEST_BYTES], PathBuf)],
+        basedirs: &[Vec<u8>],
+    ) -> String {
+        let mut m = Digest::new();
+        m.update(manifest.as_bytes());
+        for (digest, path) in includes {
+            let stripped =
+                crate::util::strip_basedirs_in_arg(path.as_os_str().as_encoded_bytes(), basedirs);
+            m.update(&(stripped.len() as u64).to_le_bytes());
+            m.update(&stripped);
+            m.update(digest);
+        }
+        m.finish()
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    #[ignore = "a stopwatch, not an assertion; run it deliberately"]
+    async fn what_raw_digests_would_buy() {
+        println!("\ncache-key change: hex digests vs raw, best of 20\n");
+
+        // A header of a size C++ headers actually are, so the hashing that
+        // dominates the miss path is represented rather than assumed.
+        let header = vec![b'x'; 8 * 1024];
+
+        for n in [500usize, 2000] {
+            let paths: Vec<PathBuf> = (0..n)
+                .map(|i| {
+                    PathBuf::from(format!(
+                        "C:/Program Files/MSVC/include/detail/header_{i}.hpp"
+                    ))
+                })
+                .collect();
+
+            // (1) producing the digests: hashing the file, then hexing it.
+            let hash_and_hex = best(20, || {
+                for _ in 0..n {
+                    let mut d = Digest::new();
+                    d.update(std::hint::black_box(&header));
+                    std::hint::black_box(d.finish());
+                }
+            });
+            let hash_only = best(20, || {
+                for _ in 0..n {
+                    let mut d = Digest::new();
+                    d.update(std::hint::black_box(&header));
+                    std::hint::black_box(d.finish_bytes());
+                }
+            });
+
+            // (2) the key itself.
+            let hex_digest = {
+                let mut d = Digest::new();
+                d.update(&header);
+                d.finish()
+            };
+            let raw_digest = crate::util::unhex_digest(&hex_digest).unwrap();
+            let hex_includes: Vec<(String, PathBuf)> = paths
+                .iter()
+                .map(|p| (hex_digest.clone(), p.clone()))
+                .collect();
+            let raw_includes: Vec<([u8; DIGEST_BYTES], PathBuf)> =
+                paths.iter().map(|p| (raw_digest, p.clone())).collect();
+
+            let key_hex = best(20, || {
+                std::hint::black_box(key_from_hex("manifest", &hex_includes, &[]));
+            });
+            let key_raw = best(20, || {
+                std::hint::black_box(key_from_bytes("manifest", &raw_includes, &[]));
+            });
+
+            println!("  {n} includes, 8 KiB each:");
+            println!(
+                "    hash + hex      {hash_and_hex:>7.3} ms    hash + raw  {hash_only:>7.3} ms   ({:+.1}%)",
+                (hash_only / hash_and_hex - 1.0) * 100.0
+            );
+            println!(
+                "    key from hex    {key_hex:>7.3} ms    key from raw {key_raw:>6.3} ms   ({:+.1}%)",
+                (key_raw / key_hex - 1.0) * 100.0
+            );
+            println!(
+                "    total saved     {:>7.3} ms  of {:.3} ms  ({:.1}%)",
+                (hash_and_hex - hash_only) + (key_hex - key_raw),
+                hash_and_hex + key_hex,
+                ((hash_and_hex - hash_only) + (key_hex - key_raw)) / (hash_and_hex + key_hex)
+                    * 100.0
+            );
+        }
+    }
+}
