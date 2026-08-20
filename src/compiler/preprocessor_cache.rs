@@ -102,8 +102,14 @@ const STAT_BATCH_MIN: usize = 8;
 ///
 /// Off Windows there is nothing to gain: `DirEntry::metadata` still issues a
 /// call per file, so the per-file path below is already the same work.
+/// Counts scans, so a test can ask how many were issued. Test-only.
+#[cfg(all(windows, test))]
+pub(crate) static SCANS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
 #[cfg(windows)]
 fn stat_directory(dir: &Path) -> HashMap<OsString, std::fs::Metadata> {
+    #[cfg(test)]
+    SCANS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let mut found = HashMap::new();
     if let Ok(entries) = std::fs::read_dir(dir) {
         for entry in entries.flatten() {
@@ -1899,6 +1905,159 @@ mod lookup_cost {
             println!(
                 "  {n:>5} includes / entry on disk  {:>6} B   encode {enc:.2} ms   decode {dec:.2} ms",
                 buf.len()
+            );
+        }
+
+        // Where the remaining time goes. The lookup no longer contains a stat
+        // per include, so the question is what replaced it.
+        for (dirs_n, per_dir) in [(8usize, 62usize), (16, 125)] {
+            let (_root, files) = tree(dirs_n, per_dir);
+            let n = files.len();
+            let mut entry = entry_over(&files, 1, &[]);
+            let (full, _) = time_lookup(&mut entry, config, &[], 5).await;
+
+            // (a) the syscalls: the directory scans, as the lookup issues them.
+            let parents: Vec<PathBuf> = {
+                let mut v: Vec<PathBuf> = files
+                    .iter()
+                    .filter_map(|f| f.parent().map(|p| p.to_path_buf()))
+                    .collect();
+                v.sort();
+                v.dedup();
+                v
+            };
+            let pool = tokio::runtime::Handle::current();
+            let mut scans = f64::MAX;
+            for _ in 0..5 {
+                let t = std::time::Instant::now();
+                let mut tasks = Vec::new();
+                for dir in &parents {
+                    let dir = dir.clone();
+                    tasks.push(pool.spawn_blocking(move || {
+                        let mut count = 0usize;
+                        if let Ok(rd) = std::fs::read_dir(&dir) {
+                            for e in rd.flatten() {
+                                if e.metadata().is_ok() {
+                                    count += 1;
+                                }
+                            }
+                        }
+                        count
+                    }));
+                }
+                for t in tasks {
+                    std::hint::black_box(t.await.unwrap_or(0));
+                }
+                scans = scans.min(t.elapsed().as_secs_f64() * 1e3);
+            }
+
+            // (a2) the same scans, but building the filename -> metadata maps
+            // the lookup actually builds. The difference is hashing and
+            // allocation, not waiting.
+            let mut scans_mapped = f64::MAX;
+            for _ in 0..5 {
+                let t = std::time::Instant::now();
+                let mut tasks = Vec::new();
+                for dir in &parents {
+                    let dir = dir.clone();
+                    tasks.push(pool.spawn_blocking(move || {
+                        let mut found: HashMap<OsString, std::fs::Metadata> = HashMap::new();
+                        if let Ok(rd) = std::fs::read_dir(&dir) {
+                            for e in rd.flatten() {
+                                if let Ok(m) = e.metadata() {
+                                    found.insert(e.file_name(), m);
+                                }
+                            }
+                        }
+                        found
+                    }));
+                }
+                for t in tasks {
+                    std::hint::black_box(t.await.map(|m| m.len()).unwrap_or(0));
+                }
+                scans_mapped = scans_mapped.min(t.elapsed().as_secs_f64() * 1e3);
+            }
+
+            // (a3) the per-include plumbing, with no filesystem in it at all:
+            // hash the stored name, find it in the directory map, clone the path
+            // and the metadata, put it in the lookup cache, take it out again.
+            // This is what the lookup does around each include now.
+            let mut plumbing = f64::MAX;
+            {
+                let mut dir_maps: HashMap<PathBuf, HashMap<OsString, std::fs::Metadata>> =
+                    HashMap::new();
+                for dir in &parents {
+                    let mut found = HashMap::new();
+                    if let Ok(rd) = std::fs::read_dir(dir) {
+                        for e in rd.flatten() {
+                            if let Ok(m) = e.metadata() {
+                                found.insert(e.file_name(), m);
+                            }
+                        }
+                    }
+                    dir_maps.insert(dir.clone(), found);
+                }
+                let stored: Vec<OsString> =
+                    files.iter().map(|f| f.as_os_str().to_os_string()).collect();
+                for _ in 0..5 {
+                    let t = std::time::Instant::now();
+                    let mut cache: StatCache = HashMap::new();
+                    for name in &stored {
+                        let path = PathBuf::from(name);
+                        let meta = path
+                            .parent()
+                            .and_then(|d| dir_maps.get(d))
+                            .and_then(|m| path.file_name().and_then(|n| m.get(n)))
+                            .cloned();
+                        cache.insert(
+                            name.clone(),
+                            (path.clone(), meta.ok_or(std::io::ErrorKind::NotFound)),
+                        );
+                    }
+                    for name in &stored {
+                        if let Some((p, m)) = cache.get(name) {
+                            let _ = std::hint::black_box((p.clone(), m.clone()));
+                        }
+                    }
+                    plumbing = plumbing.min(t.elapsed().as_secs_f64() * 1e3);
+                }
+            }
+            println!("  {n:>5} includes: plumbing alone, no filesystem  {plumbing:>6.2} ms");
+
+            // How many directory scans does one lookup actually issue? There are
+            // only `parents.len()` distinct directories; anything more is the
+            // read-ahead batches asking the same directory again.
+            #[cfg(windows)]
+            {
+                use std::sync::atomic::Ordering;
+                let mut fresh = entry_over(&files, 1, &[]);
+                SCANS.store(0, Ordering::Relaxed);
+                let mut upd = false;
+                let _ = fresh
+                    .lookup_result_digest(config, &mut upd, &pool, &[])
+                    .await;
+                println!(
+                    "  {n:>5} includes: {} scans for {} directories",
+                    SCANS.load(Ordering::Relaxed),
+                    parents.len()
+                );
+            }
+
+            // (b) the entry itself, paid when it is read off disk.
+            let mut buf = Vec::new();
+            entry.serialize_to(&mut buf).expect("serialize");
+            let mut decode = f64::MAX;
+            for _ in 0..20 {
+                let t = std::time::Instant::now();
+                std::hint::black_box(PreprocessorCacheEntry::read(&buf).expect("read"));
+                decode = decode.min(t.elapsed().as_secs_f64() * 1e3);
+            }
+
+            println!(
+                "  {n:>5} includes: lookup {full:>6.2} = scan {scans:>5.2} + maps {:>5.2}                  + rest {:>5.2} ({:>2.0}%)  | decode {decode:.2}",
+                scans_mapped - scans,
+                full - scans_mapped,
+                (full - scans_mapped) / full * 100.0,
             );
         }
 
