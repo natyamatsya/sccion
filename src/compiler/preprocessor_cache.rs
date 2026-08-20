@@ -1866,10 +1866,14 @@ mod lookup_cost {
         let start = SystemTime::now() + Duration::from_secs(60);
         let mut entry = PreprocessorCacheEntry::new();
         for r in 0..results {
-            let included = files
-                .iter()
-                .enumerate()
-                .map(|(i, p)| (format!("{:064x}", (r * 1_000_003 + i) as u128), p.clone()));
+            // Real digests, so a content comparison hits rather than doing the
+            // same work and then declining. A digest that is not the file's own
+            // makes the entry a miss by construction, which would measure the
+            // wrong thing in the configuration that compares contents.
+            let included = files.iter().map(|p| {
+                let file = std::fs::File::open(p).expect("open");
+                (Digest::reader_sync(file).expect("digest"), p.clone())
+            });
             entry.add_result(start, &format!("result_{r:03}"), included, basedirs);
         }
         entry
@@ -1914,6 +1918,28 @@ mod lookup_cost {
             println!(
                 "  {n:>5} includes / {dirs:>2} dirs / 1 result    {ms:>8.2} ms  ({:>5.1} us each)  hit: {hit}",
                 ms * 1000.0 / n as f64
+            );
+        }
+
+        // The same entries under the *default* configuration, where
+        // `file_stat_matches` is false and every include is compared by hashing
+        // its contents rather than by its size and timestamps. That is what a
+        // machine that has not been tuned actually runs.
+        let default_config = PreprocessorCacheModeConfig {
+            use_preprocessor_cache_mode: true,
+            file_stat_matches: false,
+            ..Default::default()
+        };
+        for (dirs_n, per_dir) in [(4usize, 50usize), (8, 62)] {
+            let (_root, files) = tree(dirs_n, per_dir);
+            let n = files.len();
+            let mut stat_entry = entry_over(&files, 1, &[]);
+            let (stat_ms, stat_hit) = time_lookup(&mut stat_entry, config, &[], 5).await;
+            let mut hash_entry = entry_over(&files, 1, &[]);
+            let (hash_ms, hash_hit) = time_lookup(&mut hash_entry, default_config, &[], 5).await;
+            println!(
+                "  {n:>5} includes: stat_matches on {stat_ms:>6.2} ms (hit {stat_hit})                   off {hash_ms:>7.2} ms (hit {hash_hit})   {:.1}x",
+                hash_ms / stat_ms
             );
         }
 

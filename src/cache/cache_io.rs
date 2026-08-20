@@ -975,3 +975,109 @@ mod tests {
         }
     }
 }
+
+/// What a cache hit costs after the lookup says yes.
+///
+/// The preprocessor-cache lookup is now well measured. This is the other half:
+/// reading the entry off disk and putting the object where the compiler would
+/// have written it. Run deliberately:
+///
+/// ```text
+/// cargo test --release --lib hit_cost -- --ignored --nocapture
+/// ```
+#[cfg(test)]
+mod hit_cost {
+    use super::*;
+
+    fn entry_with(name: &str, payload: &[u8], encoding: ObjectEncoding) -> Vec<u8> {
+        let mut w = CacheWrite::new();
+        w.put_object_with_encoding(name, &mut std::io::Cursor::new(payload), None, encoding)
+            .unwrap();
+        w.finish().unwrap()
+    }
+
+    fn object_of(size: usize) -> Vec<u8> {
+        // Compressible the way an object file is -- long runs of zeroes between
+        // structured data -- so zstd is not measured against noise it could
+        // never see in practice.
+        let mut v = Vec::with_capacity(size);
+        let mut i: u32 = 0;
+        while v.len() < size {
+            if (v.len() / 64) % 3 == 0 {
+                v.extend(std::iter::repeat_n(0u8, 64.min(size - v.len())));
+            } else {
+                for _ in 0..64.min(size - v.len()) {
+                    i = i.wrapping_mul(2654435761).wrapping_add(1);
+                    v.push((i >> 24) as u8);
+                }
+            }
+        }
+        v
+    }
+
+    fn best<F: FnMut()>(rounds: usize, mut f: F) -> f64 {
+        f();
+        let mut best = f64::MAX;
+        for _ in 0..rounds {
+            let t = std::time::Instant::now();
+            f();
+            best = best.min(t.elapsed().as_secs_f64() * 1e3);
+        }
+        best
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    #[ignore = "a stopwatch, not an assertion; run it deliberately"]
+    async fn what_delivering_an_object_costs() {
+        let pool = tokio::runtime::Handle::current();
+        let dir = tempfile::tempdir().unwrap();
+        println!("\ncache hit: entry on disk -> object on disk, best of 10\n");
+
+        for size in [256 * 1024usize, 2 * 1024 * 1024] {
+            let payload = object_of(size);
+            for (label, encoding) in [
+                ("zstd 3      ", ObjectEncoding::Zstd(3)),
+                ("uncompressed", ObjectEncoding::Uncompressed),
+            ] {
+                // Write side: what the miss path pays to store it.
+                let write = best(10, || {
+                    std::hint::black_box(entry_with("obj", &payload, encoding));
+                });
+                let entry = entry_with("obj", &payload, encoding);
+
+                // The entry as the cache holds it, on disk.
+                let entry_path = dir.path().join(format!("entry_{size}_{}", label.trim()));
+                std::fs::write(&entry_path, &entry).unwrap();
+                let out_path = dir.path().join("out.obj");
+
+                // Read side: open the entry and materialise the object.
+                let mut cloned_any = 0u64;
+                let read = {
+                    let mut best_ms = f64::MAX;
+                    for _ in 0..11 {
+                        let _ = std::fs::remove_file(&out_path);
+                        let file = std::fs::File::open(&entry_path).unwrap();
+                        let reader = CacheRead::from_file_at(file, entry_path.clone()).unwrap();
+                        let objects = vec![FileObjectSource {
+                            key: "obj".to_string(),
+                            path: out_path.clone(),
+                            optional: false,
+                        }];
+                        let t = std::time::Instant::now();
+                        cloned_any = reader.extract_objects(objects, &pool).await.unwrap();
+                        best_ms = best_ms.min(t.elapsed().as_secs_f64() * 1e3);
+                    }
+                    best_ms
+                };
+                assert_eq!(std::fs::metadata(&out_path).unwrap().len(), size as u64);
+
+                println!(
+                    "  {:>5} KiB  {label}  entry {:>7} B ({:>4.1}x)  write {write:>6.2} ms  read+extract {read:>6.2} ms  cloned {cloned_any}",
+                    size / 1024,
+                    entry.len(),
+                    size as f64 / entry.len() as f64,
+                );
+            }
+        }
+    }
+}
