@@ -87,12 +87,59 @@ fn portable_path(path: PathBuf, basedirs: &[Vec<u8>]) -> OsString {
 const STAT_BATCH_MAX: usize = 128;
 const STAT_BATCH_MIN: usize = 8;
 
+/// One directory scan in place of a `stat` per file in it.
+///
+/// On Windows a directory scan is `FindFirstFileW`/`FindNextFileW`, which
+/// carries size and timestamps for every entry, so the metadata arrives as a
+/// side effect of walking the directory rather than as a call per file. Includes
+/// cluster into a few dozen directories, so this trades many small waits for a
+/// few larger ones.
+///
+/// It pays for the whole directory whether or not every file in it was wanted,
+/// so it wins on density and merely breaks even when sparse. It also reads all
+/// of a directory at one moment rather than each file at its own, which is the
+/// more consistent reading of a tree and not a weaker one.
+///
+/// Off Windows there is nothing to gain: `DirEntry::metadata` still issues a
+/// call per file, so the per-file path below is already the same work.
+#[cfg(windows)]
+fn stat_directory(dir: &Path) -> HashMap<OsString, std::fs::Metadata> {
+    let mut found = HashMap::new();
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            // `DirEntry::metadata` does not traverse symlinks, which is the
+            // same promise `symlink_metadata` makes.
+            if let Ok(meta) = entry.metadata() {
+                found.insert(entry.file_name(), meta);
+            }
+        }
+    }
+    found
+}
+
 /// What one lookup has already learned about the files on disk.
 ///
 /// Keyed by the *stored* path, so a hit skips resolving as well as stat'ing.
 /// The error is kept as an [`std::io::ErrorKind`] because `io::Error` is not
 /// `Clone`, and the kind is what the caller logs.
 type StatCache = HashMap<OsString, (PathBuf, Result<std::fs::Metadata, std::io::ErrorKind>)>;
+
+/// Where a recorded include is, when that needs no guessing.
+///
+/// Valid only for an absolute stored path or a single basedir; with more, which
+/// root a path belongs under is decided by which candidate exists, and that is
+/// a question only the filesystem answers -- see [`resolve_and_stat`].
+#[cfg(windows)]
+fn resolve_without_stat(stored: &OsStr, basedirs: &[Vec<u8>]) -> PathBuf {
+    let path = Path::new(stored);
+    if path.is_absolute() || basedirs.is_empty() {
+        return path.to_path_buf();
+    }
+    std::str::from_utf8(&basedirs[0])
+        .ok()
+        .map(|root| Path::new(root).join(path))
+        .unwrap_or_else(|| path.to_path_buf())
+}
 
 /// Where a recorded include is, and what it looks like, in one pass.
 ///
@@ -338,6 +385,16 @@ impl PreprocessorCacheEntry {
             return;
         }
 
+        // With at most one basedir every stored path resolves without asking
+        // the filesystem which root it belongs under, so the resolved paths are
+        // known up front and can be grouped by directory. With more, resolution
+        // *is* the stat, and there is nothing to group.
+        #[cfg(windows)]
+        if basedirs.len() <= 1 {
+            Self::prefetch_by_directory(wanted, basedirs, pool, seen).await;
+            return;
+        }
+
         let mut tasks = Vec::with_capacity(wanted.len());
         for stored in wanted {
             let basedirs: Vec<Vec<u8>> = basedirs.to_vec();
@@ -349,6 +406,82 @@ impl PreprocessorCacheEntry {
         for task in tasks {
             // A panicked or cancelled stat is simply not cached; the loop then
             // resolves that one inline and behaves as it always did.
+            if let Ok((stored, path, meta)) = task.await {
+                seen.insert(stored, (path, meta));
+            }
+        }
+    }
+
+    /// Read ahead a batch by scanning the directories it falls in.
+    ///
+    /// One task per directory rather than one per file, so the number of waits
+    /// drops to the number of directories. Anything a scan does not account for
+    /// -- an unreadable directory, a file that appeared since, a name the scan
+    /// missed -- falls back to a plain `stat` for that file alone, so the answer
+    /// is the same set of answers either way.
+    #[cfg(windows)]
+    async fn prefetch_by_directory(
+        wanted: Vec<OsString>,
+        basedirs: &[Vec<u8>],
+        pool: &tokio::runtime::Handle,
+        seen: &mut StatCache,
+    ) {
+        let resolved: Vec<(OsString, PathBuf)> = wanted
+            .into_iter()
+            .map(|stored| {
+                let path = resolve_without_stat(&stored, basedirs);
+                (stored, path)
+            })
+            .collect();
+
+        let mut by_dir: HashMap<PathBuf, Vec<usize>> = HashMap::new();
+        for (index, (_, path)) in resolved.iter().enumerate() {
+            by_dir
+                .entry(path.parent().unwrap_or(Path::new("")).to_path_buf())
+                .or_default()
+                .push(index);
+        }
+
+        let dirs: Vec<PathBuf> = by_dir.keys().cloned().collect();
+        let mut scans = Vec::with_capacity(dirs.len());
+        for dir in dirs {
+            scans.push(pool.spawn_blocking(move || {
+                let found = stat_directory(&dir);
+                (dir, found)
+            }));
+        }
+
+        let mut scanned: HashMap<PathBuf, HashMap<OsString, std::fs::Metadata>> = HashMap::new();
+        for scan in scans {
+            if let Ok((dir, found)) = scan.await {
+                scanned.insert(dir, found);
+            }
+        }
+
+        let mut stragglers = Vec::new();
+        for (stored, path) in resolved {
+            let hit = path
+                .parent()
+                .and_then(|d| scanned.get(d))
+                .and_then(|found| path.file_name().and_then(|n| found.get(n)))
+                .cloned();
+            match hit {
+                Some(meta) => {
+                    seen.insert(stored, (path, Ok(meta)));
+                }
+                None => stragglers.push((stored, path)),
+            }
+        }
+
+        // Whatever the scans could not answer, asked the old way.
+        let mut tasks = Vec::with_capacity(stragglers.len());
+        for (stored, path) in stragglers {
+            tasks.push(pool.spawn_blocking(move || {
+                let meta = std::fs::symlink_metadata(&path).map_err(|e| e.kind());
+                (stored, path, meta)
+            }));
+        }
+        for task in tasks {
             if let Ok((stored, path, meta)) = task.await {
                 seen.insert(stored, (path, meta));
             }
@@ -1723,6 +1856,37 @@ mod lookup_cost {
             let mut entry = entry_with_late_misses(&files, misses, &[]);
             let (ms, hit) = time_lookup(&mut entry, config, &[], 5).await;
             println!("  {n:>5} includes / {misses} late miss(es)       {ms:>8.2} ms  hit: {hit}");
+        }
+
+        // Density: a directory scan pays for the whole directory. Same include
+        // count, same directory count, but each directory holds far more files
+        // than the entry names -- which is the shape that argues against it.
+        {
+            let root = tempfile::tempdir().expect("tempdir");
+            let mut included = Vec::new();
+            for d in 0..8 {
+                let dir = root.path().join(format!("crowded_{d}"));
+                std::fs::create_dir_all(&dir).expect("mkdir");
+                for f in 0..500 {
+                    let p = dir.join(format!("header_{f}.hpp"));
+                    std::fs::write(
+                        &p,
+                        "#pragma once
+",
+                    )
+                    .expect("write");
+                    if f % 8 == 0 {
+                        included.push(p);
+                    }
+                }
+            }
+            let n = included.len();
+            let mut entry = entry_over(&included, 1, &[]);
+            let (ms, hit) = time_lookup(&mut entry, config, &[], 5).await;
+            println!(
+                "  {n:>5} includes / 8 crowded dirs   {ms:>8.2} ms  ({:.0}% density)  hit: {hit}",
+                n as f64 / 4000.0 * 100.0
+            );
         }
 
         // The shape a prefetch makes worse: a miss on the *first* include, which
