@@ -1030,7 +1030,27 @@ mod hit_cost {
     #[ignore = "a stopwatch, not an assertion; run it deliberately"]
     async fn what_delivering_an_object_costs() {
         let pool = tokio::runtime::Handle::current();
-        let dir = tempfile::tempdir().unwrap();
+        // Block cloning shares extents, so it can only happen when the entry
+        // and the object it produces sit on one volume that supports it. A
+        // temp dir is wherever TMP points, which here is the system volume --
+        // so point this somewhere deliberate to measure the fast path:
+        //
+        //     SCCION_BENCH_DIR=D:/dev/caches/bench cargo test --release ...
+        let explicit = std::env::var_os("SCCION_BENCH_DIR").map(PathBuf::from);
+        let tmp = if explicit.is_none() {
+            Some(tempfile::tempdir().unwrap())
+        } else {
+            None
+        };
+        let dir: PathBuf = match (explicit, &tmp) {
+            (Some(d), _) => {
+                std::fs::create_dir_all(&d).expect("bench dir");
+                d
+            }
+            (None, Some(t)) => t.path().to_path_buf(),
+            _ => unreachable!(),
+        };
+        println!("  in {}", dir.display());
         println!("\ncache hit: entry on disk -> object on disk, best of 10\n");
 
         for size in [256 * 1024usize, 2 * 1024 * 1024] {
@@ -1046,9 +1066,9 @@ mod hit_cost {
                 let entry = entry_with("obj", &payload, encoding);
 
                 // The entry as the cache holds it, on disk.
-                let entry_path = dir.path().join(format!("entry_{size}_{}", label.trim()));
+                let entry_path = dir.join(format!("entry_{size}_{}", label.trim()));
                 std::fs::write(&entry_path, &entry).unwrap();
-                let out_path = dir.path().join("out.obj");
+                let out_path = dir.join("out.obj");
 
                 // Read side: open the entry and materialise the object.
                 let mut cloned_any = 0u64;
