@@ -290,8 +290,7 @@ ArgData! {
     PassThrough, // Miscellaneous flags that don't prevent caching.
     PassThroughWithPath(PathBuf), // As above, recognised by prefix.
     PassThroughWithSuffix(OsString), // As above, recognised by prefix.
-    Ignore, // The flag is not passed to the compiler.
-    IgnoreWithSuffix(OsString), // As above, recognized by prefix.
+    IgnoreWithSuffix(OsString), // Not passed to the compiler; recognised by prefix.
     ExtraHashFile(PathBuf),
     XClang(OsString), // -Xclang ...
     Clang(OsString), // -clang:...
@@ -333,7 +332,7 @@ msvc_args!(static ARGS: [ArgInfo<ArgData>; _] = [
     msvc_flag!("FC", PassThrough), // Use absolute paths in error messages, does not affect caching, only the debug output of the build
     msvc_take_arg!("FI", PathBuf, CanBeSeparated, PreprocessorArgumentPath),
     msvc_take_arg!("FR", PathBuf, Concatenated, TooHardPath),
-    msvc_flag!("FS", Ignore),
+    msvc_flag!("FS", PassThrough),
     msvc_take_arg!("FU", PathBuf, CanBeSeparated, TooHardPath),
     msvc_take_arg!("Fa", PathBuf, Concatenated, TooHardPath),
     msvc_take_arg!("Fd", PathBuf, Concatenated, ProgramDatabase),
@@ -612,7 +611,6 @@ pub fn parse_arguments(
             Some(PreprocessorArgument(_))
             | Some(PreprocessorArgumentPath(_))
             | Some(ExtraHashFile(_))
-            | Some(Ignore)
             | Some(IgnoreWithSuffix(_))
             | Some(ExternalIncludePath(_)) => {}
             Some(SuppressCompilation) => {
@@ -676,26 +674,25 @@ pub fn parse_arguments(
                 arg.normalize(NormalizedDisposition::Separated)
                     .iter_os_strings(),
             ),
-            // We ignore -MP and -FS and never pass them down to the compiler.
+            // We ignore -MP and never pass it down to the compiler.
             //
             // -MP tells the compiler to build with multiple processes and is used
             // to spread multiple compilations when there are multiple inputs.
             // Either we have multiple inputs on the command line, and we're going
             // to bail out and not cache, or -MP is not going to be useful.
-            // -MP also implies -FS.
             //
-            // -FS forces synchronous access to PDB files via a MSPDBSRV process.
-            // This option is only useful when multiple compiler invocations are going
-            // to share the same PDB file, which is not supported by sccache. So either
-            // -Fd was passed with a pdb that is not shared and sccache is going to
-            // handle the compile, in which case -FS is not needed, or -Fd was not passed
-            // and we're going to bail out and not cache.
+            // -FS used to be ignored here too, on the reasoning that a -Fd naming
+            // a PDB nobody else writes does not need it. That reasoning does not
+            // survive contact with CMake, which gives every target one PDB and
+            // hands every translation unit in it the same -Fd, plus -FS because
+            // they genuinely do share. Dropping the flag while still running
+            // those compilations concurrently is how you get
             //
-            // In both cases, the flag is not going to be useful if we are going to cache,
-            // so we just skip them entirely. -FS may also have a side effect of creating
-            // race conditions in which we may try to read the PDB before MSPDBSRC is done
-            // writing it, so we're better off ignoring the flags.
-            Some(Ignore) | Some(IgnoreWithSuffix(_)) => {}
+            //   fatal error C1041: cannot open program database ...;
+            //   if multiple CL.EXE write to the same .PDB file, please use /FS
+            //
+            // on a command line that plainly said /FS. It is passed through now.
+            Some(IgnoreWithSuffix(_)) => {}
             _ => {}
         }
     }
@@ -2238,6 +2235,48 @@ mod test {
         assert!(preprocessor_args.is_empty());
         assert!(common_args.is_empty());
         assert!(!msvc_show_includes);
+    }
+
+    /// `/FS` has to reach the compiler.
+    ///
+    /// CMake gives every target one PDB and hands every translation unit in it
+    /// the same `-Fd`, plus `/FS` because they genuinely do share it. This flag
+    /// used to be dropped on the reasoning that a `-Fd` PDB is private, and a
+    /// real build then died with C1041 on a command line that plainly said
+    /// `/FS` -- the compiler never saw it.
+    fn fs_survives(args: Vec<OsString>) -> Vec<OsString> {
+        match parse_arguments(args) {
+            CompilerArguments::Ok(parsed) => parsed.common_args,
+            o => panic!("Got unexpected parse result: {:?}", o),
+        }
+    }
+
+    #[test]
+    fn test_parse_arguments_fs_is_passed_to_the_compiler() {
+        let common = fs_survives(ovec![
+            "-c",
+            "foo.c",
+            "-Zi",
+            "-Fdshared.pdb",
+            "/FS",
+            "-Fofoo.obj"
+        ]);
+        assert!(
+            common.iter().any(|a| a == "/FS" || a == "-FS"),
+            "/FS must be passed on when several compilations share one PDB; got {common:?}"
+        );
+    }
+
+    #[test]
+    fn test_parse_arguments_mp_is_still_dropped() {
+        // -MP asks one compiler process to build several inputs, which is not
+        // what this ever does, and it is not the flag that C1041 asks for.
+        let common = fs_survives(ovec!["-c", "foo.c", "-MP4", "-Fofoo.obj"]);
+        assert!(
+            !common.iter().any(|a| a.to_string_lossy().starts_with("-MP")
+                || a.to_string_lossy().starts_with("/MP")),
+            "-MP should not reach the compiler; got {common:?}"
+        );
     }
 
     #[test]
