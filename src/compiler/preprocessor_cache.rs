@@ -130,6 +130,21 @@ fn stat_directory(dir: &Path) -> HashMap<OsString, std::fs::Metadata> {
 /// `Clone`, and the kind is what the caller logs.
 type StatCache = HashMap<OsString, (PathBuf, Result<std::fs::Metadata, std::io::ErrorKind>)>;
 
+/// What one lookup remembers while it runs.
+///
+/// Both halves exist for the same reason -- a lookup asks the filesystem the
+/// same questions repeatedly, across results and across read-ahead batches --
+/// so they are created together, live exactly as long as each other, and are
+/// passed as one thing.
+#[derive(Default)]
+pub(crate) struct LookupCaches {
+    /// What is known about individual files.
+    seen: StatCache,
+    /// What is known about the directories they sit in.
+    #[cfg(windows)]
+    dirs: DirCache,
+}
+
 /// The directories this lookup has already read.
 ///
 /// A batch bounds how many directories get scanned, not how many times each is
@@ -368,9 +383,7 @@ impl PreprocessorCacheEntry {
         // Scoped to this lookup, so it is a snapshot of one moment rather than
         // one per result. That is the more consistent reading of a tree, not a
         // weaker one.
-        let mut seen: StatCache = HashMap::new();
-        #[cfg(windows)]
-        let mut dirs: DirCache = HashMap::new();
+        let mut caches = LookupCaches::default();
 
         // Check newest result first since it's more likely to match.
         for (digest, includes) in self.results.iter_mut().rev() {
@@ -381,9 +394,7 @@ impl PreprocessorCacheEntry {
                 updated,
                 pool,
                 basedirs,
-                &mut seen,
-                #[cfg(windows)]
-                &mut dirs,
+                &mut caches,
             )
             .await;
             if result_matches {
@@ -404,13 +415,12 @@ impl PreprocessorCacheEntry {
         validated: usize,
         basedirs: &[Vec<u8>],
         pool: &tokio::runtime::Handle,
-        seen: &mut StatCache,
-        #[cfg(windows)] dirs: &mut DirCache,
+        caches: &mut LookupCaches,
     ) {
         let wanted: Vec<OsString> = rest
             .iter()
             .map(|i| i.path.clone())
-            .filter(|p| !seen.contains_key(p))
+            .filter(|p| !caches.seen.contains_key(p))
             // Twice what this result has already got right, so reading ahead is
             // always bounded by work that has already paid off.
             .take((validated * 2).clamp(STAT_BATCH_MIN, STAT_BATCH_MAX))
@@ -426,7 +436,7 @@ impl PreprocessorCacheEntry {
         // *is* the stat, and there is nothing to group.
         #[cfg(windows)]
         if basedirs.len() <= 1 {
-            Self::prefetch_by_directory(wanted, basedirs, pool, seen, dirs).await;
+            Self::prefetch_by_directory(wanted, basedirs, pool, caches).await;
             return;
         }
 
@@ -442,7 +452,7 @@ impl PreprocessorCacheEntry {
             // A panicked or cancelled stat is simply not cached; the loop then
             // resolves that one inline and behaves as it always did.
             if let Ok((stored, path, meta)) = task.await {
-                seen.insert(stored, (path, meta));
+                caches.seen.insert(stored, (path, meta));
             }
         }
     }
@@ -459,8 +469,7 @@ impl PreprocessorCacheEntry {
         wanted: Vec<OsString>,
         basedirs: &[Vec<u8>],
         pool: &tokio::runtime::Handle,
-        seen: &mut StatCache,
-        dirs: &mut DirCache,
+        caches: &mut LookupCaches,
     ) {
         let resolved: Vec<(OsString, PathBuf)> = wanted
             .into_iter()
@@ -481,7 +490,7 @@ impl PreprocessorCacheEntry {
         // Only what this lookup has not already read.
         let fresh: Vec<PathBuf> = by_dir
             .keys()
-            .filter(|d| !dirs.contains_key(*d))
+            .filter(|d| !caches.dirs.contains_key(*d))
             .cloned()
             .collect();
         let mut scans = Vec::with_capacity(fresh.len());
@@ -493,7 +502,7 @@ impl PreprocessorCacheEntry {
         }
         for scan in scans {
             if let Ok((dir, found)) = scan.await {
-                dirs.insert(dir, found);
+                caches.dirs.insert(dir, found);
             }
         }
 
@@ -501,12 +510,12 @@ impl PreprocessorCacheEntry {
         for (stored, path) in resolved {
             let hit = path
                 .parent()
-                .and_then(|d| dirs.get(d))
+                .and_then(|d| caches.dirs.get(d))
                 .and_then(|found| path.file_name().and_then(|n| found.get(n)))
                 .cloned();
             match hit {
                 Some(meta) => {
-                    seen.insert(stored, (path, Ok(meta)));
+                    caches.seen.insert(stored, (path, Ok(meta)));
                 }
                 None => stragglers.push((stored, path)),
             }
@@ -522,7 +531,7 @@ impl PreprocessorCacheEntry {
         }
         for task in tasks {
             if let Ok((stored, path, meta)) = task.await {
-                seen.insert(stored, (path, meta));
+                caches.seen.insert(stored, (path, meta));
             }
         }
     }
@@ -546,8 +555,7 @@ impl PreprocessorCacheEntry {
         updated: &mut bool,
         pool: &tokio::runtime::Handle,
         basedirs: &[Vec<u8>],
-        seen: &mut StatCache,
-        #[cfg(windows)] dirs: &mut DirCache,
+        caches: &mut LookupCaches,
     ) -> bool {
         // Resolved against the files of the checkout being compiled, not of
         // whichever one happened to write the entry -- and resolved *as we go*.
@@ -561,26 +569,19 @@ impl PreprocessorCacheEntry {
             // Read ahead when the cache runs dry. Everything the batch learns
             // lands in `seen`, so the comparison below is unchanged -- it just
             // stops finding the cache empty.
-            if !seen.contains_key(&include.path) {
-                Self::prefetch_stats(
-                    &includes[index..],
-                    index,
-                    basedirs,
-                    pool,
-                    seen,
-                    #[cfg(windows)]
-                    dirs,
-                )
-                .await;
+            if !caches.seen.contains_key(&include.path) {
+                Self::prefetch_stats(&includes[index..], index, basedirs, pool, caches).await;
             }
-            let (candidate, stat) = match seen.get(&include.path) {
+            let (candidate, stat) = match caches.seen.get(&include.path) {
                 Some((path, meta)) => (path.clone(), meta.clone()),
                 None => {
                     let (path, meta) = resolve_and_stat(&include.path, basedirs);
                     // The error is kept as its kind: `io::Error` is not `Clone`,
                     // and the kind is what the log line below actually says.
                     let meta = meta.map_err(|e| e.kind());
-                    seen.insert(include.path.clone(), (path.clone(), meta.clone()));
+                    caches
+                        .seen
+                        .insert(include.path.clone(), (path.clone(), meta.clone()));
                     (path, meta)
                 }
             };
@@ -1699,12 +1700,10 @@ mod test {
                 &mut updated,
                 runtime.handle(),
                 &[],
-                // A fresh cache per call, which is what a lookup gets. Sharing
-                // one across these two would hide the very change the second
+                // Fresh caches per call, which is what a lookup gets. Sharing
+                // them across these two would hide the very change the second
                 // assertion is looking for.
-                &mut StatCache::new(),
-                #[cfg(windows)]
-                &mut DirCache::new(),
+                &mut LookupCaches::default(),
             )),
             "nothing has changed yet, so the entry should match"
         );
@@ -1726,12 +1725,10 @@ mod test {
                 &mut updated,
                 runtime.handle(),
                 &[],
-                // A fresh cache per call, which is what a lookup gets. Sharing
-                // one across these two would hide the very change the second
+                // Fresh caches per call, which is what a lookup gets. Sharing
+                // them across these two would hide the very change the second
                 // assertion is looking for.
-                &mut StatCache::new(),
-                #[cfg(windows)]
-                &mut DirCache::new(),
+                &mut LookupCaches::default(),
             )),
             "a change to any include must be detected, not just the first"
         );
