@@ -535,7 +535,7 @@ impl PreprocessorCacheEntry {
                 .parent()
                 .and_then(|d| caches.dirs.get(d))
                 .and_then(|found| path.file_name().and_then(|n| found.get(n)))
-                .cloned();
+                .copied();
             match hit {
                 Some(meta) => {
                     caches.seen.insert(stored, (path, Ok(meta)));
@@ -598,7 +598,7 @@ impl PreprocessorCacheEntry {
                 Self::prefetch_stats(&includes[index..], index, basedirs, pool, caches).await;
             }
             let (candidate, stat) = match caches.seen.get(&include.path) {
-                Some((path, meta)) => (path.clone(), meta.clone()),
+                Some((path, meta)) => (path.clone(), *meta),
                 None => {
                     let (path, meta) = resolve_and_stat(&include.path, basedirs);
                     // The error is kept as its kind: `io::Error` is not `Clone`,
@@ -606,7 +606,7 @@ impl PreprocessorCacheEntry {
                     let meta = meta.map_err(|e| e.kind());
                     caches
                         .seen
-                        .insert(include.path.clone(), (path.clone(), meta.clone()));
+                        .insert(include.path.clone(), (path.clone(), meta));
                     (path, meta)
                 }
             };
@@ -2068,7 +2068,7 @@ mod lookup_cost {
                             .parent()
                             .and_then(|d| dir_maps.get(d))
                             .and_then(|m| path.file_name().and_then(|n| m.get(n)))
-                            .cloned();
+                            .copied();
                         cache.insert(
                             name.clone(),
                             (path.clone(), meta.ok_or(std::io::ErrorKind::NotFound)),
@@ -2076,7 +2076,7 @@ mod lookup_cost {
                     }
                     for name in &stored {
                         if let Some((p, m)) = cache.get(name) {
-                            let _ = std::hint::black_box((p.clone(), m.clone()));
+                            let _ = std::hint::black_box((p.clone(), *m));
                         }
                     }
                     plumbing = plumbing.min(t.elapsed().as_secs_f64() * 1e3);
