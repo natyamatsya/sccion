@@ -64,155 +64,125 @@ cargo build --profile profiling -p sccion
 
 ## A worked example: twelve times faster, and it did not matter
 
-rkyv was evaluated as a replacement for bincode, which encodes the preprocessor
-cache on disk and every client/daemon message, and whose final release is a
-`compile_error!`. The measurement is worth keeping because of how the answer
-came out: the candidate won every comparison it was asked for and still lost.
+rkyv was measured against bincode on mirror types of `PreprocessorCacheEntry`,
+release with LTO, median of eleven to fifteen batches after a warmup. It won
+every comparison it was asked for and still lost.
 
-Mirror types of `PreprocessorCacheEntry` and `IncludeEntry` — blake3 hex digests
-at their real 64-character width, Windows include paths, both `Option<Timestamp>`
-arms — encoded with bincode 1 and with rkyv 0.8, release with LTO, median of
-eleven to fifteen batches after a warmup. `path` was a `String` on both sides,
-because rkyv has no `OsString` and the comparison has to be of encoders rather
-than of one encoder against a field it cannot represent.
+| includes | bincode decode | rkyv access (validated) | encode | on disk |
+| --- | --- | --- | --- | --- |
+| 500 | 73.2 us | 6.1 us (11.9x) | 2.0x slower | +18.1% |
+| 10 000 | 1 011 us | 147 us (6.9x) | 2.5x slower | +13.4% |
 
-| includes | bincode encode | rkyv encode | bincode decode + walk | rkyv access + walk | on disk |
-| --- | --- | --- | --- | --- | --- |
-| 50 | 0.5 us | 1.2 us | 3.6 us | 0.6 us (6.5x) | +18.7% |
-| 500 | 4.2 us | 8.4 us | 73.2 us | 6.1 us (11.9x) | +18.1% |
-| 4 000 | 40.5 us | 168.7 us | 482 us | 58.9 us (8.2x) | +13.4% |
-| 10 000 | 302 us | 757 us | 1 011 us | 147 us (6.9x) | +13.4% |
+Because the denominator was elsewhere. `result_matches` did one
+`symlink_metadata` per include — 12.2 to 12.5 microseconds warm against the real
+Windows Kits and MSVC header trees, about 6.1 ms for 500 includes — so decoding
+was **1.2% of a lookup** and winning it twelve times over saved 67 microseconds.
+Validation is almost the whole of rkyv's read (136 of 147 us at the cap) and
+cannot be skipped for bytes off disk, so the unvalidated figure is not one to
+plan against.
 
-Six to twelve times faster to read, two to four times slower to write, and
-thirteen to nineteen percent larger. Validation is almost the whole of the read —
-136 of 147 microseconds at the cap — and it cannot be skipped for bytes that came
-off disk, so the unvalidated figure, ninety to a hundred and thirty times, is not
-a number to plan against.
+Three costs sat on top of that 1%: `IncludeEntry::path` is an `OsString`, which
+rkyv cannot archive; the hits that re-hash rewrite a digest in place, and
+archived data cannot grow, so those need a full deserialize (only 1.1–1.5x
+better); and rkyv is a far larger dependency surface than a frozen bincode.
 
-Then the denominator. `result_matches` does one `symlink_metadata` per include
-before it compares anything, and against the real Windows Kits and MSVC header
-trees on the development machine that costs **12.2 to 12.5 microseconds per
-stat, warm — about 6.1 milliseconds for 500 includes**. So for a typical
-translation unit the decode is 73 microseconds inside a 6.2 millisecond lookup:
-**1.2% of the path**. Winning it twelve times over saves 67 microseconds, near
-one percent, which is the same conclusion
-[profiling a whole build](#profiling-a-whole-build) reaches by a different route
-and the module's own comment reaches by reading the code: the cost here is
-`open()` latency through the filter stack, not anything the CPU is doing.
-
-Three structural costs sit on top of a one percent win. `IncludeEntry::path` is
-an `OsString`, which rkyv cannot archive, so the field would have to become bytes
-and answer for lossless WTF-16 on Windows. `lookup_result_digest` takes
-`&mut self` and rewrites `include.digest` in place when it re-hashes, and
-archived data cannot grow a string — so exactly the hits that update an entry
-would need a full deserialize, which measured only 1.1 to 1.5 times better than
-bincode. And rkyv is a far larger dependency surface than a bincode that has
-stopped moving.
-
-**The conclusion is to stay on bincode 1 for the cache.** The encoder will have
-to be replaced eventually, and the test that says whether a candidate is a
-drop-in is `bincode_format` in `src/util.rs`, which pins the current encoding
-byte for byte.
+**That 1.2% is now about 14%** — see [the lookup path](#the-lookup-path), which
+took the syscalls out. The conclusion still holds, but on the two structural
+costs rather than on the denominator. If the encoder is revisited, this is the
+paragraph to re-measure first.
 
 ### The part that was worth fixing
 
-The same measurement found a real cost somewhere else. In client-side mode
-`StoragePutRaw` and `StorageGetRaw` carry whole zip entries between client and
-daemon, and an 8 MiB object cost 4.4 milliseconds to encode and 8.3 to decode.
-Not because of bincode: because `Vec<u8>` through serde is a *sequence* of
-`u8`, so the encoder went round the serializer once per byte, eight million
-times, to move bytes that were already contiguous.
+The same measurement found a real cost elsewhere. `StoragePutRaw` and
+`StorageGetRaw` carry whole zip entries between client and daemon, and `Vec<u8>`
+through serde is a *sequence* of `u8` — the encoder went round the serializer
+once per byte, eight million times for an 8 MiB object, to move bytes that were
+already contiguous. `serde_bytes` asks for `serialize_bytes`, which bincode
+implements as the same length prefix plus one `write_all`: identical bytes,
+which is why it could be done to a live protocol.
 
-`serde_bytes` asks for `serialize_bytes`, which bincode implements as the same
-length prefix followed by one `write_all` — identical bytes on the wire, which
-is why it could be done to a live protocol at all, and why `wire_format` in
-`src/protocol.rs` now asserts those bytes against a recording made before the
-change.
-
-| payload | encode before | after | decode before | after |
-| --- | --- | --- | --- | --- |
-| 64 KiB | 43.1 us | 7.9 us (5.5x) | 51.6 us | 4.7 us (10.9x) |
-| 1 MiB | 562 us | 299 us (1.9x) | 952 us | 134 us (7.1x) |
-| 8 MiB | 4 400 us | 889 us (5.0x) | 8 332 us | 870 us (9.6x) |
-| 32 MiB | 17 811 us | 3 583 us (5.0x) | 33 701 us | 3 621 us (9.3x) |
-
-About 11 milliseconds off the round trip for an 8 MiB object. rkyv encoded the
-same 8 MiB in 894 microseconds; `serde_bytes` does it in 889, with no new
-dependency and no change of format. rkyv still wins the decode outright by
-borrowing instead of copying — but it is now winning against one memcpy at
-9.6 GB/s, not against work that should never have happened.
-
-**That is the shape of finding worth looking for.** A zero-copy encoder always
-looks enormous next to a copy that did not need to exist, and the ratio says
-nothing about the encoder. Find the denominator first; the answer here was to
-stop copying, and it cost one annotation.
-
-### The candidate that actually is a drop-in
-
-wincode, with `serde-wincode`, is the alternative bincode's own farewell points
-at. Measured against the pinned bytes, it passes the part that matters: the
-encoding is **identical** — on primitives, on `OsString`, on `Option` in both
-arms, on `BTreeMap` and `HashMap`, on enums in unit, struct and boxed form, on
-`Result<Option<Vec<u8>>, String>`, on empty strings and empty vectors — and it
-reads bytes bincode wrote. A cache would survive the swap, and so would a
-daemon mid-flight.
-
-`OsString` is worth naming, because it is what `IncludeEntry::path` is and what
-rkyv cannot represent at all.
-
-What it is not is faster. Both encoders measured in one binary, three runs, on
-the same data:
-
-| entry | encode | decode |
+| payload | encode | decode |
 | --- | --- | --- |
-| 50 includes | 0.46-0.47x | 0.79-0.85x |
-| 500 includes | 0.37-0.39x | 1.45-1.53x |
-| 10 000 includes | 0.42x | 0.92-0.98x |
+| 1 MiB | 562 → 299 us | 952 → 134 us |
+| 8 MiB | 4 400 → 889 us | 8 332 → 870 us |
 
-Encoding is consistently around two and a half times slower; decoding is a wash
-outside the middle size. (A first run showed encode at 1.16x and was simply
-wrong — cold. It is quoted here as a reminder to run the thing three times.)
+About 11 ms off an 8 MiB round trip. rkyv encoded the same 8 MiB in 894 us;
+`serde_bytes` does it in 889, with no new format. A zero-copy encoder always
+looks enormous next to a copy that did not need to exist.
 
-So wincode is the destination rather than the reason to leave. When bincode has
-to go, this is the move that costs no format change, no version bump and no
-cold cache; it is not an argument for going today.
+### Where bincode ended up
 
-### What vendoring cost
+Its last release is a tombstone, so the crate is vendored in `crates/bincode`
+and the format is pinned by `util::bincode_format` and `protocol::wire_format`.
 
-bincode is now vendored in `crates/bincode`, renamed, migrated from edition
-2015 to 2024, and stripped of its six `unsafe` blocks --
-`copy_nonoverlapping` into a zeroed integer became `from_ne_bytes`, a transmute
-to `[u8; N]` became `to_ne_bytes`, and the float pointer-casts became
-`f32::from_bits`. Those are load and store paths, so they are exactly where a
-regression would hide.
+- **wincode** reproduces the format exactly — on `OsString`, `Option`, maps,
+  enums, `Result`, empty vectors — and reads bincode's bytes. It is also ~2.4x
+  slower to encode. The destination when bincode must go, not a reason to go.
+- **bincode 2.0.1** under `config::legacy()` also matches, is slower still, and
+  is just as unmaintained.
+- **Vendoring cost nothing.** Renamed, migrated 2015 → 2024 and stripped of six
+  `unsafe` blocks, it is never slower and decodes a full-size entry 15–20%
+  faster: `from_ne_bytes` is a load the compiler sees through where
+  `copy_nonoverlapping` into a zeroed local is a memcpy it must reason about.
 
-Both crates were measured in one binary, three runs. First the part that has to
-hold: the bytes are **identical** on every integer width, on floats including
-negative zero, infinity and a NaN with a payload, on the preprocessor cache
-entry and on a `serde_bytes` blob -- and each crate reads the other's output.
+Two measurement notes, which is what this page is for. Cross-binary comparisons
+are invalid — ten encoders in sequence each meet a different allocator and cache
+state, and bincode's decode column swung 40% between runs there, against a few
+per cent for two implementations alternating in one binary. And first runs lie:
+wincode measured 1.16x on encode cold and 0.37–0.42x once warm.
 
-| shape | encode | decode |
-| --- | --- | --- |
-| 50 includes | 1.05-1.08x | 1.03-1.05x |
-| 500 includes | 0.98-1.02x | 1.08-1.10x |
-| 10 000 includes | 1.01-1.10x | **1.15-1.20x** |
-| 1 MiB blob | 1.01-1.24x | 1.00x |
-| 8 MiB blob | 1.00x | 1.00x |
+## The lookup path
 
-Above 1.00x means the vendored crate is faster. It is never slower, and it
-decodes a full-size cache entry 15 to 20 per cent quicker -- `from_ne_bytes` is
-a load the compiler can see through, where `copy_nonoverlapping` into a zeroed
-local is a memcpy it has to reason about. The blob path is unchanged because it
-is already one `memcpy` and nothing else.
+Five changes to `result_matches`, each measured on its own against the real
+`lookup_result_digest`. The harness is `lookup_cost` in
+`src/compiler/preprocessor_cache.rs`, `#[ignore]`d:
 
-So the modernisation was free, and the byte-for-byte checks say it was safe.
+```
+cargo test --release --lib lookup_cost -- --ignored --nocapture
+```
 
-One measurement note, since this page is about those: the nine-encoder sweep
-above cannot answer this question. Run ten encoders in sequence and each one
-meets a different allocator and cache state, and bincode's decode column swings
-by forty per cent between runs. Two implementations alternating in one binary
-is stable to a few per cent. Comparisons are only as good as what is held
-still.
+Release matters; a debug build measures rustc.
+
+| shape | before | after | |
+| --- | --- | --- | --- |
+| 200 includes | 2.70 ms | 0.54 ms | 5.0x |
+| 496 includes | 6.70 ms | 1.08 ms | 6.2x |
+| 2 000 includes | 30.49 ms | 4.36 ms | 7.0x |
+| 7 results miss late | 54.11 ms | 1.47 ms | 36.8x |
+| 3 basedirs | 13.55 ms | 2.82 ms | 4.8x |
+| entry on disk, 496 | 128 843 B | 109 003 B | −15.4% |
+
+In order: resolve and stat in one call rather than `exists` then `stat`; one
+stat per file per *lookup* rather than per result, which made the cost flat in
+the number of results tried where it had been linear; the stats concurrently in
+batches that start at eight and double as the entry proves itself; on Windows,
+one directory scan in place of a stat per file in it; and digests stored as 32
+bytes rather than 64 hex characters.
+
+**What it cost.** A directory scan pays for the whole directory, so it wins on
+density and loses without it: at 13% density it takes 3.20 ms where per-file
+stats take about 2.7. Real translation units are dense — an `include` directory
+largely gets pulled in wholesale — but a project shaped otherwise pays about 18%
+here. A cap on how much of a directory to read was tried and removed: stopping
+part-way pays most of the enumeration *and* the fallback stats, and measured
+worse at both densities. Windows only; elsewhere `DirEntry::metadata` still
+stats per file, and with more than one basedir resolution *is* the stat.
+
+Read-ahead rather than a barrier, because the loop still stops at the first
+include that does not match. Stat'ing the whole entry up front measured 0.54 ms
+for a stale *first* include where the lazy loop settles it in 0.01 ms; the
+ramp brings that to 0.07 ms.
+
+**The order mattered more than any single change.** Storing digests as bytes
+would have been noise at the start, when the entry was ~1% of a lookup; after
+the syscalls came down it was ~14%. And the first benchmark run showed extra
+results and extra basedirs costing *nothing* — both readings were wrong.
+Basedirs are stored normalised (forward slashes, lowercase, trailing separator)
+and a raw Windows path silently fails to strip, leaving every stored path
+absolute and the code under test unreached; and extra results really are free
+when the newest one hits, so the cost needs a deliberately late miss to appear.
+Implementing from that first run would have optimised two paths the benchmark
+was not reaching.
 
 ## Checking the machine
 
