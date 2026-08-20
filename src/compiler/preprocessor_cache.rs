@@ -38,8 +38,8 @@ use serde::{Deserialize, Serialize};
 use crate::{
     config::PreprocessorCacheModeConfig,
     util::{
-        Digest, HashToDigest, MetadataCtimeExt, TimeMacroFinder, Timestamp, encode_path,
-        strip_basedirs, strip_basedirs_in_arg, strip_basedirs_in_dir,
+        DIGEST_BYTES, Digest, HashToDigest, MetadataCtimeExt, TimeMacroFinder, Timestamp,
+        encode_path, strip_basedirs, strip_basedirs_in_arg, strip_basedirs_in_dir,
     },
 };
 
@@ -52,7 +52,7 @@ use super::{Language, NotCacheable};
 /// an entry written by the old code holds absolute paths that the new code
 /// would resolve against a basedir and not find. Rejecting them outright costs
 /// one cold build and cannot be confused with a legitimate miss.
-const FORMAT_VERSION: u8 = 2;
+const FORMAT_VERSION: u8 = 3;
 const MAX_PREPROCESSOR_CACHE_ENTRIES: usize = 100;
 const MAX_PREPROCESSOR_CACHE_FILE_INFO_ENTRIES: usize = 10000;
 
@@ -282,6 +282,14 @@ impl PreprocessorCacheEntry {
                     }
                     _ => false,
                 };
+                // Callers hand these over hexed, because that is what
+                // `Digest::finish` returns and what everything else wants.
+                let digest = crate::util::unhex_digest(&digest).ok_or_else(|| {
+                    std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "include digest was not a digest",
+                    )
+                })?;
                 Ok(IncludeEntry {
                     path: portable_path(path, basedirs),
                     digest,
@@ -607,7 +615,7 @@ impl PreprocessorCacheEntry {
 
             let finder = match contents {
                 FileContents::Plain(new_digest) => {
-                    if include.digest != new_digest {
+                    if crate::util::unhex_digest(&new_digest) != Some(include.digest) {
                         return false;
                     }
                     // Matched: go on to the next include. Returning here would
@@ -615,7 +623,9 @@ impl PreprocessorCacheEntry {
                     continue;
                 }
                 FileContents::WithTimeMacros(new_digest, finder) => {
-                    if !finder.found_time_macros() && include.digest != new_digest {
+                    if !finder.found_time_macros()
+                        && crate::util::unhex_digest(&new_digest) != Some(include.digest)
+                    {
                         return false;
                     }
                     finder
@@ -682,7 +692,7 @@ impl PreprocessorCacheEntry {
                     let mtime: chrono::DateTime<chrono::Local> = chrono::DateTime::from(mtime);
                     new_digest.delimiter(b"timestamp");
                     new_digest.update(&mtime.naive_local().and_utc().timestamp().to_le_bytes());
-                    include.digest = new_digest.finish();
+                    include.digest = new_digest.finish_bytes();
                     // Signal that the preprocessor cache entry has been updated and needs to be
                     // written to disk.
                     *updated = true;
@@ -986,8 +996,12 @@ pub fn preprocessor_cache_entry_hash_key(
 pub struct IncludeEntry {
     /// Its absolute path
     path: OsString,
-    /// The hash of its contents
-    digest: String,
+    /// The hash of its contents.
+    ///
+    /// The digest itself, not its hex: 64 characters on the heap became 32
+    /// bytes inline, which is about 15% off an entry on disk and one fewer
+    /// allocation per include every time one is read.
+    digest: [u8; DIGEST_BYTES],
     /// Its file size, in bytes
     file_size: u64,
     /// Its modification time, `None` if not recorded.
@@ -1611,7 +1625,10 @@ mod test {
             let contents = std::fs::read(path).unwrap();
             IncludeEntry {
                 path: path.as_os_str().to_owned(),
-                digest: Digest::reader_sync(std::io::Cursor::new(&contents)).unwrap(),
+                digest: crate::util::unhex_digest(
+                    &Digest::reader_sync(std::io::Cursor::new(&contents)).unwrap(),
+                )
+                .unwrap(),
                 file_size: contents.len() as u64,
                 mtime: None,
                 ctime: None,
@@ -1856,6 +1873,33 @@ mod lookup_cost {
             let mut entry = entry_with_late_misses(&files, misses, &[]);
             let (ms, hit) = time_lookup(&mut entry, config, &[], 5).await;
             println!("  {n:>5} includes / {misses} late miss(es)       {ms:>8.2} ms  hit: {hit}");
+        }
+
+        // What share of the lookup is now the entry itself? The digests are
+        // stored as 64 hex characters where 32 raw bytes would do, and the case
+        // for changing that is only as good as this number.
+        for (dirs, per_dir) in [(8usize, 62usize), (16, 125)] {
+            let (_root, files) = tree(dirs, per_dir);
+            let n = files.len();
+            let entry = entry_over(&files, 1, &[]);
+            let mut buf = Vec::new();
+            entry.serialize_to(&mut buf).expect("serialize");
+            let mut enc = f64::MAX;
+            let mut dec = f64::MAX;
+            for _ in 0..20 {
+                let t = std::time::Instant::now();
+                let mut b = Vec::new();
+                entry.serialize_to(&mut b).expect("serialize");
+                enc = enc.min(t.elapsed().as_secs_f64() * 1e3);
+                let t = std::time::Instant::now();
+                let back = PreprocessorCacheEntry::read(&buf).expect("read");
+                dec = dec.min(t.elapsed().as_secs_f64() * 1e3);
+                std::hint::black_box(back);
+            }
+            println!(
+                "  {n:>5} includes / entry on disk  {:>6} B   encode {enc:.2} ms   decode {dec:.2} ms",
+                buf.len()
+            );
         }
 
         // Density: a directory scan pays for the whole directory. Same include

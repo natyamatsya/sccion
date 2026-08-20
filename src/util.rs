@@ -167,6 +167,14 @@ impl Digest {
     pub fn finish(self) -> String {
         hex(self.inner.finalize().as_bytes())
     }
+
+    /// The same digest, unencoded.
+    ///
+    /// [`Self::finish`] hexes, which doubles the size and costs an allocation.
+    /// Somewhere that stores a digest rather than printing it wants these bytes.
+    pub fn finish_bytes(self) -> [u8; DIGEST_BYTES] {
+        *self.inner.finalize().as_bytes()
+    }
 }
 
 impl Default for Digest {
@@ -380,6 +388,39 @@ impl TimeMacroFinder {
     pub fn new() -> Self {
         Default::default()
     }
+}
+
+/// The width of a digest from [`Digest`], in bytes. BLAKE3's default output.
+pub const DIGEST_BYTES: usize = 32;
+
+/// The inverse of [`hex`], for a digest.
+///
+/// Note that [`hex`] writes the *low* nibble of each byte before the high one,
+/// which is not the conventional order. A decoder that assumes the usual order
+/// silently transposes every byte and still returns something, so this mirrors
+/// `hex` deliberately and the round trip is tested.
+///
+/// `None` for anything that is not exactly `2 * DIGEST_BYTES` hex characters.
+pub fn unhex_digest(s: &str) -> Option<[u8; DIGEST_BYTES]> {
+    let b = s.as_bytes();
+    if b.len() != DIGEST_BYTES * 2 {
+        return None;
+    }
+    let nibble = |c: u8| -> Option<u8> {
+        match c {
+            b'0'..=b'9' => Some(c - b'0'),
+            b'a'..=b'f' => Some(c - b'a' + 10),
+            b'A'..=b'F' => Some(c - b'A' + 10),
+            _ => None,
+        }
+    };
+    let mut out = [0u8; DIGEST_BYTES];
+    for (i, byte) in out.iter_mut().enumerate() {
+        let low = nibble(b[i * 2])?;
+        let high = nibble(b[i * 2 + 1])?;
+        *byte = (high << 4) | low;
+    }
+    Some(out)
 }
 
 pub fn hex(bytes: &[u8]) -> String {
@@ -2609,5 +2650,42 @@ mod bincode_limits {
             .deserialize_from(std::io::Cursor::new(&honest))
             .expect("thirteen bytes inside a 1 KiB budget");
         assert_eq!(out, "hello");
+    }
+}
+
+/// `hex` and `unhex_digest` must be each other's inverse.
+///
+/// `hex` writes the low nibble first, which is unusual enough that a decoder
+/// written from the name alone would transpose every byte and still look
+/// plausible. This is the test that says otherwise.
+#[cfg(test)]
+mod digest_hex {
+    use super::{DIGEST_BYTES, Digest, hex, unhex_digest};
+
+    #[test]
+    fn hex_and_back() {
+        let bytes: [u8; DIGEST_BYTES] = std::array::from_fn(|i| (i as u8).wrapping_mul(37) ^ 0xA5);
+        let text = hex(&bytes);
+        assert_eq!(text.len(), DIGEST_BYTES * 2);
+        assert_eq!(unhex_digest(&text), Some(bytes), "round trip");
+    }
+
+    #[test]
+    fn a_real_digest_round_trips() {
+        let mut d = Digest::new();
+        d.update(b"#pragma once");
+        let text = d.clone().finish();
+        assert_eq!(
+            unhex_digest(&text),
+            Some(d.finish_bytes()),
+            "the hex form and the byte form must describe the same digest"
+        );
+    }
+
+    #[test]
+    fn nonsense_is_refused() {
+        assert_eq!(unhex_digest(""), None);
+        assert_eq!(unhex_digest(&"z".repeat(DIGEST_BYTES * 2)), None);
+        assert_eq!(unhex_digest(&"a".repeat(DIGEST_BYTES * 2 - 1)), None);
     }
 }
