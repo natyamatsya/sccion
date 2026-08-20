@@ -107,7 +107,7 @@ const STAT_BATCH_MIN: usize = 8;
 pub(crate) static SCANS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
 #[cfg(windows)]
-fn stat_directory(dir: &Path) -> HashMap<OsString, std::fs::Metadata> {
+fn stat_directory(dir: &Path) -> HashMap<OsString, FileFacts> {
     #[cfg(test)]
     SCANS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let mut found = HashMap::new();
@@ -116,7 +116,7 @@ fn stat_directory(dir: &Path) -> HashMap<OsString, std::fs::Metadata> {
             // `DirEntry::metadata` does not traverse symlinks, which is the
             // same promise `symlink_metadata` makes.
             if let Ok(meta) = entry.metadata() {
-                found.insert(entry.file_name(), meta);
+                found.insert(entry.file_name(), FileFacts::from(&meta));
             }
         }
     }
@@ -128,7 +128,33 @@ fn stat_directory(dir: &Path) -> HashMap<OsString, std::fs::Metadata> {
 /// Keyed by the *stored* path, so a hit skips resolving as well as stat'ing.
 /// The error is kept as an [`std::io::ErrorKind`] because `io::Error` is not
 /// `Clone`, and the kind is what the caller logs.
-type StatCache = HashMap<OsString, (PathBuf, Result<std::fs::Metadata, std::io::ErrorKind>)>;
+type StatCache = HashMap<OsString, (PathBuf, Result<FileFacts, std::io::ErrorKind>)>;
+
+/// The three things the first pass reads off a file.
+///
+/// `std::fs::Metadata` is larger than this, is not `Copy`, and was being cloned
+/// twice per include -- once into the lookup's cache and once back out. Worse,
+/// the timestamps were converted on every comparison, so an entry with several
+/// results converted the same file's times once per result.
+///
+/// Taken once where the metadata is read, and a `Copy` of forty bytes
+/// thereafter.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+struct FileFacts {
+    len: u64,
+    mtime: Option<Timestamp>,
+    ctime: Option<Timestamp>,
+}
+
+impl From<&std::fs::Metadata> for FileFacts {
+    fn from(meta: &std::fs::Metadata) -> Self {
+        Self {
+            len: meta.len(),
+            mtime: meta.modified().map(Into::into).ok(),
+            ctime: meta.ctime_or_creation().ok(),
+        }
+    }
+}
 
 /// What one lookup remembers while it runs.
 ///
@@ -152,7 +178,7 @@ pub(crate) struct LookupCaches {
 /// not know about each other and re-enumerate the same directory: measured at
 /// 14 scans for 8 directories, and 34 for 16.
 #[cfg(windows)]
-type DirCache = HashMap<PathBuf, HashMap<OsString, std::fs::Metadata>>;
+type DirCache = HashMap<PathBuf, HashMap<OsString, FileFacts>>;
 
 /// Where a recorded include is, when that needs no guessing.
 ///
@@ -180,14 +206,11 @@ fn resolve_without_stat(stored: &OsStr, basedirs: &[Vec<u8>]) -> PathBuf {
 /// trying it directly halves the calls whenever more than one basedir is
 /// configured. With one basedir, or an absolute stored path, there is no guess
 /// to make and this is exactly what the old code did.
-fn resolve_and_stat(
-    stored: &OsStr,
-    basedirs: &[Vec<u8>],
-) -> (PathBuf, std::io::Result<std::fs::Metadata>) {
+fn resolve_and_stat(stored: &OsStr, basedirs: &[Vec<u8>]) -> (PathBuf, std::io::Result<FileFacts>) {
     let path = Path::new(stored);
     if path.is_absolute() || basedirs.is_empty() {
         let owned = path.to_path_buf();
-        let meta = std::fs::symlink_metadata(&owned);
+        let meta = std::fs::symlink_metadata(&owned).map(|m| FileFacts::from(&m));
         return (owned, meta);
     }
     let rooted = |basedir: &Vec<u8>| {
@@ -198,13 +221,13 @@ fn resolve_and_stat(
     if basedirs.len() == 1
         && let Some(p) = rooted(&basedirs[0])
     {
-        let meta = std::fs::symlink_metadata(&p);
+        let meta = std::fs::symlink_metadata(&p).map(|m| FileFacts::from(&m));
         return (p, meta);
     }
     let mut last: Option<(PathBuf, std::io::Error)> = None;
     for candidate in basedirs.iter().filter_map(rooted) {
         match std::fs::symlink_metadata(&candidate) {
-            Ok(meta) => return (candidate, Ok(meta)),
+            Ok(meta) => return (candidate, Ok(FileFacts::from(&meta))),
             Err(e) => last = Some((candidate, e)),
         }
     }
@@ -214,7 +237,7 @@ fn resolve_and_stat(
         Some((_, e)) => (path.to_path_buf(), Err(e)),
         None => {
             let owned = path.to_path_buf();
-            let meta = std::fs::symlink_metadata(&owned);
+            let meta = std::fs::symlink_metadata(&owned).map(|m| FileFacts::from(&m));
             (owned, meta)
         }
     }
@@ -525,7 +548,9 @@ impl PreprocessorCacheEntry {
         let mut tasks = Vec::with_capacity(stragglers.len());
         for (stored, path) in stragglers {
             tasks.push(pool.spawn_blocking(move || {
-                let meta = std::fs::symlink_metadata(&path).map_err(|e| e.kind());
+                let meta = std::fs::symlink_metadata(&path)
+                    .map(|m| FileFacts::from(&m))
+                    .map_err(|e| e.kind());
                 (stored, path, meta)
             }));
         }
@@ -588,11 +613,11 @@ impl PreprocessorCacheEntry {
             resolved.push(candidate);
             let path = resolved[index].as_path();
             let meta = match stat {
-                Ok(meta) => {
-                    if meta.len() != include.file_size {
+                Ok(facts) => {
+                    if facts.len != include.file_size {
                         return false;
                     }
-                    meta
+                    facts
                 }
                 Err(e) => {
                     debug!(
@@ -607,8 +632,8 @@ impl PreprocessorCacheEntry {
             if config.file_stat_matches {
                 match (include.mtime, include.ctime) {
                     (Some(mtime), Some(ctime)) if config.use_ctime_for_stat => {
-                        let mtime_matches = meta.modified().map(Into::into).ok() == Some(mtime);
-                        let ctime_matches = meta.ctime_or_creation().ok() == Some(ctime);
+                        let mtime_matches = meta.mtime == Some(mtime);
+                        let ctime_matches = meta.ctime == Some(ctime);
                         if mtime_matches && ctime_matches {
                             trace!("mtime+ctime hit for {}", path.display());
                             continue;
@@ -617,7 +642,7 @@ impl PreprocessorCacheEntry {
                         }
                     }
                     (Some(mtime), None) => {
-                        let mtime_matches = meta.modified().map(Into::into).ok() == Some(mtime);
+                        let mtime_matches = meta.mtime == Some(mtime);
                         if mtime_matches {
                             trace!("mtime hit for {}", path.display());
                             continue;
@@ -2020,14 +2045,13 @@ mod lookup_cost {
             // This is what the lookup does around each include now.
             let mut plumbing = f64::MAX;
             {
-                let mut dir_maps: HashMap<PathBuf, HashMap<OsString, std::fs::Metadata>> =
-                    HashMap::new();
+                let mut dir_maps: HashMap<PathBuf, HashMap<OsString, FileFacts>> = HashMap::new();
                 for dir in &parents {
                     let mut found = HashMap::new();
                     if let Ok(rd) = std::fs::read_dir(dir) {
                         for e in rd.flatten() {
                             if let Ok(m) = e.metadata() {
-                                found.insert(e.file_name(), m);
+                                found.insert(e.file_name(), FileFacts::from(&m));
                             }
                         }
                     }
