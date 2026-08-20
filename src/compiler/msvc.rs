@@ -288,6 +288,7 @@ ArgData! {
     ProgramDatabase(PathBuf),
     DebugInfo,
     PassThrough, // Miscellaneous flags that don't prevent caching.
+    SharedPdb, // -FS: passed on, and says the -Fd PDB is written by several compilations.
     PassThroughWithPath(PathBuf), // As above, recognised by prefix.
     PassThroughWithSuffix(OsString), // As above, recognised by prefix.
     IgnoreWithSuffix(OsString), // Not passed to the compiler; recognised by prefix.
@@ -332,7 +333,7 @@ msvc_args!(static ARGS: [ArgInfo<ArgData>; _] = [
     msvc_flag!("FC", PassThrough), // Use absolute paths in error messages, does not affect caching, only the debug output of the build
     msvc_take_arg!("FI", PathBuf, CanBeSeparated, PreprocessorArgumentPath),
     msvc_take_arg!("FR", PathBuf, Concatenated, TooHardPath),
-    msvc_flag!("FS", PassThrough),
+    msvc_flag!("FS", SharedPdb),
     msvc_take_arg!("FU", PathBuf, CanBeSeparated, TooHardPath),
     msvc_take_arg!("Fa", PathBuf, Concatenated, TooHardPath),
     msvc_take_arg!("Fd", PathBuf, Concatenated, ProgramDatabase),
@@ -561,6 +562,7 @@ pub fn parse_arguments(
     let mut compilation = false;
     let mut compilation_flag = OsString::new();
     let mut debug_info = false;
+    let mut shared_pdb = false;
     let mut dynamic_deopt = false;
     let mut create_pch = None;
     let mut use_pch = None;
@@ -585,6 +587,7 @@ pub fn parse_arguments(
         let arg = try_or_cannot_cache!(arg, "argument parse");
         match arg.get_data() {
             Some(PassThrough) | Some(PassThroughWithPath(_)) | Some(PassThroughWithSuffix(_)) => {}
+            Some(SharedPdb) => shared_pdb = true,
             Some(TooHardFlag) | Some(TooHard(_)) | Some(TooHardPath(_)) => {
                 cannot_cache!(arg.flag_str().expect("Can't be Argument::Raw/UnknownFlag",))
             }
@@ -658,6 +661,7 @@ pub fn parse_arguments(
             | Some(UsePch(_))
             | Some(PchPath(_))
             | Some(PassThrough)
+            | Some(SharedPdb)
             | Some(PassThroughWithPath(_))
             | Some(PassThroughWithSuffix(_)) => common_args.extend(
                 arg.normalize(NormalizedDisposition::Concatenated)
@@ -959,6 +963,18 @@ pub fn parse_arguments(
                     p
                 };
 
+                if shared_pdb {
+                    // -FS is the build system saying several compilations write
+                    // this one PDB, which is what CMake does: one PDB per target,
+                    // the same -Fd for every translation unit in it. Capturing it
+                    // as this compilation's output is wrong twice over -- the file
+                    // is being written by the others while it is read, and
+                    // restoring it on a later hit would hand back debug
+                    // information for whatever mix of objects was cached.
+                    //
+                    // The flag still reaches the compiler; only the caching stops.
+                    cannot_cache!("shared pdb");
+                }
                 outputs.insert(
                     "pdb",
                     ArtifactDescriptor {
@@ -2253,10 +2269,13 @@ mod test {
 
     #[test]
     fn test_parse_arguments_fs_is_passed_to_the_compiler() {
+        // /Z7 so this stays a question about the flag reaching the compiler;
+        // /Zi with a shared PDB is not cacheable at all, which
+        // `test_parse_arguments_shared_pdb_is_not_cached` covers.
         let common = fs_survives(ovec![
             "-c",
             "foo.c",
-            "-Zi",
+            "-Z7",
             "-Fdshared.pdb",
             "/FS",
             "-Fofoo.obj"
@@ -2265,6 +2284,41 @@ mod test {
             common.iter().any(|a| a == "/FS" || a == "-FS"),
             "/FS must be passed on when several compilations share one PDB; got {common:?}"
         );
+    }
+
+    /// `/Zi` plus a shared `/Fd` is not cacheable, and `/FS` is how we know.
+    #[test]
+    fn test_parse_arguments_shared_pdb_is_not_cached() {
+        // /Z7 keeps debug info in the object, so there is no PDB to fight over
+        // and /FS is inert: this must still cache.
+        match parse_arguments(ovec![
+            "-c",
+            "foo.c",
+            "-Z7",
+            "-Fdshared.pdb",
+            "/FS",
+            "-Fofoo.obj"
+        ]) {
+            CompilerArguments::Ok(_) => {}
+            o => panic!("/Z7 with /FS should still be cacheable, got {:?}", o),
+        }
+        // /Zi writes that PDB, and /FS says others write it too.
+        match parse_arguments(ovec![
+            "-c",
+            "foo.c",
+            "-Zi",
+            "-Fdshared.pdb",
+            "/FS",
+            "-Fofoo.obj"
+        ]) {
+            CompilerArguments::CannotCache("shared pdb", _) => {}
+            o => panic!("/Zi with a shared PDB must not be cached, got {:?}", o),
+        }
+        // Without /FS the PDB is this compilation's own, as before.
+        match parse_arguments(ovec!["-c", "foo.c", "-Zi", "-Fdmine.pdb", "-Fofoo.obj"]) {
+            CompilerArguments::Ok(_) => {}
+            o => panic!("/Zi with a private PDB should cache, got {:?}", o),
+        }
     }
 
     #[test]
