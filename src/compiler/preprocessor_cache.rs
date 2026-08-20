@@ -130,6 +130,15 @@ fn stat_directory(dir: &Path) -> HashMap<OsString, std::fs::Metadata> {
 /// `Clone`, and the kind is what the caller logs.
 type StatCache = HashMap<OsString, (PathBuf, Result<std::fs::Metadata, std::io::ErrorKind>)>;
 
+/// The directories this lookup has already read.
+///
+/// A batch bounds how many directories get scanned, not how many times each is
+/// scanned. Without this the read-ahead batches and the directory grouping do
+/// not know about each other and re-enumerate the same directory: measured at
+/// 14 scans for 8 directories, and 34 for 16.
+#[cfg(windows)]
+type DirCache = HashMap<PathBuf, HashMap<OsString, std::fs::Metadata>>;
+
 /// Where a recorded include is, when that needs no guessing.
 ///
 /// Valid only for an absolute stored path or a single basedir; with more, which
@@ -360,12 +369,23 @@ impl PreprocessorCacheEntry {
         // one per result. That is the more consistent reading of a tree, not a
         // weaker one.
         let mut seen: StatCache = HashMap::new();
+        #[cfg(windows)]
+        let mut dirs: DirCache = HashMap::new();
 
         // Check newest result first since it's more likely to match.
         for (digest, includes) in self.results.iter_mut().rev() {
-            let result_matches =
-                Self::result_matches(digest, includes, config, updated, pool, basedirs, &mut seen)
-                    .await;
+            let result_matches = Self::result_matches(
+                digest,
+                includes,
+                config,
+                updated,
+                pool,
+                basedirs,
+                &mut seen,
+                #[cfg(windows)]
+                &mut dirs,
+            )
+            .await;
             if result_matches {
                 return Some(digest.clone());
             }
@@ -385,6 +405,7 @@ impl PreprocessorCacheEntry {
         basedirs: &[Vec<u8>],
         pool: &tokio::runtime::Handle,
         seen: &mut StatCache,
+        #[cfg(windows)] dirs: &mut DirCache,
     ) {
         let wanted: Vec<OsString> = rest
             .iter()
@@ -405,7 +426,7 @@ impl PreprocessorCacheEntry {
         // *is* the stat, and there is nothing to group.
         #[cfg(windows)]
         if basedirs.len() <= 1 {
-            Self::prefetch_by_directory(wanted, basedirs, pool, seen).await;
+            Self::prefetch_by_directory(wanted, basedirs, pool, seen, dirs).await;
             return;
         }
 
@@ -439,6 +460,7 @@ impl PreprocessorCacheEntry {
         basedirs: &[Vec<u8>],
         pool: &tokio::runtime::Handle,
         seen: &mut StatCache,
+        dirs: &mut DirCache,
     ) {
         let resolved: Vec<(OsString, PathBuf)> = wanted
             .into_iter()
@@ -456,19 +478,22 @@ impl PreprocessorCacheEntry {
                 .push(index);
         }
 
-        let dirs: Vec<PathBuf> = by_dir.keys().cloned().collect();
-        let mut scans = Vec::with_capacity(dirs.len());
-        for dir in dirs {
+        // Only what this lookup has not already read.
+        let fresh: Vec<PathBuf> = by_dir
+            .keys()
+            .filter(|d| !dirs.contains_key(*d))
+            .cloned()
+            .collect();
+        let mut scans = Vec::with_capacity(fresh.len());
+        for dir in fresh {
             scans.push(pool.spawn_blocking(move || {
                 let found = stat_directory(&dir);
                 (dir, found)
             }));
         }
-
-        let mut scanned: HashMap<PathBuf, HashMap<OsString, std::fs::Metadata>> = HashMap::new();
         for scan in scans {
             if let Ok((dir, found)) = scan.await {
-                scanned.insert(dir, found);
+                dirs.insert(dir, found);
             }
         }
 
@@ -476,7 +501,7 @@ impl PreprocessorCacheEntry {
         for (stored, path) in resolved {
             let hit = path
                 .parent()
-                .and_then(|d| scanned.get(d))
+                .and_then(|d| dirs.get(d))
                 .and_then(|found| path.file_name().and_then(|n| found.get(n)))
                 .cloned();
             match hit {
@@ -522,6 +547,7 @@ impl PreprocessorCacheEntry {
         pool: &tokio::runtime::Handle,
         basedirs: &[Vec<u8>],
         seen: &mut StatCache,
+        #[cfg(windows)] dirs: &mut DirCache,
     ) -> bool {
         // Resolved against the files of the checkout being compiled, not of
         // whichever one happened to write the entry -- and resolved *as we go*.
@@ -536,7 +562,16 @@ impl PreprocessorCacheEntry {
             // lands in `seen`, so the comparison below is unchanged -- it just
             // stops finding the cache empty.
             if !seen.contains_key(&include.path) {
-                Self::prefetch_stats(&includes[index..], index, basedirs, pool, seen).await;
+                Self::prefetch_stats(
+                    &includes[index..],
+                    index,
+                    basedirs,
+                    pool,
+                    seen,
+                    #[cfg(windows)]
+                    dirs,
+                )
+                .await;
             }
             let (candidate, stat) = match seen.get(&include.path) {
                 Some((path, meta)) => (path.clone(), meta.clone()),
@@ -1668,6 +1703,8 @@ mod test {
                 // one across these two would hide the very change the second
                 // assertion is looking for.
                 &mut StatCache::new(),
+                #[cfg(windows)]
+                &mut DirCache::new(),
             )),
             "nothing has changed yet, so the entry should match"
         );
@@ -1693,6 +1730,8 @@ mod test {
                 // one across these two would hide the very change the second
                 // assertion is looking for.
                 &mut StatCache::new(),
+                #[cfg(windows)]
+                &mut DirCache::new(),
             )),
             "a change to any include must be detected, not just the first"
         );
