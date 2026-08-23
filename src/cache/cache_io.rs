@@ -199,6 +199,31 @@ impl std::fmt::Display for DecompressionFailure {
 
 impl std::error::Error for DecompressionFailure {}
 
+/// Copy `from` to `to` through a buffer sized for the object, not for `io::copy`.
+///
+/// `std::io::copy` uses an 8 KiB stack buffer unless it can specialise, and it
+/// cannot here: the reader is a zip member and the writer is a generic `W`. That
+/// is 256 reads and 256 writes for a 2 MiB object, and it measured as two thirds
+/// of the whole extract -- 2.48 ms against 0.83 for the same bytes moved in
+/// megabyte strides.
+///
+/// Sized to the member rather than fixed, so a small object does not allocate a
+/// megabyte to move 40 KiB. Clamped below because the syscall count is what is
+/// being bought and a tiny buffer buys none of it, and above because past a
+/// megabyte the reads are already amortised.
+fn copy_buffered<R: Read, W: Write>(from: &mut R, to: &mut W, size: u64) -> std::io::Result<()> {
+    const MIN: usize = 64 * 1024;
+    const MAX: usize = 1024 * 1024;
+    let mut buf = vec![0u8; (size as usize).clamp(MIN, MAX)];
+    loop {
+        let n = from.read(&mut buf)?;
+        if n == 0 {
+            return Ok(());
+        }
+        to.write_all(&buf[..n])?;
+    }
+}
+
 impl CacheRead {
     /// Create a cache entry from `reader`.
     pub fn from<R>(reader: R) -> Result<CacheRead>
@@ -234,7 +259,8 @@ impl CacheRead {
                 bail!(DecompressionFailure);
             }
             let mode = raw.unix_mode();
-            std::io::copy(&mut raw, to).or(Err(DecompressionFailure))?;
+            let size = raw.size();
+            copy_buffered(&mut raw, to, size).or(Err(DecompressionFailure))?;
             return Ok(mode);
         }
         let mut file = self.zip.by_name(name).or(Err(DecompressionFailure))?;
@@ -255,7 +281,8 @@ impl CacheRead {
         }
 
         if first[0] == UNCOMPRESSED_MARKER {
-            std::io::copy(&mut file, to).or(Err(DecompressionFailure))?;
+            let size = file.size();
+            copy_buffered(&mut file, to, size).or(Err(DecompressionFailure))?;
         } else {
             // Put the byte back in front; zstd needs its magic intact.
             zstd::stream::copy_decode(first.as_slice().chain(file), to)
