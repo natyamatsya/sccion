@@ -295,12 +295,6 @@ jobs:
             extra_args: --no-default-features --features="dist-server"
             target: aarch64-unknown-linux-musl
             container: '{"image": "messense/rust-musl-cross:aarch64-musl"}'
-          - os: ubuntu-22.04
-            target: armv7-unknown-linux-musleabi
-            container: '{"image": "messense/rust-musl-cross:armv7-musleabi"}'
-          - os: ubuntu-22.04
-            target: i686-unknown-linux-musl
-            container: '{"image": "messense/rust-musl-cross:i686-musl"}'
           - os: macos-14
             target: aarch64-apple-darwin
             macosx_deployment_target: 11.0
