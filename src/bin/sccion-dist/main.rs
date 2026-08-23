@@ -320,7 +320,7 @@ fn init_logging() {
         let mut builder = env_logger::Builder::from_env(sccion::envvar::logging_var());
 
         // Enable millisecond precision timestamps if SCCACHE_LOG_MILLIS is set
-        if crate::envvar::var("SCCION_LOG_MILLIS").is_some() {
+        if sccion::envvar::var("SCCION_LOG_MILLIS").is_some() {
             builder.format_timestamp_millis();
         }
 

@@ -16,6 +16,10 @@
 //! creates the destination itself, so a handle-based signature could not be
 //! implemented there without inventing a fake handle.
 
+// Only the stubs below take one; on Windows the real signatures come from
+// `windows::*` and nothing here mentions it. Unused since f2f9db8 removed
+// `clone_or_copy`, which was the last caller on this side.
+#[cfg(not(windows))]
 use std::path::Path;
 
 #[cfg(windows)]

@@ -334,6 +334,14 @@ fn filesystem_name(path: &Path) -> String {
     if unsafe { libc::statfs(c_path.as_ptr(), &mut buf) } != 0 {
         return "unknown".into();
     }
+    // `as`, not `i64::from`, and not nothing. `statfs::f_type` is a different
+    // type on every other Linux target: `__fsword_t` (i64 on 64-bit gnu, i32 on
+    // 32-bit), `c_long`, `c_ulong`, `u32` and -- on all seven musl targets this
+    // ships to -- `u64`. `i64::from` does not exist for the unsigned 64-bit
+    // ones, and dropping the cast overflows on the 32-bit ones, where
+    // `0x9123683E` does not fit an i32. The cast is the only spelling that
+    // compiles everywhere; it is redundant on exactly the target clippy runs on.
+    #[allow(clippy::unnecessary_cast)]
     match buf.f_type as i64 {
         0xEF53 => "ext2/3/4".into(),
         0x9123683E => "btrfs".into(),
