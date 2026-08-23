@@ -1,3 +1,4 @@
+![Status](https://img.shields.io/badge/status-experimental-orange)
 ![License](https://img.shields.io/badge/license-Apache--2.0-blue)
 [![Upstream](https://img.shields.io/badge/forked%20from-mozilla%2Fsccache-lightgrey)](https://github.com/mozilla/sccache)
 
@@ -9,6 +10,23 @@ avoids compiling anything twice, storing results on [local disk](docs/Local.md)
 or in one of [several cloud storage backends](#storage-options). Multi-level
 caching with automatic backfill is supported for hierarchical cache
 architectures (see [Multi-Level Cache](docs/MultiLevel.md)).
+
+> **Experimental.** This is a fork under active development, not a supported
+> release of anything, and it is worth knowing what that means concretely rather
+> than as a disclaimer. There are no tags and no published artifacts: you build
+> from a checkout at whatever commit you cloned, and two people saying "sccion"
+> may not mean the same program. The on-disk cache format is not stable — the
+> entry version byte is at 3, and each bump so far has discarded every entry
+> written before it, which costs one cold build and is meant to. The
+> client and daemon share a protocol version that **only Windows enforces**,
+> where it rides in the pipe name; everywhere else the client finds a daemon on
+> a fixed port with no version in it, so one left running across an upgrade is
+> found and its messages are misread rather than rejected. Run `sccion
+> --stop-server` after pulling. Defaults and measurements move as the work
+> continues.
+>
+> Mozilla's [sccache](https://github.com/mozilla/sccache) is the maintained
+> project, and is what you want if you need one. See [Lineage](#lineage).
 
 It is a fork of Mozilla's [sccache](https://github.com/mozilla/sccache) — see
 [Lineage](#lineage) — and a *scion* is a cutting grafted onto established
