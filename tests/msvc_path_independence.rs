@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: Copyright natyamatsya and sccache contributors
+// SPDX-FileCopyrightText: Copyright natyamatsya and sccion contributors
 // SPDX-License-Identifier: Apache-2.0
 
 //! Guards the compiler flags that make an object independent of where the tree

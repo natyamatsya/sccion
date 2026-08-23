@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: Copyright natyamatsya and sccache contributors
+// SPDX-FileCopyrightText: Copyright natyamatsya and sccion contributors
 // SPDX-License-Identifier: Apache-2.0
 
 //! Generation of a deterministic CMake + Ninja C++ project to measure against.

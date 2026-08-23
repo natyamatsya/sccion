@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: Copyright natyamatsya and sccache contributors
+// SPDX-FileCopyrightText: Copyright natyamatsya and sccion contributors
 // SPDX-License-Identifier: Apache-2.0
 
 //! Which volume a path sits on, and what that volume does with case.

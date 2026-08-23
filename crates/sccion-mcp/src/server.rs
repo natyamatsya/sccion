@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: Copyright natyamatsya and sccache contributors
+// SPDX-FileCopyrightText: Copyright natyamatsya and sccion contributors
 // SPDX-License-Identifier: Apache-2.0
 
 //! The MCP surface: eight questions, two resources, no protocol of our own.

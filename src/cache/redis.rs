@@ -1,6 +1,6 @@
 // Copyright 2016 Mozilla Foundation
 // Copyright 2016 Felix Obenhuber <felix@obenhuber.de>
-// SPDX-FileCopyrightText: Copyright natyamatsya and sccache contributors
+// SPDX-FileCopyrightText: Copyright natyamatsya and sccion contributors
 // SPDX-License-Identifier: Apache-2.0
 //
 // Licensed under the Apache License, Version 2.0 (the "License");

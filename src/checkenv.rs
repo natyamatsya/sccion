@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: Copyright natyamatsya and sccache contributors
+// SPDX-FileCopyrightText: Copyright natyamatsya and sccion contributors
 // SPDX-License-Identifier: Apache-2.0
 
 //! `sccion --check-env`: report the environment sccion is about to run in.

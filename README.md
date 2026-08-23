@@ -416,9 +416,14 @@ required by applicable law or agreed to in writing, software distributed under
 the Licence is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS
 OF ANY KIND, either express or implied.
 
-**Statement of changes** (Apache-2.0 §4(b)). Files modified in this fork carry a
-`SPDX-FileCopyrightText` line naming the fork's contributors alongside the
-sccache contributors. In summary, sccion adds:
+**Statement of changes** (Apache-2.0 §4(b)). Every file this fork created or
+modified carries `SPDX-FileCopyrightText: Copyright natyamatsya and sccion
+contributors`. Where upstream named a copyright holder, that line is kept above
+it and untouched — Mozilla Foundation on most of them, and Bitski, Benjamin
+Bader, LovecraftianHorror and the Rust Project on a few — so §4(c) attribution
+is retained rather than replaced. `crates/bincode` is excluded: it is vendored
+MIT code carrying its own notice, and this fork claims nothing in it. In summary,
+sccion adds:
 
 * **Dependency keying** — cache keys derived from the compiler's own dependency
   report rather than from preprocessed source. See
