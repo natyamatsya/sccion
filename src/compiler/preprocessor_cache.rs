@@ -116,9 +116,59 @@ const STAT_BATCH_MIN: usize = 8;
 ///
 /// Off Windows there is nothing to gain: `DirEntry::metadata` still issues a
 /// call per file, so the per-file path below is already the same work.
+///
+/// What it gives up is worth stating, because the two calls are not the same
+/// question asked twice. `DirEntry::metadata` on Windows hands back the
+/// `WIN32_FIND_DATAW` the scan already returned -- no handle, no second call --
+/// while `symlink_metadata` opens the file and asks
+/// `GetFileInformationByHandle`. A file's *directory entry* is updated lazily,
+/// so while a writer holds it open the entry can still describe the file as it
+/// was before that writer started. The straggler path below still uses
+/// `symlink_metadata`, so without care two includes in one lookup would be
+/// judged against different readings of the same tree.
+///
+/// [`SCAN_TRUST_AGE`] is the care. A recently written file is sent to the
+/// straggler path to be asked directly, which costs nothing in a build whose
+/// headers are hours old and is exactly the file worth spending a call on.
 /// Counts scans, so a test can ask how many were issued. Test-only.
 #[cfg(all(windows, test))]
 pub(crate) static SCANS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// How recently a file must have been written for a scan's answer to be refused.
+///
+/// A directory entry lags a writer that still has the file open, so the one file
+/// a scan can describe wrongly is the one being written right now. Age is how
+/// that is recognised without opening anything: a file untouched for this long
+/// has no writer whose buffered size and timestamps have yet to land.
+///
+/// Two seconds because the risk is a writer mid-flight, not a clock skewed by
+/// minutes -- and because the cost of being wrong in the safe direction is one
+/// `stat`. In a warm build every header predates the build by hours, so this
+/// sends nothing extra to the straggler path; in the case it exists for, it
+/// sends exactly the file that matters.
+#[cfg(windows)]
+const SCAN_TRUST_AGE: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// Whether a scan's answer for one file is settled enough to be believed.
+///
+/// `cutoff` is [`SCAN_TRUST_AGE`] ago, computed once per batch. `mtime` and
+/// `ctime` come out of the same directory entry and go stale together, so the
+/// later of the two is what says whether that entry has stopped moving --
+/// the same `max` [`PreprocessorCacheEntry::add_result`] uses to decide whether
+/// a timestamp is worth recording at all.
+///
+/// Anything unanswerable -- no timestamps, no cutoff -- is not settled. The
+/// caller's fallback is a real `stat`, so the cautious answer is also the
+/// correct one.
+#[cfg(windows)]
+fn scan_is_settled(facts: &FileFacts, cutoff: Option<Timestamp>) -> bool {
+    let touched = match (facts.mtime, facts.ctime) {
+        (Some(m), Some(c)) => m.max(c),
+        (Some(t), None) | (None, Some(t)) => t,
+        (None, None) => return false,
+    };
+    cutoff.is_some_and(|cutoff| touched < cutoff)
+}
 
 #[cfg(windows)]
 fn stat_directory(dir: &Path) -> HashMap<OsString, FileFacts> {
@@ -128,7 +178,9 @@ fn stat_directory(dir: &Path) -> HashMap<OsString, FileFacts> {
     if let Ok(entries) = std::fs::read_dir(dir) {
         for entry in entries.flatten() {
             // `DirEntry::metadata` does not traverse symlinks, which is the
-            // same promise `symlink_metadata` makes.
+            // same promise `symlink_metadata` makes. It does not open the file
+            // either, which is the speedup and the caveat both -- see
+            // `SCAN_TRUST_AGE`.
             if let Ok(meta) = entry.metadata() {
                 found.insert(entry.file_name(), FileFacts::from(&meta));
             }
@@ -504,8 +556,9 @@ impl PreprocessorCacheEntry {
     /// One task per directory rather than one per file, so the number of waits
     /// drops to the number of directories. Anything a scan does not account for
     /// -- an unreadable directory, a file that appeared since, a name the scan
-    /// missed -- falls back to a plain `stat` for that file alone, so the answer
-    /// is the same set of answers either way.
+    /// missed, or one written too recently for its directory entry to be
+    /// trusted ([`SCAN_TRUST_AGE`]) -- falls back to a plain `stat` for that
+    /// file alone, so the answer is the same set of answers either way.
     #[cfg(windows)]
     async fn prefetch_by_directory(
         wanted: Vec<OsString>,
@@ -548,6 +601,13 @@ impl PreprocessorCacheEntry {
             }
         }
 
+        // Once per batch, not once per file: the point is which files were
+        // written *recently*, and the few milliseconds this loop takes are not
+        // the scale that decides that.
+        let cutoff = SystemTime::now()
+            .checked_sub(SCAN_TRUST_AGE)
+            .map(Timestamp::from);
+
         let mut stragglers = Vec::new();
         for (stored, path) in resolved {
             let hit = path
@@ -556,10 +616,15 @@ impl PreprocessorCacheEntry {
                 .and_then(|found| path.file_name().and_then(|n| found.get(n)))
                 .copied();
             match hit {
-                Some(meta) => {
+                // A scan answered, and the file has been still long enough for
+                // that answer to be the file's own rather than its directory
+                // entry's memory of it.
+                Some(meta) if scan_is_settled(&meta, cutoff) => {
                     caches.seen.insert(stored, (path, Ok(meta)));
                 }
-                None => stragglers.push((stored, path)),
+                // Either no scan covered it, or one did and the file is too
+                // fresh to take on the entry's word. Both are asked directly.
+                _ => stragglers.push((stored, path)),
             }
         }
 
@@ -1145,6 +1210,50 @@ mod test {
     use crate::util::{HASH_BUFFER_SIZE, MAX_TIME_MACRO_HAYSTACK_LEN};
 
     use super::*;
+
+    /// The direction of the freshness test, which is the whole of its value.
+    ///
+    /// A scan's answer for a file is refused while the file is new, because a
+    /// directory entry lags a writer that still holds it open. Invert the
+    /// comparison and this reads as "believe the scan for files being written
+    /// right now, ask the disk about files nobody has touched in a week" --
+    /// which is not a compile error, is not a test failure anywhere else, and
+    /// is precisely backwards.
+    #[cfg(windows)]
+    #[test]
+    fn a_scan_is_believed_only_once_a_file_has_settled() {
+        let secs =
+            |s: u64| Timestamp::from(SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(s));
+        let cutoff = Some(secs(1_000));
+        let facts = |mtime, ctime| FileFacts {
+            len: 0,
+            mtime,
+            ctime,
+        };
+
+        assert!(
+            scan_is_settled(&facts(Some(secs(900)), Some(secs(900))), cutoff),
+            "a file untouched since before the cutoff is settled"
+        );
+        assert!(
+            !scan_is_settled(&facts(Some(secs(1_100)), Some(secs(1_100))), cutoff),
+            "a file written after the cutoff may still have a writer attached"
+        );
+        // The later of the two decides: ctime moves when mtime does not, and an
+        // entry that moved at all is an entry that may not have landed.
+        assert!(
+            !scan_is_settled(&facts(Some(secs(900)), Some(secs(1_100))), cutoff),
+            "a recent ctime is enough to refuse, even with an old mtime"
+        );
+        assert!(
+            !scan_is_settled(&facts(None, None), cutoff),
+            "no timestamps is not evidence of age"
+        );
+        assert!(
+            !scan_is_settled(&facts(Some(secs(900)), Some(secs(900))), None),
+            "no cutoff is no basis to believe anything"
+        );
+    }
 
     fn rt() -> tokio::runtime::Runtime {
         tokio::runtime::Builder::new_multi_thread()
