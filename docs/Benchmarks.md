@@ -91,10 +91,10 @@ took the syscalls out. The conclusion still holds, but on the two structural
 costs rather than on the denominator. If the encoder is revisited, this is the
 paragraph to re-measure first.
 
-That 14% is a Windows figure, because the change that produced it is. On macOS
-the same decode is still about 1.2% of a lookup — see
-[macOS](#macos) — for the reason it was on Windows before: the syscalls are
-still the denominator there.
+That 14% is a Windows figure, because the change that produced it is. The same
+decode is about 6% of a macOS lookup — see [macOS](#macos), where a separate
+change moved that denominator too. Three numbers for one unchanged encoder is
+the point: the encoder was never the variable.
 
 ### The part that was worth fixing
 
@@ -200,35 +200,54 @@ case-folding, Spotlight indexing on. Release builds; `--test-threads 1`, because
 `cargo test` runs the stopwatches concurrently by default and three of them on
 one machine measure each other.
 
-| shape | macOS |
-| --- | --- |
-| 200 includes | 1.75 ms (8.7 us each) |
-| 496 includes | 4.87 ms (9.8 us each) |
-| 2 000 includes | 19.36 ms (9.7 us each) |
-| 7 results, miss late | 5.72 ms |
-| 3 basedirs | 4.73 ms |
-| miss on the first include | 0.06 ms |
-| entry on disk, 496 | 79 819 B, decode 0.05 ms |
+| shape | before | after | |
+| --- | --- | --- | --- |
+| 200 includes | 2.45 ms | 0.43 ms | 5.7x |
+| 496 includes | 4.87 ms | 0.89 ms | 5.5x |
+| 2 000 includes | 19.36 ms | 3.46 ms | 5.6x |
+| 7 results, miss late | 5.72 ms | 1.30 ms | 4.4x |
+| 3 basedirs | 5.07 ms | 1.71 ms | 3.0x |
+| miss on the first include | — | 0.05 ms | |
+| entry on disk, 496 | — | 79 819 B, decode 0.05 ms | |
 
 Do not read these against the Windows table. Different machine, and the rule at
 the top of this page applies to itself: only the counters compare across
 machines, never the clock.
 
-What does transfer is the shape. A lookup here is **96–99% syscalls**:
+The change is worth its own paragraph, because the first reading of these
+numbers was wrong in a way this page exists to catch. A lookup here measured as
+96–99% syscalls, which looked like a filesystem the code could do nothing about.
+It was not. `prefetch_stats` spawned one blocking task per include, and on APFS
+the `stat` costs 2.08 us against 7.8 us of `spawn_blocking` around it — the pool
+was costing four times what it bought, and statting every include inline on one
+thread beat it 4.7x. Sixty-four includes per task fixed it.
+
+**"96% syscalls" was true and still misleading.** The syscalls were real; almost
+none of the time was in the kernel. A profile that stops at "it is I/O-bound" is
+a profile that has not been read.
+
+What is left is a lookup that is no longer syscall-bound at all:
 
 ```
-   496 includes: lookup  4.86 = stats  4.65 + rest 0.21 (4%)  | decode 0.06
-  2000 includes: lookup 19.60 = stats 19.30 + rest 0.29 (1%)  | decode 0.23
+   496 includes: lookup 0.92 = stats 0.63 + rest 0.28 (31%)  | decode 0.06
+  2000 includes: lookup 3.61 = stats 2.50 + rest 1.11 (31%)  | decode 0.23
 ```
 
-Which is why entry decode is ~1.2% of a lookup here against ~14% on Windows.
-Nothing about the encoder differs; the denominator does. The directory-scan
-change that took the Windows syscalls down is `#[cfg(windows)]` —
-`DirEntry::metadata` off Windows still stats per file, so there is nothing to
-win — and macOS therefore still sits where Windows sat before it.
+Entry decode is ~6% of a lookup here now, against ~1.2% before the change and
+the ~14% this page records for Windows. Same encoder throughout; the denominator
+moved twice.
 
-`file_stat_matches` is **off by default and worth 2.5–2.7x**: 1.85 ms against
-4.92 at 200 includes, 4.74 against 11.85 at 496. The default is the slow path.
+Chunk size is fixed rather than grouped by directory, which was measured:
+grouping buys nothing — shuffling the list so no task shares a parent changes
+nothing, so there is no locality to capture — and costs 47% on a lopsided tree,
+where one directory of 400 headers becomes one task while eleven threads idle.
+The Windows path groups by directory for an unrelated reason: there a scan *is*
+the metadata.
+
+`file_stat_matches` is **off by default**, and now worth 8–9x rather than the
+2.5–2.7x it was before: 0.44 ms against 3.58 at 200 includes, 0.91 against 8.32
+at 496. Taking the stats down made the content-digest fallback the dominant cost
+when it is reached. The default is the slow path.
 
 **Block cloning does not exist here.** `blockclone/` is entirely
 `#[cfg(windows)]`, so every cache hit on macOS copies its bytes; `hit_cost`
