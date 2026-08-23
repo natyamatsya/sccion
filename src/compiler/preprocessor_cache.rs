@@ -27,7 +27,7 @@ use std::{
     hash::Hash,
     io::Write,
     path::{Path, PathBuf},
-    sync::LazyLock,
+    sync::{Arc, LazyLock},
     time::SystemTime,
 };
 
@@ -466,9 +466,14 @@ impl PreprocessorCacheEntry {
             return;
         }
 
+        // One `Arc` for the batch rather than a copy of the list per include.
+        // Every task needs the same basedirs and none of them modify it, so the
+        // clone per include was a `Vec<Vec<u8>>` allocated and dropped for each
+        // file on the path this batching exists to make cheap.
+        let shared: Arc<[Vec<u8>]> = basedirs.into();
         let mut tasks = Vec::with_capacity(wanted.len());
         for stored in wanted {
-            let basedirs: Vec<Vec<u8>> = basedirs.to_vec();
+            let basedirs = Arc::clone(&shared);
             tasks.push(pool.spawn_blocking(move || {
                 let (path, meta) = resolve_and_stat(&stored, &basedirs);
                 (stored, path, meta.map_err(|e| e.kind()))
