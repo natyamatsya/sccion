@@ -2172,7 +2172,19 @@ mod lookup_cost {
             let mut entry = entry_over(&files, 1, &[]);
             let (full, _) = time_lookup(&mut entry, config, &[], 5).await;
 
-            // (a) the syscalls: the directory scans, as the lookup issues them.
+            // (a) the syscalls, in the shape *this platform's* lookup issues
+            // them.
+            //
+            // On Windows that is one directory scan per directory. Everywhere
+            // else it is one `symlink_metadata` per file, concurrently on the
+            // blocking pool, because `prefetch_by_directory` is Windows-only and
+            // `prefetch_stats` goes straight to `resolve_and_stat`. Timing the
+            // Windows shape on a platform that never takes it reports a path the
+            // lookup does not enter and leaves all the real work in the
+            // residual, which is what this line used to do.
+            let pool = tokio::runtime::Handle::current();
+
+            #[cfg(windows)]
             let parents: Vec<PathBuf> = {
                 let mut v: Vec<PathBuf> = files
                     .iter()
@@ -2182,11 +2194,12 @@ mod lookup_cost {
                 v.dedup();
                 v
             };
-            let pool = tokio::runtime::Handle::current();
-            let mut scans = f64::MAX;
+
+            let mut syscalls = f64::MAX;
             for _ in 0..5 {
                 let t = std::time::Instant::now();
                 let mut tasks = Vec::new();
+                #[cfg(windows)]
                 for dir in &parents {
                     let dir = dir.clone();
                     tasks.push(pool.spawn_blocking(move || {
@@ -2201,16 +2214,28 @@ mod lookup_cost {
                         count
                     }));
                 }
+                #[cfg(not(windows))]
+                for f in &files {
+                    let f = f.clone();
+                    tasks.push(pool.spawn_blocking(move || {
+                        usize::from(std::fs::symlink_metadata(&f).is_ok())
+                    }));
+                }
                 for t in tasks {
                     std::hint::black_box(t.await.unwrap_or(0));
                 }
-                scans = scans.min(t.elapsed().as_secs_f64() * 1e3);
+                syscalls = syscalls.min(t.elapsed().as_secs_f64() * 1e3);
             }
 
-            // (a2) the same scans, but building the filename -> metadata maps
-            // the lookup actually builds. The difference is hashing and
-            // allocation, not waiting.
+            // (a2) Windows only: the same scans, but building the filename ->
+            // metadata maps the lookup actually builds, so that hashing and
+            // allocation can be told apart from waiting. There is no such step
+            // elsewhere -- the per-file path puts each answer straight into the
+            // lookup's cache -- so there is nothing here to separate, and (a3)
+            // below already measures that plumbing.
+            #[cfg(windows)]
             let mut scans_mapped = f64::MAX;
+            #[cfg(windows)]
             for _ in 0..5 {
                 let t = std::time::Instant::now();
                 let mut tasks = Vec::new();
@@ -2235,12 +2260,19 @@ mod lookup_cost {
             }
 
             // (a3) the per-include plumbing, with no filesystem in it at all:
-            // hash the stored name, find it in the directory map, clone the path
-            // and the metadata, put it in the lookup cache, take it out again.
-            // This is what the lookup does around each include now.
+            // hash the stored name, find the metadata, clone the path, put it in
+            // the lookup cache, take it out again. This is what the lookup does
+            // around each include now.
+            //
+            // Where that metadata comes from is the one platform difference. On
+            // Windows it is looked up in the directory map a scan built, so that
+            // indirection is part of the plumbing; elsewhere the per-file stat
+            // hands its answer straight over and there is no map in between.
             let mut plumbing = f64::MAX;
             {
+                #[cfg(windows)]
                 let mut dir_maps: HashMap<PathBuf, HashMap<OsString, FileFacts>> = HashMap::new();
+                #[cfg(windows)]
                 for dir in &parents {
                     let mut found = HashMap::new();
                     if let Ok(rd) = std::fs::read_dir(dir) {
@@ -2252,6 +2284,15 @@ mod lookup_cost {
                     }
                     dir_maps.insert(dir.clone(), found);
                 }
+                #[cfg(not(windows))]
+                let direct: HashMap<OsString, FileFacts> = files
+                    .iter()
+                    .filter_map(|f| {
+                        std::fs::symlink_metadata(f)
+                            .ok()
+                            .map(|m| (f.as_os_str().to_os_string(), FileFacts::from(&m)))
+                    })
+                    .collect();
                 let stored: Vec<OsString> =
                     files.iter().map(|f| f.as_os_str().to_os_string()).collect();
                 for _ in 0..5 {
@@ -2259,11 +2300,14 @@ mod lookup_cost {
                     let mut cache: StatCache = HashMap::new();
                     for name in &stored {
                         let path = PathBuf::from(name);
+                        #[cfg(windows)]
                         let meta = path
                             .parent()
                             .and_then(|d| dir_maps.get(d))
                             .and_then(|m| path.file_name().and_then(|n| m.get(n)))
                             .copied();
+                        #[cfg(not(windows))]
+                        let meta = direct.get(name).copied();
                         cache.insert(
                             name.clone(),
                             (path.clone(), meta.ok_or(std::io::ErrorKind::NotFound)),
@@ -2315,11 +2359,18 @@ mod lookup_cost {
                 decode = decode.min(t.elapsed().as_secs_f64() * 1e3);
             }
 
+            #[cfg(windows)]
             println!(
-                "  {n:>5} includes: lookup {full:>6.2} = scan {scans:>5.2} + maps {:>5.2}                  + rest {:>5.2} ({:>2.0}%)  | decode {decode:.2}",
-                scans_mapped - scans,
+                "  {n:>5} includes: lookup {full:>6.2} = scan {syscalls:>5.2} + maps {:>5.2} + rest {:>5.2} ({:>2.0}%)  | decode {decode:.2}",
+                scans_mapped - syscalls,
                 full - scans_mapped,
                 (full - scans_mapped) / full * 100.0,
+            );
+            #[cfg(not(windows))]
+            println!(
+                "  {n:>5} includes: lookup {full:>6.2} = stats {syscalls:>5.2} + rest {:>5.2} ({:>2.0}%)  | decode {decode:.2}",
+                full - syscalls,
+                (full - syscalls) / full * 100.0,
             );
         }
 
