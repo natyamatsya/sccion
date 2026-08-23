@@ -1,3 +1,4 @@
+// SPDX-FileCopyrightText: Copyright natyamatsya and sccache contributors
 // SPDX-License-Identifier: Apache-2.0
 
 /// Helper macro to create fixed-length arrays without specifying a fixed size
