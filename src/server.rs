@@ -2234,10 +2234,28 @@ impl ServerStats {
     /// per-caller numbers are a breakdown rather than a second accounting.
     fn agent_entry(&mut self, agent: Option<&str>) -> Option<&mut AgentStats> {
         let agent = agent?;
-        if !self.per_agent.contains_key(agent) && self.per_agent.len() >= MAX_TRACKED_AGENTS {
-            return Some(self.per_agent.entry(OTHER_AGENTS.to_string()).or_default());
+        // Which bucket this caller's numbers belong in. An agent already
+        // tracked keeps its own whatever the cap says -- dropping it into
+        // `<other>` partway through a build would split one caller's run across
+        // two rows. Only a caller seen for the first time, with the map full,
+        // joins the shared bucket.
+        let key = if self.per_agent.contains_key(agent) || self.per_agent.len() < MAX_TRACKED_AGENTS
+        {
+            agent
+        } else {
+            OTHER_AGENTS
+        };
+        // `entry` takes its key by value, so the obvious spelling built a
+        // `String` on every call and dropped it again whenever the key was
+        // already there -- which is every call after the first, at each of the
+        // stat sites, while holding the lock every other compilation is waiting
+        // on. Past the cap it was worse: `<other>` is then the hottest key in
+        // the map, and it was the one being reallocated. Look first, and
+        // allocate only to insert.
+        if self.per_agent.contains_key(key) {
+            return self.per_agent.get_mut(key);
         }
-        Some(self.per_agent.entry(agent.to_string()).or_default())
+        Some(self.per_agent.entry(key.to_owned()).or_default())
     }
 }
 
@@ -2993,6 +3011,52 @@ fn cache_control_flag_set(env_vars: &[(OsString, OsString)], name: &str) -> bool
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The cap redirects new callers, never one already being tracked.
+    ///
+    /// Rewriting `agent_entry` to stop allocating put this at risk: the cheap
+    /// spelling is to pick the bucket from the cap alone, which would move a
+    /// caller into `<other>` the moment the map filled up and split one build's
+    /// run across two rows partway through.
+    #[test]
+    fn a_tracked_agent_keeps_its_bucket_once_the_map_is_full() {
+        let mut stats = ServerStats::default();
+
+        // Fill it exactly to the cap, the first of them being the one we care
+        // about keeping.
+        for i in 0..MAX_TRACKED_AGENTS {
+            stats
+                .agent_entry(Some(&format!("agent-{i}")))
+                .expect("a named caller always gets an entry")
+                .requests += 1;
+        }
+        assert_eq!(stats.per_agent.len(), MAX_TRACKED_AGENTS);
+
+        // The one from before the map filled still has its own row.
+        stats.agent_entry(Some("agent-0")).unwrap().requests += 1;
+        assert_eq!(
+            stats.per_agent["agent-0"].requests, 2,
+            "a caller already tracked must not be redirected by the cap"
+        );
+        assert_eq!(
+            stats.per_agent.len(),
+            MAX_TRACKED_AGENTS,
+            "and looking it up must not grow the map"
+        );
+
+        // A caller seen for the first time joins the shared bucket instead.
+        stats.agent_entry(Some("newcomer")).unwrap().requests += 1;
+        stats.agent_entry(Some("another")).unwrap().requests += 1;
+        assert_eq!(stats.per_agent[OTHER_AGENTS].requests, 2);
+        assert_eq!(
+            stats.per_agent.len(),
+            MAX_TRACKED_AGENTS + 1,
+            "the cap plus one shared bucket, however many newcomers arrive"
+        );
+
+        // Nothing identifies the caller: only the totals move.
+        assert!(stats.agent_entry(None).is_none());
+    }
 
     /// An empty value must not force a recache.
     ///
