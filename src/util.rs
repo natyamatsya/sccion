@@ -1040,7 +1040,6 @@ impl Hasher for HashToDigest<'_> {
 pub fn daemonize() -> Result<()> {
     use crate::jobserver::discard_inherited_jobserver;
     use daemonix::Daemonize;
-    use std::env;
     use std::mem;
 
     match crate::envvar::var("SCCION_NO_DAEMON") {
