@@ -45,8 +45,8 @@ strip = true
 # describes a binary nobody ships. The only differences are that symbols
 # survive, so a sampled stack names functions instead of addresses.
 [profile.profiling]
-inherits = "release"
 debug = 1
+inherits = "release"
 strip = false
 
 [dependencies]
@@ -229,17 +229,47 @@ all = [
   "oss",
   "cos",
 ]
-azure = ["opendal/services-azblob", "reqsign", "reqwest", "opendal-http-transport-reqwest"]
-cos = ["opendal/services-cos", "reqsign", "reqwest", "opendal-http-transport-reqwest"]
+azure = [
+  "opendal/services-azblob",
+  "reqsign",
+  "reqwest",
+  "opendal-http-transport-reqwest",
+]
+cos = [
+  "opendal/services-cos",
+  "reqsign",
+  "reqwest",
+  "opendal-http-transport-reqwest",
+]
 default = ["all"]
-gcs = ["opendal/services-gcs", "reqsign", "url", "reqwest", "opendal-http-transport-reqwest"]
+gcs = [
+  "opendal/services-gcs",
+  "reqsign",
+  "url",
+  "reqwest",
+  "opendal-http-transport-reqwest",
+]
 gha = ["opendal/services-ghac", "reqwest", "opendal-http-transport-reqwest"]
 memcached = ["opendal/services-memcached"]
 native-zlib = []
-oss = ["opendal/services-oss", "reqsign", "reqwest", "opendal-http-transport-reqwest"]
+oss = [
+  "opendal/services-oss",
+  "reqsign",
+  "reqwest",
+  "opendal-http-transport-reqwest",
+]
 redis = ["url", "opendal/services-redis"]
-s3 = ["opendal/services-s3", "reqsign", "reqwest", "opendal-http-transport-reqwest"]
-webdav = ["opendal/services-webdav", "reqwest", "opendal-http-transport-reqwest"]
+s3 = [
+  "opendal/services-s3",
+  "reqsign",
+  "reqwest",
+  "opendal-http-transport-reqwest",
+]
+webdav = [
+  "opendal/services-webdav",
+  "reqwest",
+  "opendal-http-transport-reqwest",
+]
 # Enable features that will build a vendored version of openssl and
 # statically linked with it, instead of linking against the system-wide openssl
 # dynamically or statically.

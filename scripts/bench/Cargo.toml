@@ -1,11 +1,11 @@
 [package]
-name = "sccion-bench"
-version = "0.1.0"
-edition = "2024"
-rust-version = "1.91.0"
-license = "Apache-2.0"
-publish = false
 description = "Benchmark harness for sccion against a CMake + Ninja MSVC build."
+edition = "2024"
+license = "Apache-2.0"
+name = "sccion-bench"
+publish = false
+rust-version = "1.91.0"
+version = "0.1.0"
 
 [[bin]]
 name = "sccion-bench"

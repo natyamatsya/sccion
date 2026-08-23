@@ -16,8 +16,8 @@ path = "src/main.rs"
 anyhow = "1.0"
 # Only `sccion::api` is used. The adapter never touches the cache, the wire
 # format, or the compile path -- that is the whole point of the seam.
-sccion = { path = "../.." }
 env_logger = "0.11"
+sccion = { path = "../.." }
 # The protocol itself, so that this crate implements none of it. The SDK tracks
 # MCP's quarterly revisions and negotiates between them per connection, which a
 # hand-written envelope here could not: it spoke one revision, and every client
