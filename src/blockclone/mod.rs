@@ -93,22 +93,6 @@ pub fn volume_supports_cloning(_path: &Path) -> bool {
     false
 }
 
-/// Clone `src` to `dst`, falling back to a plain copy if cloning is not possible.
-///
-/// Returns whether the bytes were actually shared. Callers that care about the
-/// distinction — statistics, tests asserting the fast path is live — should look
-/// at it, because a silent fallback is otherwise indistinguishable from success.
-pub fn clone_or_copy(src: &Path, dst: &Path) -> std::io::Result<bool> {
-    match clone_whole_file(src, dst) {
-        Ok(()) => Ok(true),
-        Err(CloneError::Io(e)) => Err(e),
-        Err(_reason) => {
-            std::fs::copy(src, dst)?;
-            Ok(false)
-        }
-    }
-}
-
 /// What cloning would be worth on APFS, which has no implementation here.
 ///
 /// The module above is `#[cfg(windows)]` in its entirety, so every cache hit on
