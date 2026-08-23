@@ -553,7 +553,7 @@ mod tests {
     #[test]
     fn clone_shares_extents_and_preserves_contents() {
         let Some(dir) = scratch_dir() else {
-            eprintln!("skipping: set SCCACHE_TEST_CLONE_DIR to a clone-capable volume");
+            eprintln!("skipping: set SCCION_TEST_CLONE_DIR to a clone-capable volume");
             return;
         };
         let src = dir.join("src.bin");
@@ -610,7 +610,7 @@ mod tests {
     #[test]
     fn report_clone_versus_copy_cost() {
         let Some(dir) = scratch_dir() else {
-            eprintln!("skipping: set SCCACHE_TEST_CLONE_DIR to a clone-capable volume");
+            eprintln!("skipping: set SCCION_TEST_CLONE_DIR to a clone-capable volume");
             return;
         };
         // Sized like a real MSVC /Z7 object.

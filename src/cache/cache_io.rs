@@ -711,7 +711,7 @@ mod tests {
     #[test]
     fn extraction_clones_from_an_aligned_entry() {
         let Some(root) = crate::envvar::var_os("SCCION_TEST_CLONE_DIR") else {
-            eprintln!("skipping: set SCCACHE_TEST_CLONE_DIR to a clone-capable volume");
+            eprintln!("skipping: set SCCION_TEST_CLONE_DIR to a clone-capable volume");
             return;
         };
         let dir = PathBuf::from(root).join(format!("sccion-io-clone-{}", std::process::id()));
