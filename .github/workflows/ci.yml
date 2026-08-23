@@ -90,7 +90,13 @@ jobs:
 
 
   test:
-    name: test ${{ matrix.os }} rust ${{ matrix.rustc || 'stable' }} ${{ matrix.extra_desc }}
+    # `extra_desc` names what the job is *for*, and for the CUDA entries that is
+    # only true when the input is on. Without it they are plain toolchain jobs --
+    # on Windows they are the only test jobs there are -- and a row reading
+    # `cuda12.8` that installed no CUDA and ran no CUDA test is a lie the summary
+    # tells at a glance. The artifact and Codecov names below keep the raw
+    # `extra_desc`, where a stable key matters more than an accurate label.
+    name: test ${{ matrix.os }} rust ${{ matrix.rustc || 'stable' }} ${{ (matrix.cuda == '' || inputs.cuda) && matrix.extra_desc || '' }}
     runs-on: ${{ matrix.os }}
     continue-on-error: ${{ matrix.allow_failure || false }}
     timeout-minutes: 30
@@ -233,7 +239,10 @@ jobs:
           echo '[env]
           LLVM_PROFILE_FILE = { value = "target/debug/coverage/default-%p-%8m.profraw", relative = true }' >> .cargo/config.toml
 
-      - if: ${{ matrix.cuda != '' && runner.os == 'Linux' }}
+      # Gated on the input as well: without it there is no CUDA toolchain to
+      # make room for, and this deletes several gigabytes of the runner image
+      # to do it.
+      - if: ${{ matrix.cuda != '' && inputs.cuda && runner.os == 'Linux' }}
         name: Free disk space for CUDA tests
         run: |
           sudo apt clean
