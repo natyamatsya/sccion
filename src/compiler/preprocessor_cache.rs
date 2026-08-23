@@ -48,10 +48,21 @@ use super::{Language, NotCacheable};
 /// The current format is 1 header byte for the version + bincode encoding
 /// of the [`PreprocessorCacheEntry`] struct.
 ///
-/// Bumped to 1 when include paths started being stored relative to a basedir:
-/// an entry written by the old code holds absolute paths that the new code
-/// would resolve against a basedir and not find. Rejecting them outright costs
-/// one cold build and cannot be confused with a legitimate miss.
+/// This number does two jobs. `read` rejects an entry whose header byte is not
+/// this one, and [`preprocessor_cache_entry_hash_key`] hashes it, so a bump
+/// serves both a struct that has changed shape and a key that has changed
+/// inputs. Either way the effect is the same: entries from before the bump stop
+/// being found, which costs one cold build and cannot be mistaken for a
+/// legitimate miss.
+///
+/// - **1** (`7ea3117`): include paths became relative to a basedir. An entry
+///   written before it holds absolute paths that the new code resolves against
+///   a basedir and does not find.
+/// - **2** (`9c0c80f`): the working directory joined the key, so
+///   `hash_working_directory` finally did what its name says. A key input
+///   changed rather than the struct.
+/// - **3** (`4c21b17`): `IncludeEntry::digest` became the digest's 32 bytes
+///   instead of its 64 hex characters, which bincode encodes differently.
 const FORMAT_VERSION: u8 = 3;
 const MAX_PREPROCESSOR_CACHE_ENTRIES: usize = 100;
 const MAX_PREPROCESSOR_CACHE_FILE_INFO_ENTRIES: usize = 10000;
