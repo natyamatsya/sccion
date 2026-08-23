@@ -282,20 +282,24 @@ jobs:
           - os: ubuntu-22.04
             target: x86_64-unknown-linux-musl
             container: '{"image": "messense/rust-musl-cross:x86_64-musl"}'
-          - os: ubuntu-22.04
-            target: s390x-unknown-linux-musl
-            container: '{"image": "messense/rust-musl-cross:s390x-musl"}'
-            lto: "false"
-          - os: ubuntu-22.04
-            target: s390x-unknown-linux-gnu
-          - os: ubuntu-22.04
-            target: riscv64gc-unknown-linux-musl
-            container: '{"image": "messense/rust-musl-cross:riscv64gc-musl"}'
-            rustflags: -Ctarget-feature=+crt-static
-          - os: ubuntu-22.04
-            target: loongarch64-unknown-linux-musl
-            container: '{"image": "messense/rust-musl-cross:loongarch64-musl"}'
-            rustflags: -Ctarget-feature=+crt-static
+          # Commented out rather than deleted: these build but nothing here
+          # runs on them, and each is a cross-compile in its own container on
+          # every push. Uncomment the entry to bring one back -- the release
+          # matrix is the only thing that decides which targets ship.
+#          - os: ubuntu-22.04
+#            target: s390x-unknown-linux-musl
+#            container: '{"image": "messense/rust-musl-cross:s390x-musl"}'
+#            lto: "false"
+#          - os: ubuntu-22.04
+#            target: s390x-unknown-linux-gnu
+#          - os: ubuntu-22.04
+#            target: riscv64gc-unknown-linux-musl
+#            container: '{"image": "messense/rust-musl-cross:riscv64gc-musl"}'
+#            rustflags: -Ctarget-feature=+crt-static
+#          - os: ubuntu-22.04
+#            target: loongarch64-unknown-linux-musl
+#            container: '{"image": "messense/rust-musl-cross:loongarch64-musl"}'
+#            rustflags: -Ctarget-feature=+crt-static
           - os: ubuntu-22.04
             binary: sccion-dist
             extra_args: --no-default-features --features="dist-server"
