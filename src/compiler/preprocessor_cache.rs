@@ -101,6 +101,29 @@ fn portable_path(path: PathBuf, basedirs: &[Vec<u8>]) -> OsString {
 /// blocking pool. Capping at 128 cost 2000 includes about 27%.
 const STAT_BATCH_MIN: usize = 8;
 
+/// How many includes one blocking task stats before another is spawned.
+///
+/// A `spawn_blocking` is not free, and off Windows this path used to spend one
+/// per include: task allocation, a channel send, a thread wakeup and a
+/// `JoinHandle` await, to wrap a single `stat`. Measured on APFS the syscall is
+/// 2.08 us and the dispatch around it was 7.8 us -- so the pool was costing
+/// nearly four times what it was buying, and statting every include inline on
+/// one thread beat it 4.7x.
+///
+/// Batching the dispatch instead of the syscall puts that back: 9.84 us per
+/// include becomes 1.41 at sixteen per task, 1.33 at sixty-four and 1.49 at two
+/// hundred and fifty-six. The floor is the concurrent syscall itself, and
+/// anything from a few dozen up reaches it, so this is chosen well inside the
+/// flat part rather than tuned to it.
+///
+/// Fixed-size, not grouped by directory. Grouping was measured and buys nothing
+/// -- shuffling the list so no task shares a parent changes nothing, which says
+/// there is no locality to capture -- while costing 47% on a lopsided tree,
+/// where one directory of 400 headers becomes one task and eleven threads idle.
+/// The Windows path groups by directory for a different reason: there a scan
+/// *is* the metadata.
+const STAT_CHUNK: usize = 64;
+
 /// One directory scan in place of a `stat` per file in it.
 ///
 /// On Windows a directory scan is `FindFirstFileW`/`FindNextFileW`, which
@@ -534,19 +557,34 @@ impl PreprocessorCacheEntry {
         // clone per include was a `Vec<Vec<u8>>` allocated and dropped for each
         // file on the path this batching exists to make cheap.
         let shared: Arc<[Vec<u8>]> = basedirs.into();
-        let mut tasks = Vec::with_capacity(wanted.len());
-        for stored in wanted {
+        let mut tasks = Vec::with_capacity(wanted.len().div_ceil(STAT_CHUNK));
+        // `take` off the iterator rather than `chunks`, so each path is *moved*
+        // into its task. `chunks` would hand out slices to clone from, which is
+        // an allocation per include on the path being made cheap.
+        let mut wanted = wanted.into_iter();
+        loop {
+            let chunk: Vec<OsString> = wanted.by_ref().take(STAT_CHUNK).collect();
+            if chunk.is_empty() {
+                break;
+            }
             let basedirs = Arc::clone(&shared);
             tasks.push(pool.spawn_blocking(move || {
-                let (path, meta) = resolve_and_stat(&stored, &basedirs);
-                (stored, path, meta.map_err(|e| e.kind()))
+                chunk
+                    .into_iter()
+                    .map(|stored| {
+                        let (path, meta) = resolve_and_stat(&stored, &basedirs);
+                        (stored, path, meta.map_err(|e| e.kind()))
+                    })
+                    .collect::<Vec<_>>()
             }));
         }
         for task in tasks {
-            // A panicked or cancelled stat is simply not cached; the loop then
-            // resolves that one inline and behaves as it always did.
-            if let Ok((stored, path, meta)) = task.await {
-                caches.seen.insert(stored, (path, meta));
+            // A panicked or cancelled chunk is simply not cached; the loop then
+            // resolves those inline and behaves as it always did.
+            if let Ok(done) = task.await {
+                for (stored, path, meta) in done {
+                    caches.seen.insert(stored, (path, meta));
+                }
             }
         }
     }
@@ -2176,9 +2214,9 @@ mod lookup_cost {
             // them.
             //
             // On Windows that is one directory scan per directory. Everywhere
-            // else it is one `symlink_metadata` per file, concurrently on the
-            // blocking pool, because `prefetch_by_directory` is Windows-only and
-            // `prefetch_stats` goes straight to `resolve_and_stat`. Timing the
+            // else it is `STAT_CHUNK` files per blocking task, because
+            // `prefetch_by_directory` is Windows-only and `prefetch_stats`
+            // batches `resolve_and_stat` instead. Timing the
             // Windows shape on a platform that never takes it reports a path the
             // lookup does not enter and leaves all the real work in the
             // residual, which is what this line used to do.
@@ -2215,10 +2253,13 @@ mod lookup_cost {
                     }));
                 }
                 #[cfg(not(windows))]
-                for f in &files {
-                    let f = f.clone();
+                for chunk in files.chunks(STAT_CHUNK) {
+                    let chunk: Vec<PathBuf> = chunk.to_vec();
                     tasks.push(pool.spawn_blocking(move || {
-                        usize::from(std::fs::symlink_metadata(&f).is_ok())
+                        chunk
+                            .iter()
+                            .filter(|f| std::fs::symlink_metadata(f).is_ok())
+                            .count()
                     }));
                 }
                 for t in tasks {
