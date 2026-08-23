@@ -430,6 +430,16 @@ fn dev_drive_state(_root: &str) -> Option<String> {
     None
 }
 
+/// Filesystems known to share extents, for saying so when sccion cannot use it.
+///
+/// Deliberately short. APFS is here because `blockclone::clone_versus_copy`
+/// measures it on the machine this runs on; btrfs and reflink-formatted XFS
+/// belong here too on the day someone measures them. A filesystem nobody has
+/// checked does not belong in a report whose whole value is being trusted.
+fn shares_extents(filesystem: &str) -> bool {
+    filesystem.eq_ignore_ascii_case("apfs")
+}
+
 fn describe_volume(path: &Path) -> VolumeReport {
     let root = volume_root(path);
     let filesystem = filesystem_for(path, root.as_deref());
@@ -670,6 +680,27 @@ pub fn check(config: &Config, cwd: &Path) -> EnvReport {
                  Privacy. Excluding one directory is enough; `mdutil -i off` disables indexing \
                  for the whole volume and needs sudo.",
             ),
+        );
+    }
+
+    // "No block cloning" has two causes that matter differently, and the volume
+    // line cannot tell them apart because it only ever says the word when the
+    // answer is yes. A filesystem that cannot share extents is the machine's
+    // business; a filesystem that can, while sccion has no implementation, is
+    // this program's. Filing the second under the first is how a report meant to
+    // catch silent losses quietly becomes one.
+    if !crate::blockclone::IMPLEMENTED && shares_extents(&cache.filesystem) {
+        findings.push(
+            Level::Info,
+            format!(
+                "{} can share extents, but sccion implements block cloning only on \
+                 Windows -- and only on volumes that advertise it even there -- so \
+                 every cache hit here copies its object rather than sharing it.",
+                cache.filesystem
+            ),
+            // Deliberately no remedy. There is nothing to configure, and the
+            // value of saying it at all is that nobody goes looking for one.
+            None,
         );
     }
 
@@ -1042,6 +1073,58 @@ mod tests {
             .expect("the report lists it");
         assert_eq!(untouched.origin, Origin::Machine);
         assert_eq!(untouched.machine_value, None);
+    }
+
+    /// "No block cloning" is two answers, and only one is the machine's fault.
+    ///
+    /// The volume line names block cloning only when it is happening, so its
+    /// silence carries no reason. On a filesystem that can share extents and a
+    /// build that cannot ask it to, the reason is sccion -- and a report that
+    /// leaves someone to infer "my filesystem cannot do this" has told them
+    /// something false about their machine.
+    #[test]
+    fn a_filesystem_that_could_clone_is_not_blamed_for_sccion() {
+        // Only the two states the helper is asked to tell apart; the volume
+        // probe itself is not what is under test here.
+        assert!(shares_extents("apfs"), "measured by clone_versus_copy");
+        assert!(
+            shares_extents("APFS"),
+            "the name arrives however the OS spells it"
+        );
+        assert!(
+            !shares_extents("hfs"),
+            "a filesystem nobody measured must not be claimed"
+        );
+        assert!(!shares_extents("ntfs"));
+
+        // And the report says it, on a machine where it is true. Gated to the
+        // platforms that have no implementation, because on Windows the finding
+        // must stay silent and asserting its absence there is the same test.
+        #[cfg(all(not(windows), target_os = "macos"))]
+        {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let mut config = Config::default();
+            config.fallback_cache.dir = dir.path().to_path_buf();
+            let report = check(&config, dir.path());
+
+            // Only meaningful if the temp dir really is on APFS; a machine that
+            // put it somewhere else is not a failure of the thing under test.
+            if shares_extents(&report.cache.filesystem) {
+                let said = report.findings.iter().any(|f| {
+                    f.message
+                        .contains("sccion implements block cloning only on")
+                });
+                assert!(
+                    said,
+                    "a volume that can share extents must be told why it is not: {:?}",
+                    report
+                        .findings
+                        .iter()
+                        .map(|f| &f.message)
+                        .collect::<Vec<_>>()
+                );
+            }
+        }
     }
 
     #[test]

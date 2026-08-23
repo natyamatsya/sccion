@@ -28,6 +28,19 @@ pub use windows::{clone_region_into, clone_whole_file, volume_supports_cloning};
 #[cfg(all(test, windows))]
 pub(crate) use windows::extent_lcns;
 
+/// Whether this build can clone at all, before any volume is asked.
+///
+/// Two different questions get the same `false` otherwise, and a report that
+/// runs them together tells someone their filesystem cannot do something it can.
+///
+/// Only the Windows implementation exists, and not for want of effort elsewhere:
+/// the cache hit path needs a *range* lifted out of a zip entry into a temp file
+/// that already exists, and macOS offers `clonefile`, `clonefileat` and
+/// `fclonefileat`, all of which clone a whole file and create the destination
+/// themselves. `FICLONERANGE` and `copy_file_range` are Linux. So off Windows
+/// this is a missing syscall as much as a missing implementation.
+pub const IMPLEMENTED: bool = cfg!(windows);
+
 /// Why a clone did not happen.
 ///
 /// Only [`CloneError::Io`] indicates something went wrong; the rest describe
