@@ -539,7 +539,7 @@ mod tests {
         // test that silently passes on NTFS would assert nothing.
         let root = crate::envvar::var_os("SCCION_TEST_CLONE_DIR")?;
         let dir = std::path::PathBuf::from(root).join(format!(
-            "sccache-clone-test-{}-{}",
+            "sccion-clone-test-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
