@@ -1,7 +1,14 @@
 # SPDX-License-Identifier: Apache-2.0
 
 name: ci
-on: [ push, pull_request ]
+on:
+  push:
+  pull_request:
+  # So a run can be asked for without inventing a commit to carry it. This
+  # repository had Actions disabled at the repository level for its whole
+  # history -- every workflow reported `state=active` while nothing could run --
+  # and there was no way to prove the fix without pushing something.
+  workflow_dispatch:
 
 jobs:
   lint:
