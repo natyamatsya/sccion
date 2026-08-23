@@ -1093,6 +1093,7 @@ pub fn preprocess_cmd<T>(
     cmd.arg("-nologo")
         .args(&parsed_args.preprocessor_args)
         .args(&parsed_args.dependency_args)
+        .args(&parsed_args.unhashed_args)
         .args(&parsed_args.common_args)
         .env_clear()
         .envs(env_vars.to_vec())
@@ -1337,6 +1338,11 @@ fn generate_compile_commands(
         // forcibly includes another file. This does mean we're potentially vulnerable
         // to misidentification of flags like -DYNAMICBASE (though in that specific
         // case we're safe as it only applies to link time, which sccache avoids).
+        //
+        // `unhashed_args` goes too. It is not in the key by definition, but it is
+        // still part of how the compiler was asked to run, and a remote compile
+        // that drops it is running a different command than the local one would.
+        arguments.extend(dist::osstrings_to_strings(&parsed_args.unhashed_args)?);
         arguments.extend(dist::osstrings_to_strings(&parsed_args.common_args)?);
 
         if parsed_args.double_dash_input {
@@ -2370,6 +2376,84 @@ mod test {
             CompilerArguments::Ok(_) => {}
             o => panic!("/Zi with a private PDB should cache, got {:?}", o),
         }
+    }
+
+    /// `/FS` must reach the commands, not merely sit in the right bucket.
+    ///
+    /// `test_parse_arguments_fs_is_not_hashed` asserts which vector holds it,
+    /// which is the cache-key question. This is the other one, and it is the one
+    /// C1041 was about: whichever bucket the flag lives in, the compiler has to
+    /// see it. Asserting the bucket cannot answer that -- the buckets are
+    /// assembled separately by each command builder, and two of them were
+    /// assembling without this one.
+    #[test]
+    fn test_generated_commands_carry_fs() {
+        let parsed_args = match parse_arguments(ovec![
+            "-c",
+            "foo.c",
+            "-Z7",
+            "-Fdshared.pdb",
+            "/FS",
+            "-Fofoo.obj"
+        ]) {
+            CompilerArguments::Ok(args) => args,
+            o => panic!("Got unexpected parse result: {:?}", o),
+        };
+        let f = TestFixture::new();
+        let compiler = &f.bins[0];
+        let mut path_transformer = dist::PathTransformer::new();
+        let (command, dist_command, _) = generate_compile_commands(
+            &mut path_transformer,
+            compiler,
+            &parsed_args,
+            f.tempdir.path(),
+            &[],
+        )
+        .unwrap();
+
+        assert!(
+            command.arguments.iter().any(|a| a == "/FS" || a == "-FS"),
+            "the local compile command must carry /FS; got {:?}",
+            command.arguments
+        );
+
+        // The preprocessor sees it too. Inert there -- `-E`/`-EP` writes no PDB
+        // -- but the two command lines describing one compilation should not
+        // disagree about how it was invoked.
+        let mut pre = MockCommand {
+            child: None,
+            args: vec![],
+        };
+        preprocess_cmd(
+            &mut pre,
+            &parsed_args,
+            f.tempdir.path(),
+            &[],
+            false,
+            false,
+            false,
+            false,
+        );
+        assert!(
+            pre.args.iter().any(|a| a == "/FS" || a == "-FS"),
+            "the preprocess command must carry /FS; got {:?}",
+            pre.args
+        );
+
+        #[cfg(feature = "dist-client")]
+        {
+            let dist_command = dist_command.expect("a dist command");
+            assert!(
+                dist_command
+                    .arguments
+                    .iter()
+                    .any(|a| a == "/FS" || a == "-FS"),
+                "the dist compile command must carry /FS; got {:?}",
+                dist_command.arguments
+            );
+        }
+        #[cfg(not(feature = "dist-client"))]
+        let _ = dist_command;
     }
 
     #[test]
