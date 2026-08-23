@@ -1753,8 +1753,8 @@ where
             }
         }
 
-        let force_recache = cache_control_flag_set(&env_vars, "SCCACHE_RECACHE");
-        let force_no_cache = cache_control_flag_set(&env_vars, "SCCACHE_NO_CACHE");
+        let force_recache = cache_control_flag_set(&env_vars, "SCCION_RECACHE");
+        let force_no_cache = cache_control_flag_set(&env_vars, "SCCION_NO_CACHE");
 
         let cache_control = if force_no_cache {
             CacheControl::ForceNoCache
@@ -2946,8 +2946,11 @@ fn waits_until_zero() {
 /// silently discards the whole cache's value for the run, with nothing in the
 /// output to say why every compilation missed. Every other flag the fork reads
 /// already treats empty as off; these two were the exception.
+///
+/// Read through [`crate::envvar::find`], so both spellings work. Matching the
+/// name directly is what left `SCCION_RECACHE` doing nothing at all.
 fn cache_control_flag_set(env_vars: &[(OsString, OsString)], name: &str) -> bool {
-    env_vars.iter().any(|(k, v)| k == name && !v.is_empty())
+    crate::envvar::find(env_vars, name).is_some_and(|v| !v.is_empty())
 }
 
 #[cfg(test)]
@@ -2963,10 +2966,46 @@ mod tests {
     fn an_empty_cache_control_variable_is_not_set() {
         let env = |v: &str| vec![(OsString::from("SCCACHE_RECACHE"), OsString::from(v))];
 
-        assert!(!cache_control_flag_set(&env(""), "SCCACHE_RECACHE"));
-        assert!(cache_control_flag_set(&env("1"), "SCCACHE_RECACHE"));
-        assert!(cache_control_flag_set(&env("anything"), "SCCACHE_RECACHE"));
-        assert!(!cache_control_flag_set(&[], "SCCACHE_RECACHE"));
+        assert!(!cache_control_flag_set(&env(""), "SCCION_RECACHE"));
+        assert!(cache_control_flag_set(&env("1"), "SCCION_RECACHE"));
+        assert!(cache_control_flag_set(&env("anything"), "SCCION_RECACHE"));
+        assert!(!cache_control_flag_set(&[], "SCCION_RECACHE"));
+    }
+
+    /// Both spellings force a recache, which is what the rename promised.
+    ///
+    /// `SCCION_RECACHE` reached one call site that compared the name directly
+    /// instead of going through `envvar`, so it did nothing at all: no error, no
+    /// log line, just a cache that would not be overwritten. The variable is
+    /// reached for when the cache is already suspected of holding something
+    /// wrong, which is the worst moment for a setting to be quietly ignored.
+    #[test]
+    fn a_cache_control_variable_answers_to_either_spelling() {
+        let env = |k: &str| vec![(OsString::from(k), OsString::from("1"))];
+
+        assert!(
+            cache_control_flag_set(&env("SCCION_RECACHE"), "SCCION_RECACHE"),
+            "the current spelling must work"
+        );
+        assert!(
+            cache_control_flag_set(&env("SCCACHE_RECACHE"), "SCCION_RECACHE"),
+            "the older spelling must keep working"
+        );
+        assert!(
+            cache_control_flag_set(&env("SCCION_NO_CACHE"), "SCCION_NO_CACHE"),
+            "and the same for the other cache-control variable"
+        );
+        assert!(cache_control_flag_set(
+            &env("SCCACHE_NO_CACHE"),
+            "SCCION_NO_CACHE"
+        ));
+
+        // Unrelated variables still do not count.
+        assert!(!cache_control_flag_set(&env("RECACHE"), "SCCION_RECACHE"));
+        assert!(!cache_control_flag_set(
+            &env("SCCION_NO_CACHE"),
+            "SCCION_RECACHE"
+        ));
     }
 
     struct StringWriter {
