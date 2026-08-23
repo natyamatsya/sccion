@@ -1915,6 +1915,37 @@ mod lookup_cost {
     use super::*;
     use std::time::Duration;
 
+    /// What [`LookupCaches::dirs`] holds, for an include set of this shape.
+    ///
+    /// A scan pays for a whole directory, and the map keeps the whole of it --
+    /// every name, wanted or not -- until the lookup ends. That is the term
+    /// nobody had a number for, and the sparse case is where it grows: the same
+    /// include count spread over directories holding far more than was asked
+    /// for.
+    ///
+    /// Bytes are a structural estimate, not a measurement: one hashbrown slot
+    /// per entry (key, value and a control byte) over the 7/8 load factor it
+    /// keeps, plus the name bytes each `OsString` puts on the heap. Counting is
+    /// the point; the estimate is only there to say whether the count matters.
+    #[cfg(windows)]
+    fn retained_by_dirs(files: &[PathBuf]) -> (usize, usize, usize) {
+        let parents: std::collections::BTreeSet<PathBuf> = files
+            .iter()
+            .filter_map(|f| f.parent().map(Path::to_path_buf))
+            .collect();
+        let (mut entries, mut name_bytes) = (0usize, 0usize);
+        for dir in &parents {
+            if let Ok(rd) = std::fs::read_dir(dir) {
+                for e in rd.flatten() {
+                    entries += 1;
+                    name_bytes += e.file_name().len();
+                }
+            }
+        }
+        let slot = std::mem::size_of::<(OsString, FileFacts)>() + 1;
+        (parents.len(), entries, entries * slot * 8 / 7 + name_bytes)
+    }
+
     /// `dirs` directories of `per_dir` files each, which is how includes
     /// actually sit -- clustered, not scattered.
     fn tree(dirs: usize, per_dir: usize) -> (tempfile::TempDir, Vec<PathBuf>) {
@@ -2265,6 +2296,13 @@ mod lookup_cost {
                     SCANS.load(Ordering::Relaxed),
                     parents.len()
                 );
+                let (dirs, kept, bytes) = retained_by_dirs(&files);
+                println!(
+                    "  {n:>5} includes: dirs cache keeps {kept} entries over {dirs} dirs \
+                     (~{:.0} KiB, {:.0}% of it wanted)",
+                    bytes as f64 / 1024.0,
+                    n as f64 / kept as f64 * 100.0,
+                );
             }
 
             // (b) the entry itself, paid when it is read off disk.
@@ -2314,6 +2352,16 @@ mod lookup_cost {
                 "  {n:>5} includes / 8 crowded dirs   {ms:>8.2} ms  ({:.0}% density)  hit: {hit}",
                 n as f64 / 4000.0 * 100.0
             );
+            #[cfg(windows)]
+            {
+                let (dirs, kept, bytes) = retained_by_dirs(&included);
+                println!(
+                    "  {n:>5} includes: dirs cache keeps {kept} entries over {dirs} dirs \
+                     (~{:.0} KiB, {:.0}% of it wanted)",
+                    bytes as f64 / 1024.0,
+                    n as f64 / kept as f64 * 100.0,
+                );
+            }
         }
 
         // The shape a prefetch makes worse: a miss on the *first* include, which
