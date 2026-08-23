@@ -1483,12 +1483,24 @@ where
         );
     }
 
-    pub async fn record_preprocessor_cache_lookup(&self, hit: bool) {
+    /// `agent` is passed in rather than derived here because the caller already
+    /// has it: `start_compile_task` resolves the identity once per compilation
+    /// and threads it down. Recomputing would mean another `projectconf`
+    /// lookup and the `stat` it makes to notice an edited file -- cheap, and
+    /// still filesystem work added to the compile path to collect a statistic.
+    pub async fn record_preprocessor_cache_lookup(&self, hit: bool, agent: Option<&str>) {
         let mut stats = self.stats.lock().await;
         if hit {
             stats.preprocessor_cache_hits += 1;
         } else {
             stats.preprocessor_cache_misses += 1;
+        }
+        if let Some(entry) = stats.agent_entry(agent) {
+            if hit {
+                entry.preprocessor_cache_hits += 1;
+            } else {
+                entry.preprocessor_cache_misses += 1;
+            }
         }
     }
 
@@ -1790,6 +1802,7 @@ where
         util::spawn_on(&self.rt, async move {
             let result = match me.dist_client.get_client().await {
                 Ok(client) => std::panic::AssertUnwindSafe(hasher.get_cached_or_compile(
+                    agent.clone(),
                     &me,
                     client,
                     me.creator.clone(),
@@ -1849,6 +1862,8 @@ where
                             stats.objects_cloned += cloned;
                             if let Some(entry) = stats.agent_entry(agent.as_deref()) {
                                 entry.cache_hits += 1;
+                                entry.cache_read_hit_duration += fetch;
+                                entry.cache_materialize_duration += materialize;
                             }
                         }
                         CompileResult::CacheMiss(miss_type, dt, duration, future) => {
@@ -2180,6 +2195,21 @@ pub struct AgentStats {
     pub uncacheable: u64,
     /// Time this caller spent running compilers.
     pub compile_duration: Duration,
+
+    /// Preprocessor cache mode, this caller's share.
+    ///
+    /// Read against `cache_hits`, not on its own. A healthy hit rate with zero
+    /// preprocessor hits is the signature of the mode being enabled and
+    /// structurally unable to hit, which the totals cannot show for one caller
+    /// among several.
+    pub preprocessor_cache_hits: u64,
+    pub preprocessor_cache_misses: u64,
+
+    /// What this caller's hits cost, split the way the global counters split
+    /// it: finding and reading the entry, then writing the objects out.
+    /// Hit *rate* without hit *cost* cannot tell a fast cache from a slow one.
+    pub cache_read_hit_duration: Duration,
+    pub cache_materialize_duration: Duration,
 }
 
 impl std::ops::AddAssign for AgentStats {
@@ -2189,6 +2219,10 @@ impl std::ops::AddAssign for AgentStats {
         self.cache_misses += rhs.cache_misses;
         self.uncacheable += rhs.uncacheable;
         self.compile_duration += rhs.compile_duration;
+        self.preprocessor_cache_hits += rhs.preprocessor_cache_hits;
+        self.preprocessor_cache_misses += rhs.preprocessor_cache_misses;
+        self.cache_read_hit_duration += rhs.cache_read_hit_duration;
+        self.cache_materialize_duration += rhs.cache_materialize_duration;
     }
 }
 

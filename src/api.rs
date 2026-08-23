@@ -27,6 +27,7 @@ use crate::client::{ServerConnection, connect_to_server};
 use crate::config::Config;
 use crate::errors::*;
 use crate::protocol::{Request, Response};
+use serde::Serialize;
 
 // The report's own field types, not just the report: every field of
 // `EnvReport` is public, so anything that can hold one already needs these to
@@ -78,6 +79,44 @@ impl std::fmt::Display for Refused {
 }
 
 impl std::error::Error for Refused {}
+
+/// The shape of the JSON the CLI prints, for anything parsing it.
+///
+/// Three version numbers live in this program and they answer different
+/// questions. The package version moves for reasons a parser does not care
+/// about and, with no releases, does not move at all. `PROTOCOL_VERSION` is
+/// about two sccion builds understanding each other on a socket, and is
+/// invisible to anyone reading stdout. This is the one a CI script checks
+/// before trusting a field name.
+///
+/// Bump it when a field is removed, renamed, or changes meaning or units --
+/// anything that makes a reader of the old shape wrong rather than merely
+/// incomplete. Adding a field does not bump it: a parser that ignores unknown
+/// keys is unaffected, which is the contract this number is promising.
+pub const JSON_SCHEMA_VERSION: u32 = 1;
+
+/// A JSON document with its schema version attached.
+///
+/// A wrapper rather than a field on the reports themselves, because the
+/// version describes *this rendering* and not the daemon's internal types --
+/// `ServerInfo` also crosses the wire, where `PROTOCOL_VERSION` already
+/// governs, and giving it a second version would be two numbers for one
+/// struct.
+#[derive(Serialize)]
+pub struct Versioned<T: Serialize> {
+    pub schema_version: u32,
+    #[serde(flatten)]
+    pub document: T,
+}
+
+impl<T: Serialize> Versioned<T> {
+    pub fn new(document: T) -> Self {
+        Versioned {
+            schema_version: JSON_SCHEMA_VERSION,
+            document,
+        }
+    }
+}
 
 /// A local sccache daemon, running or not.
 #[derive(Debug)]
@@ -271,5 +310,54 @@ pub fn request_shutdown(mut conn: ServerConnection) -> Result<ServerInfo> {
         Ok(*stats)
     } else {
         bail!("Unexpected server response!")
+    }
+}
+
+#[cfg(test)]
+mod json_surface {
+    use super::*;
+
+    /// The version rides beside the document, not inside it.
+    ///
+    /// `flatten` is what makes this additive: every field the report already
+    /// had keeps its place at the top level, so adding the version is not
+    /// itself the kind of change the version exists to announce.
+    #[test]
+    fn the_document_is_versioned_and_otherwise_unchanged() {
+        #[derive(Serialize)]
+        struct Report {
+            cache_hits: u64,
+            nested: Vec<u8>,
+        }
+
+        let v = serde_json::to_value(Versioned::new(Report {
+            cache_hits: 7,
+            nested: vec![1, 2],
+        }))
+        .expect("serialises");
+
+        assert_eq!(v["schema_version"], JSON_SCHEMA_VERSION);
+        assert_eq!(v["cache_hits"], 7, "the document stays at the top level");
+        assert_eq!(v["nested"], serde_json::json!([1, 2]));
+        assert!(
+            v.get("document").is_none(),
+            "flattened, not nested -- a consumer reading .cache_hits must not \
+             have to learn a new path"
+        );
+    }
+
+    /// The three version numbers are not interchangeable.
+    ///
+    /// A reader tempted to check the package version instead would be checking
+    /// something that has never moved, and one checking `PROTOCOL_VERSION`
+    /// would be reacting to socket changes that leave stdout identical.
+    #[test]
+    fn the_schema_version_is_its_own_number() {
+        assert_eq!(JSON_SCHEMA_VERSION, 1);
+        assert_ne!(
+            JSON_SCHEMA_VERSION.to_string(),
+            env!("CARGO_PKG_VERSION"),
+            "the package version is not a schema version"
+        );
     }
 }

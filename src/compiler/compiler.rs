@@ -636,8 +636,13 @@ where
     /// Look up a cached compile result in `storage`. If not found, run the
     /// compile and store the result.
     #[allow(clippy::too_many_arguments)]
+    /// `agent` is threaded in rather than derived here. `start_compile_task`
+    /// resolves the identity once per compilation, and the fallback walks the
+    /// filesystem looking for a checkout root -- memoised, but still a `stat`
+    /// per compilation added to collect a statistic.
     async fn get_cached_or_compile(
         &mut self,
+        agent: Option<String>,
         service: &server::SccacheService<T>,
         dist_client: Option<Arc<dyn dist::Client>>,
         creator: T,
@@ -699,7 +704,9 @@ where
                 compiled_for,
             }) => {
                 if let Some(hit) = preprocessor_cache_hit {
-                    service.record_preprocessor_cache_lookup(hit).await;
+                    service
+                        .record_preprocessor_cache_lookup(hit, agent.as_deref())
+                        .await;
                 }
                 (
                     key,
@@ -1054,6 +1061,7 @@ where
                     // For distributed compilation, the local preprocessing step still needs to be done.
                     return self
                         .get_cached_or_compile(
+                            agent,
                             service,
                             dist_client,
                             creator,
@@ -3104,6 +3112,10 @@ LLVM version: 6.0",
             .block_on(async {
                 hasher
                     .get_cached_or_compile(
+                        // No caller identity in these tests: the per-agent map is
+                        // keyed by it, and `None` is what a compilation naming
+                        // nobody, in no checkout, actually produces.
+                        None,
                         &service,
                         None,
                         creator.clone(),
@@ -3141,6 +3153,10 @@ LLVM version: 6.0",
             .block_on(async {
                 hasher
                     .get_cached_or_compile(
+                        // No caller identity in these tests: the per-agent map is
+                        // keyed by it, and `None` is what a compilation naming
+                        // nobody, in no checkout, actually produces.
+                        None,
                         &service,
                         None,
                         creator,
@@ -3243,6 +3259,10 @@ LLVM version: 6.0",
             .block_on(async {
                 hasher
                     .get_cached_or_compile(
+                        // No caller identity in these tests: the per-agent map is
+                        // keyed by it, and `None` is what a compilation naming
+                        // nobody, in no checkout, actually produces.
+                        None,
                         &service,
                         Some(dist_client.clone()),
                         creator.clone(),
@@ -3280,6 +3300,10 @@ LLVM version: 6.0",
             .block_on(async {
                 hasher
                     .get_cached_or_compile(
+                        // No caller identity in these tests: the per-agent map is
+                        // keyed by it, and `None` is what a compilation naming
+                        // nobody, in no checkout, actually produces.
+                        None,
                         &service,
                         Some(dist_client.clone()),
                         creator,
@@ -3369,6 +3393,10 @@ LLVM version: 6.0",
         storage.next_get(Err(anyhow!("Some Error")));
         let (cached, res) = runtime
             .block_on(hasher.get_cached_or_compile(
+                // No caller identity in these tests: the per-agent map is
+                // keyed by it, and `None` is what a compilation naming
+                // nobody, in no checkout, actually produces.
+                None,
                 &service,
                 None,
                 creator,
@@ -3461,6 +3489,10 @@ LLVM version: 6.0",
         storage.next_get(Ok(Cache::Hit(entry)));
         let (cached, _res) = runtime
             .block_on(hasher.get_cached_or_compile(
+                // No caller identity in these tests: the per-agent map is
+                // keyed by it, and `None` is what a compilation naming
+                // nobody, in no checkout, actually produces.
+                None,
                 &service,
                 None,
                 creator,
@@ -3563,6 +3595,10 @@ LLVM version: 6.0",
             .block_on(async {
                 hasher
                     .get_cached_or_compile(
+                        // No caller identity in these tests: the per-agent map is
+                        // keyed by it, and `None` is what a compilation naming
+                        // nobody, in no checkout, actually produces.
+                        None,
                         &service,
                         None,
                         creator.clone(),
@@ -3592,6 +3628,10 @@ LLVM version: 6.0",
         fs::remove_file(&obj).unwrap();
         let (cached, res) = hasher
             .get_cached_or_compile(
+                // No caller identity in these tests: the per-agent map is
+                // keyed by it, and `None` is what a compilation naming
+                // nobody, in no checkout, actually produces.
+                None,
                 &service,
                 None,
                 creator,
@@ -3692,6 +3732,10 @@ LLVM version: 6.0",
             .block_on(async {
                 hasher
                     .get_cached_or_compile(
+                        // No caller identity in these tests: the per-agent map is
+                        // keyed by it, and `None` is what a compilation naming
+                        // nobody, in no checkout, actually produces.
+                        None,
                         &service,
                         None,
                         creator,
@@ -3811,6 +3855,10 @@ LLVM version: 6.0",
             let mut hasher = hasher.clone();
             let (cached, res) = hasher
                 .get_cached_or_compile(
+                    // No caller identity in these tests: the per-agent map is
+                    // keyed by it, and `None` is what a compilation naming
+                    // nobody, in no checkout, actually produces.
+                    None,
                     &service,
                     Some(dist_client.clone()),
                     creator.clone(),

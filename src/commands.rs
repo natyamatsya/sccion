@@ -773,7 +773,9 @@ pub fn run_command(cmd: Command) -> Result<i32> {
             let stats = daemon.stats_or_empty(config)?;
             match fmt {
                 StatsFormat::Text => stats.print(advanced),
-                StatsFormat::Json => serde_json::to_writer(&mut io::stdout(), &stats)?,
+                StatsFormat::Json => {
+                    serde_json::to_writer(&mut io::stdout(), &crate::api::Versioned::new(&stats))?;
+                }
             }
         }
         Command::DebugPreprocessorCacheEntries => {
@@ -833,7 +835,10 @@ pub fn run_command(cmd: Command) -> Result<i32> {
             match fmt {
                 StatsFormat::Text => report.print(),
                 StatsFormat::Json => {
-                    serde_json::to_writer_pretty(&mut io::stdout(), &report)?;
+                    serde_json::to_writer_pretty(
+                        &mut io::stdout(),
+                        &crate::api::Versioned::new(&report),
+                    )?;
                     println!();
                 }
             }

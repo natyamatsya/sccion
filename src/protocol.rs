@@ -15,7 +15,11 @@ use serde::{Deserialize, Serialize};
 /// them will misread. bincode is not self-describing, so without this the
 /// mismatch is silent misinterpretation rather than a clean error.
 /// Bumped to 2 when `RegisterWorkspace` and `GetMissRecords` were added, and
-/// to 3 for `DescribeWorkspace`. A daemon left running across the change will
+/// to 3 for `DescribeWorkspace`, to 4 for `ProtocolVersion` itself, and to 5
+/// when `AgentStats` grew the preprocessor-cache counters and the hit-path
+/// durations -- `ServerStats` crosses this wire, so a field added to it is a
+/// change to the encoding whether or not anyone reads it. A daemon left running
+/// across the change will
 /// not be found by the new client, which is the intended outcome: stop it with
 /// `sccion --stop-server`.
 ///
@@ -32,7 +36,7 @@ use serde::{Deserialize, Serialize};
 /// rejects an unknown enum discriminant with `InvalidTagEncoding` rather than
 /// guessing at it, so an older daemon fails the request outright and the client
 /// can say which remedy applies.
-pub const PROTOCOL_VERSION: u32 = 4;
+pub const PROTOCOL_VERSION: u32 = 5;
 use std::ffi::OsString;
 
 /// A client request.
