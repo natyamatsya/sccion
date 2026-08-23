@@ -6,9 +6,15 @@ name: Benchmarks
 
 on:
   pull_request:
+  # `main` only, for two reasons. CodSpeed compares a pull request against the
+  # base branch's last run, so pushes here are the baseline and cannot simply be
+  # dropped. And the previous pattern was `'*'`, which does not match a branch
+  # name containing a slash -- so `ci/enable-actions` never benchmarked while
+  # `some-branch` would have. Naming the one branch that matters removes both
+  # the cost and the surprise.
   push:
     branches:
-      - '*'
+      - main
 
 permissions:
   contents: read # to fetch code (actions/checkout)

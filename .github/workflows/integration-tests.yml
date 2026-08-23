@@ -1,7 +1,14 @@
 # SPDX-License-Identifier: Apache-2.0
 
 name: integration-tests
-on: [ push, pull_request ]
+# Not every push. These stand up docker-compose services and are the slowest
+# thing here, so they run where the answer changes something: a pull request,
+# and whatever lands on `main`.
+on:
+  pull_request:
+  push:
+    branches:
+      - main
 # If you want to add integration tests for linux-based binary,
 # please, use the following files:
 # - tests/integration/Makefile
