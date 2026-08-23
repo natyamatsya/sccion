@@ -108,3 +108,81 @@ pub fn clone_or_copy(src: &Path, dst: &Path) -> std::io::Result<bool> {
         }
     }
 }
+
+/// What cloning would be worth on APFS, which has no implementation here.
+///
+/// The module above is `#[cfg(windows)]` in its entirety, so every cache hit on
+/// macOS copies its bytes. This is the measurement that says whether that is
+/// worth changing, kept next to the gap it describes rather than in a shell
+/// script nobody runs. A stopwatch, not an assertion:
+///
+/// ```text
+/// cargo test --release --lib clone_versus_copy -- --ignored --nocapture
+/// ```
+///
+/// `clonefile` is a metadata operation: it does not scale with size, so the
+/// interesting column is the ratio at the sizes real objects are. Measured
+/// in-process for a reason -- `cp -c` against `cp` reports 31 ms against 32,
+/// which is two process spawns and no information.
+#[cfg(all(test, target_os = "macos"))]
+mod clone_versus_copy {
+    use std::io::{Read, Write};
+
+    fn clonefile(src: &std::path::Path, dst: &std::path::Path) -> std::io::Result<()> {
+        use std::os::unix::ffi::OsStrExt;
+        let c = |p: &std::path::Path| std::ffi::CString::new(p.as_os_str().as_bytes()).unwrap();
+        let (s, d) = (c(src), c(dst));
+        // SAFETY: both pointers are NUL-terminated and live across the call.
+        let rc = unsafe { libc::clonefile(s.as_ptr(), d.as_ptr(), 0) };
+        if rc == 0 {
+            Ok(())
+        } else {
+            Err(std::io::Error::last_os_error())
+        }
+    }
+
+    fn best(rounds: usize, mut f: impl FnMut()) -> f64 {
+        let mut best = f64::MAX;
+        for _ in 0..rounds {
+            let t = std::time::Instant::now();
+            f();
+            best = best.min(t.elapsed().as_secs_f64() * 1e3);
+        }
+        best
+    }
+
+    #[test]
+    #[ignore = "a stopwatch, not an assertion; run it deliberately"]
+    fn what_cloning_would_buy_on_apfs() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        println!("\nAPFS clonefile vs read/write copy, best of 50\n");
+
+        for size in [256 * 1024usize, 2 * 1024 * 1024, 32 * 1024 * 1024] {
+            let src = dir.path().join(format!("src_{size}"));
+            let dst = dir.path().join("dst");
+            std::fs::write(&src, vec![0xA5u8; size]).expect("write source");
+
+            let cloned = best(50, || {
+                let _ = std::fs::remove_file(&dst);
+                clonefile(&src, &dst).expect("clonefile");
+            });
+            let copied = best(50, || {
+                let _ = std::fs::remove_file(&dst);
+                let mut r = std::fs::File::open(&src).expect("open");
+                let mut w = std::fs::File::create(&dst).expect("create");
+                let mut buf = vec![0u8; 1 << 20];
+                loop {
+                    match r.read(&mut buf).expect("read") {
+                        0 => break,
+                        n => w.write_all(&buf[..n]).expect("write"),
+                    }
+                }
+            });
+            println!(
+                "  {:>5} KiB   clonefile {cloned:>7.3} ms   copy {copied:>7.3} ms   {:>5.1}x",
+                size / 1024,
+                copied / cloned,
+            );
+        }
+    }
+}

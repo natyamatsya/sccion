@@ -91,6 +91,11 @@ took the syscalls out. The conclusion still holds, but on the two structural
 costs rather than on the denominator. If the encoder is revisited, this is the
 paragraph to re-measure first.
 
+That 14% is a Windows figure, because the change that produced it is. On macOS
+the same decode is still about 1.2% of a lookup — see
+[macOS](#macos) — for the reason it was on Windows before: the syscalls are
+still the denominator there.
+
 ### The part that was worth fixing
 
 The same measurement found a real cost elsewhere. `StoragePutRaw` and
@@ -183,6 +188,82 @@ absolute and the code under test unreached; and extra results really are free
 when the newest one hits, so the cost needs a deliberately late miss to appear.
 Implementing from that first run would have optimised two paths the benchmark
 was not reaching.
+
+## macOS
+
+Everything above was measured on Windows, which is where the work was done. The
+numbers below are the same harnesses on macOS, and they are here because two of
+the conclusions do not carry across.
+
+Apple M2 Max, 12 cores, 32 GiB, macOS 27.0, APFS on the internal SSD,
+case-folding, Spotlight indexing on. Release builds; `--test-threads 1`, because
+`cargo test` runs the stopwatches concurrently by default and three of them on
+one machine measure each other.
+
+| shape | macOS |
+| --- | --- |
+| 200 includes | 1.75 ms (8.7 us each) |
+| 496 includes | 4.87 ms (9.8 us each) |
+| 2 000 includes | 19.36 ms (9.7 us each) |
+| 7 results, miss late | 5.72 ms |
+| 3 basedirs | 4.73 ms |
+| miss on the first include | 0.06 ms |
+| entry on disk, 496 | 79 819 B, decode 0.05 ms |
+
+Do not read these against the Windows table. Different machine, and the rule at
+the top of this page applies to itself: only the counters compare across
+machines, never the clock.
+
+What does transfer is the shape. A lookup here is **96–99% syscalls**:
+
+```
+   496 includes: lookup  4.86 = stats  4.65 + rest 0.21 (4%)  | decode 0.06
+  2000 includes: lookup 19.60 = stats 19.30 + rest 0.29 (1%)  | decode 0.23
+```
+
+Which is why entry decode is ~1.2% of a lookup here against ~14% on Windows.
+Nothing about the encoder differs; the denominator does. The directory-scan
+change that took the Windows syscalls down is `#[cfg(windows)]` —
+`DirEntry::metadata` off Windows still stats per file, so there is nothing to
+win — and macOS therefore still sits where Windows sat before it.
+
+`file_stat_matches` is **off by default and worth 2.5–2.7x**: 1.85 ms against
+4.92 at 200 includes, 4.74 against 11.85 at 496. The default is the slow path.
+
+**Block cloning does not exist here.** `blockclone/` is entirely
+`#[cfg(windows)]`, so every cache hit on macOS copies its bytes; `hit_cost`
+reports `cloned 0` on every row. APFS would take it — `clonefile` is a metadata
+operation and does not scale with size:
+
+| size | `clonefile` | read/write copy | |
+| --- | --- | --- | --- |
+| 256 KiB | 0.163 ms | 0.198 ms | 1.2x |
+| 2 MiB | 0.164 ms | 0.654 ms | 4.0x |
+| 32 MiB | 0.163 ms | 8.859 ms | 54x |
+
+The harness is `clone_versus_copy` in `src/blockclone/mod.rs`, beside the gap it
+describes:
+
+```
+cargo test --release --lib clone_versus_copy -- --ignored --nocapture
+```
+
+Best of 50, in-process for a reason. Measure it with `cp -c` against `cp`
+instead and you get 31 ms against 32 ms, which is two process spawns and no
+information.
+
+That is not 64x off a cache hit, and the gap should be sized before anyone acts
+on it: delivering a 2 MiB uncompressed object costs 2.48 ms today, about seven
+times the raw copy of the same bytes, so most of that time is not byte movement
+and cloning would not touch it. What the table says is that the byte movement
+itself can be made free, as it already is on Windows.
+
+Reading the divan suite (`cargo bench`): `strip_basedirs_multiple` reports a
+median of 17.6 us and a **slowest of 44 ms**, reproducibly. That is the one-time
+case-folding probe — `strip_basedirs` asks `basedir_folds_case`, which probes the
+filesystem once per basedir and caches the answer in `FOLDING`. The benchmark's
+basedirs do not exist, so the probe walks to the volume root. Read the median;
+the mean is one cold sample smeared across a hundred.
 
 ## Checking the machine
 
