@@ -36,11 +36,13 @@ information.
 > **`SCCACHE_*` still works.** The documentation below spells every setting
 > `SCCION_*`, and every one of them is also read under its `SCCACHE_*` name,
 > meaning exactly the same thing. `SCCION_` wins if both are set, and a
-> disagreement between them is logged rather than settled in silence. The
-> configuration file's location and the cache directory keep their names
-> outright. The one thing to rename is the project file, `.sccache.toml` ->
-> `.sccion.toml`: it never existed in sccache, so there is no older setup for
-> it to be compatible with.
+> disagreement between them is logged rather than settled in silence. The two
+> variables naming the configuration file itself -- `SCCACHE_CONF` and
+> `SCCACHE_CACHED_CONF` -- keep their names outright, being read before there is
+> any configuration to say otherwise; everything else, the cache directory
+> included, answers to both spellings. The one thing to rename is the project
+> file, `.sccache.toml` -> `.sccion.toml`: it never existed in sccache, so there
+> is no older setup for it to be compatible with.
 
 ---
 
@@ -140,8 +142,6 @@ in `$HOME/.cargo/config.toml` by adding:
 rustc-wrapper = "/path/to/sccion"
 ```
 
-Note that you need to use cargo 1.40 or newer for this to work.
-
 Alternatively you can use the environment variable `RUSTC_WRAPPER`:
 
 ```bash
@@ -175,7 +175,7 @@ To use sccion with cmake, provide the following command line arguments to cmake 
 -DCMAKE_CXX_COMPILER_LAUNCHER=sccion
 ```
 
-The process for using sccion with MSVC and cmake, depends on which version of cmake you're using. **For versions of cmake 3.24 and earlier**, to generate PDB files for debugging with MSVC, you can use the [`/Z7` option](https://docs.microsoft.com/en-us/cpp/build/reference/z7-zi-zi-debug-information-format?view=msvc-160). Alternatively, the `/Zi` option together with `/Fd` can work if `/Fd` names a different PDB file name for each object file created. Note that CMake sets `/Zi` by default, so if you use CMake, you can use `/Z7` by adding code like this in your CMakeLists.txt:
+The process for using sccion with MSVC and cmake, depends on which version of cmake you're using. **For versions of cmake 3.24 and earlier**, to generate PDB files for debugging with MSVC, you can use the [`/Z7` option](https://docs.microsoft.com/en-us/cpp/build/reference/z7-zi-zi-debug-information-format?view=msvc-160). Alternatively, the `/Zi` option together with `/Fd` can work if `/Fd` names a different PDB file name for each object file created. It will not work if `/FS` is also passed: that flag is the build system stating that several compilations write the one PDB, so sccion declines to cache them rather than capture a file the others are still writing. CMake with Ninja passes `/FS` for exactly that reason, which makes `/Z7` the only option there. Note that CMake sets `/Zi` by default, so if you use CMake, you can use `/Z7` by adding code like this in your CMakeLists.txt:
 
 ```cmake
 if(CMAKE_BUILD_TYPE STREQUAL "Debug")
@@ -239,7 +239,7 @@ By default, `sccion` builds with support for all storage backends, but individua
 
 ### Building portable binaries
 
-When building with the `dist-server` feature, `sccion` will depend on OpenSSL, which can be an annoyance if you want to distribute portable binaries. It is possible to statically link against OpenSSL using the `openssl/vendored` feature.
+When building with the `dist-server` feature, `sccion` will depend on OpenSSL, which can be an annoyance if you want to distribute portable binaries. It is possible to statically link against OpenSSL using the `vendored-openssl` feature.
 
 #### Linux
 
@@ -297,7 +297,7 @@ You can also set these environment variables for your build system, for example
 
     SCCION_ERROR_LOG=/tmp/sccion_log.txt SCCION_LOG=debug cmake --build /path/to/cmake/build/directory
 
-Alternatively, if you are compiling locally, you can run the server manually in foreground mode by running `SCCION_START_SERVER=1 SCCION_NO_DAEMON=1 sccion`, and send logging to stderr by setting the [`SCCION_LOG` environment variable](https://docs.rs/env_logger/0.7.1/env_logger/#enabling-logging) for example. This method is not suitable for CI services because you need to compile in another shell at the same time.
+Alternatively, if you are compiling locally, you can run the server manually in foreground mode by running `SCCION_START_SERVER=1 SCCION_NO_DAEMON=1 sccion`, and send logging to stderr by setting the [`SCCION_LOG` environment variable](https://docs.rs/env_logger/latest/env_logger/#enabling-logging) for example. This method is not suitable for CI services because you need to compile in another shell at the same time.
 
     SCCION_LOG=debug SCCION_START_SERVER=1 SCCION_NO_DAEMON=1 sccion
 
