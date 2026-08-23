@@ -18,14 +18,20 @@ use serde::{Deserialize, Serialize};
 /// not be found by the new client, which is the intended outcome: stop it with
 /// `sccion --stop-server`.
 ///
-/// **Only Windows actually enforces this**, because the pipe name is the only
-/// rendezvous that carries it. Off Windows the client finds the daemon on a
-/// fixed TCP port with no version in it, so a stale daemon is found and its
-/// bytes are misread -- the silent misinterpretation described above, which
-/// this constant exists to prevent and does not. Hence the allow: the constant
-/// is genuinely unreachable here, and that is the bug, not the warning.
-#[cfg_attr(not(windows), allow(dead_code))]
-pub const PROTOCOL_VERSION: u32 = 3;
+/// Windows carries it in the pipe name, so a mismatched pair never finds each
+/// other. Every other transport rendezvous on an address with no version in it
+/// -- a fixed TCP port, or a socket path the user chose -- so off Windows the
+/// check has to happen on the connection instead: [`Request::ProtocolVersion`]
+/// is the first thing a client asks, and a daemon answering anything else is
+/// refused before it is handed any real work.
+///
+/// That has to work against a daemon too old to know the question, which is the
+/// case worth handling: a daemon is long-lived and a client is one compile, so
+/// the mismatch is nearly always a new client meeting an old daemon. bincode
+/// rejects an unknown enum discriminant with `InvalidTagEncoding` rather than
+/// guessing at it, so an older daemon fails the request outright and the client
+/// can say which remedy applies.
+pub const PROTOCOL_VERSION: u32 = 4;
 use std::ffi::OsString;
 
 /// A client request.
@@ -87,6 +93,13 @@ pub enum Request {
     /// process's own directory, which for the MCP adapter is wherever it
     /// happened to be launched.
     DescribeWorkspace { handle: String },
+
+    /// What protocol version is the daemon speaking?
+    ///
+    /// Appended last on purpose. A daemon built before this variant existed
+    /// cannot decode the discriminant and fails the request, which is exactly
+    /// the answer the caller needs: not a daemon it can talk to.
+    ProtocolVersion,
 }
 
 /// A server response.
@@ -129,6 +142,9 @@ pub enum Response {
     Workspace(Result<WorkspaceInfo, String>),
     /// Response for `Request::GetMissRecords`.
     MissRecords(Result<Vec<MissRecord>, String>),
+
+    /// Response for `Request::ProtocolVersion`.
+    ProtocolVersion(u32),
 }
 
 /// A registered workspace, and the handle that names it.

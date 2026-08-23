@@ -18,12 +18,11 @@ architectures (see [Multi-Level Cache](docs/MultiLevel.md)).
 > may not mean the same program. The on-disk cache format is not stable — the
 > entry version byte is at 3, and each bump so far has discarded every entry
 > written before it, which costs one cold build and is meant to. The
-> client and daemon share a protocol version that **only Windows enforces**,
-> where it rides in the pipe name; everywhere else the client finds a daemon on
-> a fixed port with no version in it, so one left running across an upgrade is
-> found and its messages are misread rather than rejected. Run `sccion
-> --stop-server` after pulling. Defaults and measurements move as the work
-> continues.
+> client and daemon check that they speak the same protocol, and refuse each
+> other when they do not — so a daemon left running across an upgrade is
+> reported rather than obeyed. The remedy is what the error says: `sccion
+> --stop-server`, and the next command starts one that matches. Defaults and
+> measurements move as the work continues.
 >
 > Mozilla's [sccache](https://github.com/mozilla/sccache) is the maintained
 > project, and is what you want if you need one. See [Lineage](#lineage).

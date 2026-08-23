@@ -100,7 +100,25 @@ impl Daemon {
     /// Read-only questions use this: starting a daemon in order to ask it for
     /// statistics would report the statistics of the daemon just started, which
     /// is a confident zero rather than an answer.
+    ///
+    /// Verified, because an answer from a daemon speaking a different protocol
+    /// is not a smaller answer than expected -- it is bincode reading one
+    /// schema's bytes as another's, which produces a number rather than an
+    /// error.
     pub fn connect(&self) -> Result<ServerConnection> {
+        let mut conn = connect_to_server(&self.addr)?;
+        crate::client::verify_protocol_version(&mut conn)?;
+        Ok(conn)
+    }
+
+    /// Connect to whatever is listening, protocol be damned.
+    ///
+    /// Exactly one caller, and it needs to be this way: the remedy for a daemon
+    /// speaking the wrong protocol is to stop it, so the command that stops it
+    /// cannot be gated on the check it exists to resolve. `Request::Shutdown`
+    /// has held the same discriminant since the first version, so every daemon
+    /// that could be stale still understands it.
+    fn connect_unverified(&self) -> Result<ServerConnection> {
         Ok(connect_to_server(&self.addr)?)
     }
 
@@ -119,6 +137,16 @@ impl Daemon {
     pub fn stats_or_empty(&self, config: &Config) -> Result<ServerInfo> {
         match self.connect() {
             Ok(conn) => request_stats(conn).context("failed to get stats from server"),
+            // A daemon on the wrong protocol has real statistics that cannot be
+            // read. Reporting an empty set for it would answer the question
+            // with a confident zero, which is what the daemon being unreadable
+            // was supposed to stop.
+            Err(e)
+                if e.downcast_ref::<crate::client::ProtocolMismatch>()
+                    .is_some() =>
+            {
+                Err(e)
+            }
             Err(_) => {
                 let runtime = crate::util::new_client_runtime()?;
                 let storage = crate::cache::storage_from_config(config, runtime.handle()).ok();
@@ -132,7 +160,7 @@ impl Daemon {
     }
 
     pub fn shutdown(&self) -> Result<ServerInfo> {
-        request_shutdown(self.connect()?)
+        request_shutdown(self.connect_unverified()?)
     }
 
     pub fn dist_status(&self) -> Result<DistInfo> {

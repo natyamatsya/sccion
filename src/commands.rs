@@ -318,7 +318,14 @@ pub(crate) fn connect_or_start_server(
 ) -> Result<ServerConnection> {
     trace!("connect_or_start_server({addr})");
     match connect_to_server(addr) {
-        Ok(server) => Ok(server),
+        Ok(mut server) => {
+            // Connecting proved only that something is listening. Off Windows
+            // the address carries no version, so this is where a daemon left
+            // running across an upgrade is caught -- before it is handed a
+            // compile whose bytes it would read against an older schema.
+            crate::client::verify_protocol_version(&mut server)?;
+            Ok(server)
+        }
         Err(ref e)
             if (e.kind() == io::ErrorKind::ConnectionRefused
                 || e.kind() == io::ErrorKind::TimedOut)
@@ -344,7 +351,11 @@ pub(crate) fn connect_or_start_server(
                     reason
                 ),
             }
-            let server = connect_with_retry(addr)?;
+            let mut server = connect_with_retry(addr)?;
+            // The daemon we just started is this build's, so this should never
+            // fire -- unless another one won the race for the address, which is
+            // exactly the case worth catching rather than assuming away.
+            crate::client::verify_protocol_version(&mut server)?;
             Ok(server)
         }
         Err(e) => Err(e.into()),

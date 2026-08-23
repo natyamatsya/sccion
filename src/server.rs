@@ -953,6 +953,9 @@ where
                         Message::WithoutBody(Response::ShuttingDown(Box::new(info)))
                     })
                 }
+                Request::ProtocolVersion => Ok(Message::WithoutBody(Response::ProtocolVersion(
+                    crate::protocol::PROTOCOL_VERSION,
+                ))),
                 Request::StorageHandshake => {
                     debug!("handle_client: storage_handshake");
                     let info = StorageHandshakeInfo {
