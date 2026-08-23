@@ -207,25 +207,34 @@ impl std::error::Error for DecompressionFailure {}
 /// of the whole extract -- 2.48 ms against 0.83 for the same bytes moved in
 /// megabyte strides.
 ///
-/// Sized to the member rather than fixed, so a small object does not allocate a
-/// megabyte to move 40 KiB, and capped above because past a megabyte the reads
-/// are already amortised.
+/// Small members keep `io::copy`, which is already one read for them and
+/// allocates nothing at all; only members big enough to pay for a buffer get
+/// one, sized to the member and capped where the reads are already amortised.
+/// Every cache hit restores a dependency file beside the object, and those are
+/// a few kilobytes -- charging them a 64 KiB allocation to move 200 bytes is a
+/// regression against the `io::copy` this replaced.
 ///
-/// The lower clamp is not a tuning choice. `size` comes from the zip central
-/// directory, which is data in the entry rather than a fact about it, and a
-/// zero there would size the buffer at zero -- `read` into an empty slice
-/// returns `Ok(0)`, the loop below would take that for end of input, and the
-/// object would be written out empty with no error anywhere. `MIN` is what
-/// stops a claimed length from deciding whether any bytes get copied at all.
+/// Splitting there also removes a hazard rather than guarding it. `size` comes
+/// from the zip central directory, which is data *in* the entry rather than a
+/// fact about it. A zero there once sized the buffer at zero -- `read` into an
+/// empty slice returns `Ok(0)`, the loop below takes that for end of input, and
+/// the object is written out empty with no error anywhere. A claimed zero is now
+/// simply small, and `io::copy` reads to end of input without consulting it.
 ///
 /// `try_from` rather than `as`: `usize` is 32 bits on the i686 and armv7 targets
 /// this ships to, where a cast would truncate a large `size` to an arbitrary
-/// small one and land on the wrong side of the clamp.
+/// small one and pick a buffer from whichever low bits survived.
 fn copy_buffered<R: Read, W: Write>(from: &mut R, to: &mut W, size: u64) -> std::io::Result<()> {
-    const MIN: usize = 64 * 1024;
+    /// At or below this, `io::copy`'s own stack buffer is a single read.
+    const SMALL: u64 = 8 * 1024;
     const MAX: usize = 1024 * 1024;
+
+    if size <= SMALL {
+        std::io::copy(from, to)?;
+        return Ok(());
+    }
     let wanted = usize::try_from(size).unwrap_or(usize::MAX);
-    let mut buf = vec![0u8; wanted.clamp(MIN, MAX)];
+    let mut buf = vec![0u8; wanted.min(MAX)];
     loop {
         let n = from.read(&mut buf)?;
         if n == 0 {
@@ -616,10 +625,11 @@ mod tests {
     ///
     /// `copy_buffered` sizes its buffer from the zip member's declared size,
     /// which is data inside the entry rather than a fact about it. A zero there
-    /// would give a zero-length buffer, `read` into an empty slice returns
-    /// `Ok(0)`, and the loop would read that as end of input -- writing an empty
-    /// object out and reporting success. The lower clamp is what prevents that,
-    /// so this asserts the clamp rather than the arithmetic.
+    /// once gave a zero-length buffer, `read` into an empty slice returns
+    /// `Ok(0)`, and the loop read that as end of input -- writing an empty
+    /// object out and reporting success. Small sizes now go to `io::copy`, which
+    /// never consults the number, so the answer no longer depends on it being
+    /// honest. That is the property under test, not the arithmetic.
     #[test]
     fn a_bogus_declared_size_still_copies_every_byte() {
         let payload: Vec<u8> = (0..300_000u32).map(|i| (i % 251) as u8).collect();
