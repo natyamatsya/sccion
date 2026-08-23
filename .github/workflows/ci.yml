@@ -9,6 +9,14 @@ on:
   # history -- every workflow reported `state=active` while nothing could run --
   # and there was no way to prove the fix without pushing something.
   workflow_dispatch:
+    inputs:
+      cuda:
+        description: >-
+          Install nvcc and run the CUDA tests. Off by default: the hosted
+          runners have no usable CUDA toolchain, so these fail on every run and
+          teach people to ignore a red tick.
+        type: boolean
+        default: false
 
 # One run per ref at a time. Three workflows fire on every push here, so a
 # branch pushed twice in a minute was paying for two full matrices and reading
@@ -181,7 +189,12 @@ jobs:
           echo 'clang version:'
           clang --version
 
-      - if: ${{ matrix.cuda != '' && (runner.os == 'Linux' || runner.os == 'Windows') }}
+      # Without nvcc on PATH, `find_cuda_compilers` returns nothing and
+      # `test_cuda_sccache_command` warns and skips -- so gating the install is
+      # all it takes to make CUDA opt-in. The matrix entries stay: on Windows
+      # they are the only test jobs there is, and dropping them would take every
+      # Windows toolchain with them.
+      - if: ${{ matrix.cuda != '' && inputs.cuda && (runner.os == 'Linux' || runner.os == 'Windows') }}
         name: Install nvcc
         uses: ./.github/actions/nvcc-toolchain
         with:
@@ -255,7 +268,11 @@ jobs:
           grcov . -s . --binary-path $BINARY_DIR --output-type lcov --output-path "${COVERAGE_REPORT_FILE}" --branch $GRCOV_IGNORE_OPTION $GRCOV_EXCLUDE_OPTION
           echo "report=${COVERAGE_REPORT_FILE}" >> $GITHUB_OUTPUT
 
+      # After the tests, and not a verdict on them. A private repository has no
+      # CODECOV_TOKEN, so this fails on every run and turns a green test job
+      # red -- which is how a team learns to stop reading the tick.
       - name: Upload coverage results (to Codecov.io)
+        continue-on-error: true
         if: ${{ ! matrix.no_coverage }}
         uses: codecov/codecov-action@v5
         with:
