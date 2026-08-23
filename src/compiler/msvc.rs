@@ -661,9 +661,17 @@ pub fn parse_arguments(
             | Some(UsePch(_))
             | Some(PchPath(_))
             | Some(PassThrough)
-            | Some(SharedPdb)
             | Some(PassThroughWithPath(_))
             | Some(PassThroughWithSuffix(_)) => common_args.extend(
+                arg.normalize(NormalizedDisposition::Concatenated)
+                    .iter_os_strings(),
+            ),
+            // Reaches the compiler, stays out of the key. -FS only means
+            // anything alongside -Zi, and -Zi with -FS is refused below as a
+            // shared PDB -- so in every compilation that does get cached, the
+            // flag is inert. Hashing it would split the key between a build that
+            // passes it and one that does not, for objects that are identical.
+            Some(SharedPdb) => unhashed_args.extend(
                 arg.normalize(NormalizedDisposition::Concatenated)
                     .iter_os_strings(),
             ),
@@ -2260,9 +2268,20 @@ mod test {
     /// used to be dropped on the reasoning that a `-Fd` PDB is private, and a
     /// real build then died with C1041 on a command line that plainly said
     /// `/FS` -- the compiler never saw it.
+    /// Every argument that reaches the compiler, whichever bucket carries it.
+    ///
+    /// `generate_compile_commands` concatenates `preprocessor_args`,
+    /// `dependency_args`, `unhashed_args` and `common_args`, so "does the
+    /// compiler see this flag" is a question about the union and not about any
+    /// one of them. Which bucket a flag lands in is a separate question, asked
+    /// separately below.
     fn fs_survives(args: Vec<OsString>) -> Vec<OsString> {
         match parse_arguments(args) {
-            CompilerArguments::Ok(parsed) => parsed.common_args,
+            CompilerArguments::Ok(parsed) => {
+                let mut all = parsed.common_args;
+                all.extend(parsed.unhashed_args);
+                all
+            }
             o => panic!("Got unexpected parse result: {:?}", o),
         }
     }
@@ -2283,6 +2302,38 @@ mod test {
         assert!(
             common.iter().any(|a| a == "/FS" || a == "-FS"),
             "/FS must be passed on when several compilations share one PDB; got {common:?}"
+        );
+    }
+
+    /// Reaching the compiler and reaching the cache key are different things.
+    ///
+    /// `/FS` is only meaningful next to `/Zi`, and `/Zi` with `/FS` is refused
+    /// as a shared PDB -- so every compilation that gets cached is one where the
+    /// flag does nothing. Hashing it would give a build that passes it and a
+    /// build that does not two keys for the same object.
+    #[test]
+    fn test_parse_arguments_fs_is_not_hashed() {
+        let parsed = match parse_arguments(ovec![
+            "-c",
+            "foo.c",
+            "-Z7",
+            "-Fdshared.pdb",
+            "/FS",
+            "-Fofoo.obj"
+        ]) {
+            CompilerArguments::Ok(parsed) => parsed,
+            o => panic!("Got unexpected parse result: {:?}", o),
+        };
+        let is_fs = |a: &OsString| a == "/FS" || a == "-FS";
+        assert!(
+            !parsed.common_args.iter().any(is_fs),
+            "/FS is hashed with common_args; got {:?}",
+            parsed.common_args
+        );
+        assert!(
+            parsed.unhashed_args.iter().any(is_fs),
+            "/FS must still reach the compiler, unhashed; got {:?}",
+            parsed.unhashed_args
         );
     }
 
