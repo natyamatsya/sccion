@@ -1152,6 +1152,7 @@ mod client {
                 // Disable connection pool to avoid broken connection
                 // between runtime
                 .pool_max_idle_per_host(0)
+                .tls_certs_merge(crate::util::bundled_root_certs())
                 .build()
                 .context("failed to create an async HTTP client")?;
             let client_toolchains =

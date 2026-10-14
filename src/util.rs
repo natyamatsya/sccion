@@ -1142,8 +1142,41 @@ pub fn daemonize() -> Result<()> {
 pub fn new_reqwest_blocking_client() -> reqwest::blocking::Client {
     reqwest::blocking::Client::builder()
         .pool_max_idle_per_host(0)
+        .tls_certs_merge(bundled_root_certs())
         .build()
         .expect("http client must build with success")
+}
+
+/// Root certificates compiled into the binary, for a system that has none.
+///
+/// reqwest 0.13's `rustls` verifies against the OS trust store alone, and on
+/// Linux an empty store fails `build()` itself -- not the first handshake -- so
+/// a container without `ca-certificates` cannot construct a client even to
+/// speak plain HTTP. That is how `sccion-dist` came to panic at startup in the
+/// dist tests' image. 0.12's `rustls-tls` carried the Mozilla roots alongside
+/// the system's; merging them here puts that back, and the verifier then
+/// trusts the union, exactly as it did.
+///
+/// Only where the store can be empty. On macOS and Windows there is always
+/// one, and roots handed to the verifier there are trusted regardless of the
+/// user's own trust settings -- so a CA someone deliberately distrusted would
+/// quietly come back. Those platforms get none.
+#[cfg(feature = "reqwest")]
+pub fn bundled_root_certs() -> Vec<reqwest::Certificate> {
+    #[cfg(all(unix, not(target_vendor = "apple"), not(target_os = "android")))]
+    {
+        static ROOTS: LazyLock<Vec<reqwest::Certificate>> = LazyLock::new(|| {
+            webpki_root_certs::TLS_SERVER_ROOT_CERTS
+                .iter()
+                .filter_map(|der| reqwest::Certificate::from_der(der).ok())
+                .collect()
+        });
+        ROOTS.clone()
+    }
+    #[cfg(not(all(unix, not(target_vendor = "apple"), not(target_os = "android"))))]
+    {
+        Vec::new()
+    }
 }
 
 fn unhex(b: u8) -> std::io::Result<u8> {

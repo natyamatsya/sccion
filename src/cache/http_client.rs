@@ -12,6 +12,10 @@ use reqwest::ClientBuilder;
 /// is the same client reaching the same requests by another route.
 pub fn set_user_agent() -> OperationContext {
     let user_agent = format!("{}/{}", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"));
-    let client = ClientBuilder::new().user_agent(user_agent).build().unwrap();
+    let client = ClientBuilder::new()
+        .user_agent(user_agent)
+        .tls_certs_merge(crate::util::bundled_root_certs())
+        .build()
+        .unwrap();
     OperationContext::new().with_http_transport(HttpTransporter::new(ReqwestTransport::new(client)))
 }
