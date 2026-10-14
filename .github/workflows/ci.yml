@@ -28,8 +28,14 @@ on:
 # when one of them turns out to have broken something. A tag is emphatically not
 # that -- the `release` job runs there, and a cancelled release is a tag with no
 # artifacts. Both keep every run; branches cancel.
+#
+# Keeping every run takes more than `cancel-in-progress: false`, which only
+# spares the run already going. A group holds one running and one pending run,
+# and a newly queued run cancels the pending one whatever that flag says -- so
+# three pushes to `main` inside one run's length lost the middle commit. `main`
+# and tags therefore get a group per run and never contend at all.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.ref }}${{ (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/')) && format('-{0}', github.run_id) || '' }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' && !startsWith(github.ref, 'refs/tags/') }}
 
 jobs:
