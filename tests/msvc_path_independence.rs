@@ -48,6 +48,24 @@ fn compile(cl: &Path, src_root: &Path, obj: &Path, trim: bool) -> Option<Vec<u8>
     fs::read(obj).ok()
 }
 
+/// `p` spelled the way cl.exe records it: long names, no verbatim prefix.
+///
+/// The temp directory comes from `TEMP`, and on the GitHub runner that is
+/// `C:\Users\RUNNER~1\...` -- an 8.3 short name -- while cl records sources
+/// under the long form, `C:\Users\runneradmin\...`. A `/d1trimfile:` prefix
+/// spelled the short way matches nothing, so the test failed there and passed
+/// on any machine whose temp path happened to have no short component.
+/// `canonicalize` resolves the short names but answers in verbatim form,
+/// `\\?\C:\...`, which cl does not write either; for a drive path that prefix
+/// means nothing and can go.
+fn long_path(p: &Path) -> PathBuf {
+    let canon = fs::canonicalize(p).expect("canonicalize");
+    match canon.to_str().and_then(|s| s.strip_prefix(r"\\?\")) {
+        Some(s) if !s.starts_with(r"UNC\") => PathBuf::from(s),
+        _ => canon,
+    }
+}
+
 fn occurrences(haystack: &[u8], needle: &str) -> usize {
     let n = needle.as_bytes();
     if n.is_empty() || haystack.len() < n.len() {
@@ -80,7 +98,7 @@ fn msvc_trims_paths_out_of_debug_info() {
     };
 
     let tmp = tempfile::tempdir().expect("tempdir");
-    let root = tmp.path();
+    let root = &long_path(tmp.path());
     // Distinctive, and equal length, so one cannot accidentally substring the
     // other and mask a failure.
     let (a, b) = (root.join("wt-aaa"), root.join("wt-bbb"));
