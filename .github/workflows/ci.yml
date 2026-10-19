@@ -292,10 +292,18 @@ jobs:
         env:
           ACTIONS_RESULTS_URL: ${{ env.CI_CACHE_RESULTS_URL }}
           ACTIONS_RUNTIME_TOKEN: ${{ env.CI_CACHE_RUNTIME_TOKEN }}
+          # Upstream sccache talks to the current cache service only when told
+          # to; without this it uses the retired v1 API and every write fails.
+          # Run 39325360573: 794 misses, 794 write errors, nothing stored.
+          # mozilla-actions/sccache-action sets it unconditionally too.
+          ACTIONS_CACHE_SERVICE_V2: "on"
           SCCACHE_GHA_ENABLED: "on"
           SCCACHE_GHA_VERSION: sccion-ci-1
           SCCACHE_SERVER_PORT: "4227"
           SCCACHE_IDLE_TIMEOUT: "0"
+          # Why a write failed, which the counts alone cannot say.
+          SCCACHE_LOG: warn
+          SCCACHE_ERROR_LOG: ${{ runner.temp }}/sccache.log
         run: |
           set -euo pipefail
           version=v0.18.0
@@ -329,12 +337,22 @@ jobs:
           SCCACHE_IGNORE_SERVER_IO_ERROR: "1"
           RUSTFLAGS: "-Cinstrument-coverage -Ccodegen-units=1 -Copt-level=0 -Coverflow-checks=off"
 
+      # A cache that stores nothing costs nothing visible -- the build passes,
+      # only slower -- so failed writes are raised as a warning here, with the
+      # server's own account of why, rather than left in the stats.
       - name: Stop the compiler cache
         if: ${{ always() && env.CI_SCCACHE != '' }}
         shell: bash
         env:
           SCCACHE_SERVER_PORT: "4227"
-        run: '"$CI_SCCACHE" --stop-server'
+        run: |
+          stats=$("$CI_SCCACHE" --stop-server) || true
+          echo "$stats"
+          errors=$(awk '/^Cache write errors/ {print $NF}' <<< "$stats")
+          if [ "${errors:-0}" != 0 ]; then
+            echo "::warning title=Compiler cache::$errors cache writes failed; later runs will not hit"
+            tail -n 20 "$RUNNER_TEMP/sccache.log" 2>/dev/null || true
+          fi
 
       # Built by the step above; cargo does not count the wrapper toward
       # freshness, so dropping it here recompiles nothing.
