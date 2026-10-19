@@ -478,8 +478,10 @@ impl DistSystem {
                     env::set_var("SCCACHE_LOG", "sccache=trace");
                 }
                 env_logger::try_init().unwrap();
-                server.start().unwrap();
-                unreachable!();
+                // `start` returns only to fail -- its success type is
+                // `Infallible` -- so the error is the only thing to unwrap.
+                let Err(e) = server.start();
+                panic!("dist server stopped: {e:?}");
             }
         };
 

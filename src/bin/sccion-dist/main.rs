@@ -230,8 +230,10 @@ fn run(command: Command) -> Result<i32> {
                 check_client_auth,
                 check_server_auth,
             );
-            http_scheduler.start()?;
-            unreachable!();
+            // `start` returns only to fail -- its success type is
+            // `Infallible` -- so its error is this command's result.
+            let Err(e) = http_scheduler.start();
+            Err(e)
         }
 
         Command::Server(server_config::Config {
@@ -309,8 +311,10 @@ fn run(command: Command) -> Result<i32> {
                 server,
             )
             .context("Failed to create sccache HTTP server instance")?;
-            http_server.start()?;
-            unreachable!();
+            // `start` returns only to fail -- its success type is
+            // `Infallible` -- so its error is this command's result.
+            let Err(e) = http_server.start();
+            Err(e)
         }
     }
 }
