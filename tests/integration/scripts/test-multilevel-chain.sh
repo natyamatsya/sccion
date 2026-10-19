@@ -66,12 +66,12 @@ export SCCACHE_MEMCACHED_KEY_PREFIX="/chain-test-l2/"
 
 # L3: S3 configuration
 export SCCACHE_BUCKET="test"
-export SCCACHE_ENDPOINT="http://minio:9000"
+export SCCACHE_ENDPOINT="http://s3:9000"
 export SCCACHE_REGION="us-east-1"
 export SCCACHE_S3_USE_SSL="false"
 export SCCACHE_S3_KEY_PREFIX="chain-test-l3/"
-export AWS_ACCESS_KEY_ID="minioadmin"
-export AWS_SECRET_ACCESS_KEY="minioadmin"
+export AWS_ACCESS_KEY_ID="sccion"
+export AWS_SECRET_ACCESS_KEY="sccion-secret"
 
 # Flush all remote backends using docker commands if available, otherwise skip
 echo "Flushing all cache levels..."
