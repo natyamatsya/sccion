@@ -36,6 +36,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     strategy:
+      # One mode failing says nothing about the other.
+      fail-fast: false
       matrix:
         mode:
           - simulation
@@ -53,8 +55,19 @@ jobs:
         shell: bash
         run: cargo install cargo-codspeed --locked
 
+      # The release profile ships fat LTO with one codegen unit, and
+      # cargo-codspeed adds `-Cdebuginfo=2 -Cstrip=none` on top. Together they
+      # peaked at 9.9 GB building the bench target (measured), past what this
+      # runner has: both attempts so far were killed compiling `sccion` itself
+      # (runs 38653116191, 39325360532). Thin LTO over 16 units peaked at
+      # 4.3 GB, in a third of the time. Only this build: the shipped binaries
+      # keep fat LTO, and CodSpeed compares a change against a base built the
+      # same way, which is what its numbers mean.
       - name: Build benchmarks
         shell: bash
+        env:
+          CARGO_PROFILE_RELEASE_LTO: thin
+          CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
         run: cargo codspeed build
 
       - name: Run benchmarks
