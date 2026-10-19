@@ -5,6 +5,11 @@
 //!
 //! Any copyright is dedicated to the Public Domain.
 //! http://creativecommons.org/publicdomain/zero/1.0/
+
+// Every test here checks one cloud backend's arguments, so without those
+// backends there is nothing to compile, and the imports would only warn.
+#![cfg(any(feature = "gcs", feature = "s3"))]
+
 pub mod helpers;
 
 use anyhow::Result;
@@ -14,14 +19,11 @@ use predicates::prelude::*;
 use serial_test::serial;
 use std::process::Command;
 
-#[macro_use]
-extern crate log;
-
 #[test]
 #[serial]
 #[cfg(feature = "gcs")]
 fn test_gcp_arg_check() -> Result<()> {
-    trace!("sccache with log");
+    log::trace!("sccache with log");
     stop_sccache()?;
 
     let mut cmd = Command::new(SCCACHE_BIN.as_os_str());

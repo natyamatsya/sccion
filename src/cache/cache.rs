@@ -48,13 +48,23 @@ use crate::cache::utils::normalize_key;
 #[cfg(feature = "webdav")]
 use crate::cache::webdav::WebdavCache;
 use crate::compiler::PreprocessorCacheEntry;
-use crate::config::Config;
-use crate::config::{self, CacheType, PreprocessorCacheModeConfig};
+#[cfg(any(
+    feature = "azure",
+    feature = "gcs",
+    feature = "gha",
+    feature = "memcached",
+    feature = "redis",
+    feature = "s3",
+    feature = "webdav",
+    feature = "oss",
+    feature = "cos"
+))]
+use crate::config::CacheType;
+use crate::config::{Config, PreprocessorCacheModeConfig};
 use async_trait::async_trait;
 use bytes::Bytes;
 use serde::{Deserialize, Serialize};
 
-use std::io;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -232,7 +242,7 @@ impl Storage for RemoteStorage {
     async fn get(&self, key: &str) -> Result<Cache> {
         match self.operator.read(&normalize_key(key)).await {
             Ok(res) => {
-                let hit = CacheRead::from(io::Cursor::new(res.to_bytes()))?;
+                let hit = CacheRead::from(std::io::Cursor::new(res.to_bytes()))?;
                 Ok(Cache::Hit(hit))
             }
             Err(e) if e.kind() == opendal::ErrorKind::NotFound => Ok(Cache::Miss),
@@ -400,7 +410,7 @@ pub fn build_single_cache(
 ) -> Result<Arc<dyn Storage>> {
     match cache_type {
         #[cfg(feature = "azure")]
-        CacheType::Azure(config::AzureCacheConfig {
+        CacheType::Azure(crate::config::AzureCacheConfig {
             connection_string,
             container,
             key_prefix,
@@ -413,7 +423,7 @@ pub fn build_single_cache(
             Ok(Arc::new(storage))
         }
         #[cfg(feature = "gcs")]
-        CacheType::GCS(config::GCSCacheConfig {
+        CacheType::GCS(crate::config::GCSCacheConfig {
             bucket,
             key_prefix,
             cred_path,
@@ -436,7 +446,7 @@ pub fn build_single_cache(
             Ok(Arc::new(storage))
         }
         #[cfg(feature = "gha")]
-        CacheType::GHA(config::GHACacheConfig {
+        CacheType::GHA(crate::config::GHACacheConfig {
             version, rw_mode, ..
         }) => {
             debug!("Init gha cache with version {version}");
@@ -447,7 +457,7 @@ pub fn build_single_cache(
             Ok(Arc::new(storage))
         }
         #[cfg(feature = "memcached")]
-        CacheType::Memcached(config::MemcachedCacheConfig {
+        CacheType::Memcached(crate::config::MemcachedCacheConfig {
             url,
             username,
             password,
@@ -469,7 +479,7 @@ pub fn build_single_cache(
             Ok(Arc::new(storage))
         }
         #[cfg(feature = "redis")]
-        CacheType::Redis(config::RedisCacheConfig {
+        CacheType::Redis(crate::config::RedisCacheConfig {
             endpoint,
             cluster_endpoints,
             username,

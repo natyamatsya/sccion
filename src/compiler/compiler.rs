@@ -1228,7 +1228,7 @@ where
 
     debug!("[{}]: Compiling locally", out_pretty);
     compile_cmd
-        .execute(&service, &creator)
+        .execute(service, &creator)
         .await
         .map(move |o| (cacheable, DistType::NoDist, o))
 }

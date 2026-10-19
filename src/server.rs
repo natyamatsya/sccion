@@ -182,7 +182,7 @@ impl DistClientContainer {
         if config.dist.scheduler_url.is_some() {
             warn!(
                 "Scheduler address configured but dist feature disabled, disabling distributed sccion"
-            )
+            );
         }
         Self {}
     }

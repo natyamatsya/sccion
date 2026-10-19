@@ -194,6 +194,14 @@ pub struct ParsedArguments {
 }
 
 /// A struct on which to hang a `Compilation` impl.
+//
+// `inputs`, `crate_link_paths`, `crate_types` and `dep_info` are read only on
+// the way to a distributed compile -- `into_dist_packagers` and the `OUT_DIR`
+// check in `generate_compile_commands` -- so without `dist-client` nothing
+// reads them. They stay rather than being gated like `rlib_dep_reader`,
+// because the values that fill them are computed regardless: the dep-info
+// path is also an output, and the source list comes out of the same join as
+// its hashes, so gating the fields would mean gating those bindings too.
 #[derive(Debug, Clone)]
 pub struct RustCompilation {
     /// The path to the rustc executable, not the rustup proxy.
@@ -208,16 +216,32 @@ pub struct RustCompilation {
     /// All arguments passed to rustc
     arguments: Vec<Argument<ArgData>>,
     /// The compiler inputs.
+    #[cfg_attr(
+        not(feature = "dist-client"),
+        allow(dead_code, reason = "read only for a distributed compile")
+    )]
     inputs: Vec<PathBuf>,
     /// The compiler outputs.
     outputs: HashMap<String, ArtifactDescriptor>,
     /// The directories searched for rlibs
+    #[cfg_attr(
+        not(feature = "dist-client"),
+        allow(dead_code, reason = "read only for a distributed compile")
+    )]
     crate_link_paths: Vec<PathBuf>,
     /// The crate name being compiled.
     crate_name: String,
     /// The crate types that will be generated
+    #[cfg_attr(
+        not(feature = "dist-client"),
+        allow(dead_code, reason = "read only for a distributed compile")
+    )]
     crate_types: CrateTypes,
     /// If dependency info is being emitted, the name of the dep info file.
+    #[cfg_attr(
+        not(feature = "dist-client"),
+        allow(dead_code, reason = "read only for a distributed compile")
+    )]
     dep_info: Option<PathBuf>,
     /// The current working directory
     cwd: PathBuf,

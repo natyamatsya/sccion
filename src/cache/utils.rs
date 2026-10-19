@@ -20,6 +20,21 @@ use std::path::Path;
 use crate::errors::*;
 
 /// Normalize key `abcdef` into `a/b/c/abcdef`
+///
+/// Only the object-storage backends key this way (the disk cache builds the
+/// same layout as a path, see `disk::make_preprocessor_key_path`), so it exists
+/// only when one of them is compiled in.
+#[cfg(any(
+    feature = "azure",
+    feature = "gcs",
+    feature = "gha",
+    feature = "memcached",
+    feature = "redis",
+    feature = "s3",
+    feature = "webdav",
+    feature = "oss",
+    feature = "cos"
+))]
 pub(in crate::cache) fn normalize_key(key: &str) -> String {
     format!("{}/{}/{}/{}", &key[0..1], &key[1..2], &key[2..3], key)
 }
@@ -51,7 +66,20 @@ pub(in crate::cache) fn set_file_mode(_path: &Path, _mode: u32) -> Result<()> {
     Ok(())
 }
 
-#[cfg(test)]
+#[cfg(all(
+    test,
+    any(
+        feature = "azure",
+        feature = "gcs",
+        feature = "gha",
+        feature = "memcached",
+        feature = "redis",
+        feature = "s3",
+        feature = "webdav",
+        feature = "oss",
+        feature = "cos"
+    )
+))]
 mod test {
     use super::*;
 
