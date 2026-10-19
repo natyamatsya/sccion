@@ -2,8 +2,21 @@
 
 name: ci
 on:
+  # A third of the commits on `main` touch only prose, and each one paid for a
+  # full matrix. Nothing in the build reads these paths. Tag pushes are not
+  # path-filtered, so a release still runs whatever the tag's commit touched.
   push:
+    paths-ignore: &prose
+      - 'context/**'
+      - 'docs/**'
+      - '**.md'
   pull_request:
+    paths-ignore: *prose
+  # Beta and nightly, and the CUDA 11.8 entry, once a week instead of on every
+  # push: an upstream regression is just as visible on Monday, at a seventh of
+  # the cost. See `test_occasional`.
+  schedule:
+    - cron: '17 4 * * 1'
   # So a run can be asked for without inventing a commit to carry it. This
   # repository had Actions disabled at the repository level for its whole
   # history -- every workflow reported `state=active` while nothing could run --
@@ -14,7 +27,18 @@ on:
         description: >-
           Install nvcc and run the CUDA tests. Off by default: the hosted
           runners have no usable CUDA toolchain, so these fail on every run and
-          teach people to ignore a red tick.
+          teach people to ignore a red tick. Runs the occasional toolchains
+          too, since the CUDA 11.8 entry lives there.
+        type: boolean
+        default: false
+      toolchains:
+        description: Also test on beta and nightly, as the weekly run does.
+        type: boolean
+        default: false
+      build:
+        description: >-
+          Build the release binaries for every target, as a tag does. Half the
+          cost of a run, so off unless asked for.
         type: boolean
         default: false
 
@@ -74,6 +98,7 @@ jobs:
 
   check_features:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     strategy:
       matrix:
         feature: [ azure, gcs, gha, memcached, redis, s3, webdav ]
@@ -86,6 +111,7 @@ jobs:
 
   toml_format:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - name: Clone repository
         uses: actions/checkout@v5
@@ -106,6 +132,9 @@ jobs:
     runs-on: ${{ matrix.os }}
     continue-on-error: ${{ matrix.allow_failure || false }}
     timeout-minutes: 30
+    # Every push and pull request: one job per thing that differs, and no
+    # toolchain twice on one OS. Beta, nightly and CUDA 11.8 run weekly in
+    # `test_occasional`, which shares this job's env and steps.
     strategy:
       fail-fast: false
       matrix:
@@ -122,26 +151,18 @@ jobs:
           - os: ubuntu-22.04
             rustc: stable
           - os: ubuntu-22.04
-            rustc: beta
-          - os: ubuntu-22.04
-            rustc: nightly
-            allow_failure: true
-            extra_args: --features=unstable
-          - os: ubuntu-22.04
             extra_desc: no-default-features
             extra_args: --no-default-features
             allow_failure: true
-          - os: ubuntu-22.04
-            cuda: "11.8"
-            extra_desc: cuda11.8
           - os: ubuntu-24.04
             cuda: "12.8"
             # Oldest supported version, keep in sync with README.md
             rustc: "1.91.0"
             extra_desc: cuda12.8
-          # # M1 CPU
+          # Apple Silicon only. The Intel runner cost ten times a Linux minute
+          # for 8-13 minutes a push, and GitHub is retiring it; the x86_64
+          # binary is still built, cross-compiled from Apple Silicon on tags.
           - os: macos-14
-          - os: macos-15-intel
           - os: windows-2022
             cuda: "12.8"
             # Oldest supported version, keep in sync with README.md
@@ -149,20 +170,7 @@ jobs:
             extra_args: --no-fail-fast
             notest_cuda_compilers: clang++
             extra_desc: cuda12.8
-          - os: windows-2022
-            cuda: "12.8"
-            rustc: nightly
-            allow_failure: true
-            extra_args: --features=unstable
-            notest_cuda_compilers: clang++
-            extra_desc: cuda12.8
-          - os: windows-2022
-            cuda: "12.8"
-            rustc: beta
-            notest_cuda_compilers: clang++
-            extra_desc: cuda12.8
-            no_coverage: true
-    env:
+    env: &test-env
       RUST_BACKTRACE: 1
       COVERAGE_REPORT_DIR: "target/debug"
       COVERAGE_REPORT_FILE: "target/debug/lcov.info"
@@ -171,7 +179,7 @@ jobs:
       GRCOV_EXCLUDE_OPTION: '--excl-br-line "^\s*((debug_)?assert(_eq|_ne)?!|#\[derive\()"'
       NOTEST_CUDA_COMPILERS: ${{ matrix.notest_cuda_compilers || '' }}
       CARGO_PROFILE_DEV_DEBUG: '0' # save disk space
-    steps:
+    steps: &test-steps
       - if: ${{ contains(matrix.os, 'windows') }}
         uses: ilammy/msvc-dev-cmd@v1
 
@@ -300,10 +308,51 @@ jobs:
         env:
           CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
 
+  # The toolchains that only need watching, not gating every push: beta and
+  # nightly on Linux and Windows, and CUDA 11.8. Weekly, or when a manual run
+  # asks for them. Same env and steps as `test`, by YAML alias rather than by
+  # copy, so the two cannot drift apart.
+  test_occasional:
+    name: test ${{ matrix.os }} rust ${{ matrix.rustc || 'stable' }} ${{ (matrix.cuda == '' || inputs.cuda) && matrix.extra_desc || '' }}
+    if: ${{ github.event_name == 'schedule' || inputs.toolchains || inputs.cuda }}
+    runs-on: ${{ matrix.os }}
+    continue-on-error: ${{ matrix.allow_failure || false }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            rustc: beta
+          - os: ubuntu-22.04
+            rustc: nightly
+            allow_failure: true
+            extra_args: --features=unstable
+          - os: ubuntu-22.04
+            cuda: "11.8"
+            extra_desc: cuda11.8
+          - os: windows-2022
+            cuda: "12.8"
+            rustc: nightly
+            allow_failure: true
+            extra_args: --features=unstable
+            notest_cuda_compilers: clang++
+            extra_desc: cuda12.8
+          - os: windows-2022
+            cuda: "12.8"
+            rustc: beta
+            notest_cuda_compilers: clang++
+            extra_desc: cuda12.8
+            no_coverage: true
+    env: *test-env
+    steps: *test-steps
 
-
+  # Release binaries, with LTO, for every target: half of what a run used to
+  # cost, for artifacts only a tag's `release` job reads. Clippy on all three
+  # OSes and the test jobs already compile the same code on every push.
   build:
     name: build ${{ matrix.binary || 'sccion' }} ${{ matrix.target }}
+    if: ${{ startsWith(github.ref, 'refs/tags/') || inputs.build }}
     runs-on: ${{ matrix.os }}
     container: ${{ fromJson(matrix.container || '{"image":null}') }}
     timeout-minutes: 30
@@ -348,7 +397,9 @@ jobs:
           - os: macos-14
             target: aarch64-apple-darwin
             macosx_deployment_target: 11.0
-          - os: macos-15-intel
+          # Cross-compiled from Apple Silicon rather than built on the Intel
+          # runner, which cost ten times a Linux minute and is being retired.
+          - os: macos-14
             target: x86_64-apple-darwin
             macosx_deployment_target: 11.0
           - os: windows-2022
@@ -437,6 +488,7 @@ jobs:
   release:
     name: release
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     needs: [ build, lint, test ]
     if: ${{ startsWith(github.ref, 'refs/tags/') }}
     steps:

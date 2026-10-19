@@ -5,10 +5,16 @@ name: integration-tests
 # thing here, so they run where the answer changes something: a pull request,
 # and whatever lands on `main`.
 on:
+  # Prose-only commits are skipped, as in `ci.yml`: nothing here reads these paths.
   pull_request:
+    paths-ignore: &prose
+      - 'context/**'
+      - 'docs/**'
+      - '**.md'
   push:
     branches:
       - main
+    paths-ignore: *prose
 # If you want to add integration tests for linux-based binary,
 # please, use the following files:
 # - tests/integration/Makefile
@@ -40,6 +46,7 @@ env:
 jobs:
   build:
     runs-on: ubuntu-24.04
+    timeout-minutes: 30
     steps:
       - name: Clone repository
         uses: actions/checkout@v5
@@ -60,6 +67,7 @@ jobs:
 
   integration-tests:
     runs-on: ubuntu-24.04
+    timeout-minutes: 60
     strategy:
       matrix:
         type: [backends, tools]
@@ -96,6 +104,7 @@ jobs:
 
   gha:
     runs-on: ubuntu-24.04
+    timeout-minutes: 30
     needs: build
 
     env:
@@ -145,6 +154,7 @@ jobs:
 
   test-mock-msvc:
     runs-on: windows-2022
+    timeout-minutes: 30
     env:
       TARGET: x86_64-pc-windows-msvc
       SCCACHE_EXE: ${{ github.workspace }}\\target\\x86_64-pc-windows-msvc\\debug\\sccion.exe
@@ -233,6 +243,7 @@ jobs:
     # Probably wouldn't matter anyway since we run in a container, but staying
     # close to the version is better than not.
     runs-on: ubuntu-24.04
+    timeout-minutes: 20
     needs: build
     container:
       image: rocm/dev-ubuntu-24.04:6.3
@@ -329,6 +340,7 @@ jobs:
 
   xcode:
     runs-on: macos-latest
+    timeout-minutes: 15
     env:
       SCCACHE_PATH: target/debug/sccion
     steps:
