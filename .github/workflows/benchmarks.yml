@@ -38,6 +38,14 @@ jobs:
     name: Run ${{ matrix.mode }} benchmarks (CodSpeed)
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    # CodSpeed authenticates the upload with the job's OIDC token: the
+    # repository has no CODSPEED_TOKEN secret, and without a token the action
+    # asks for OIDC and stops there unless it may mint one. Scoped to this job,
+    # as CodSpeed's docs show; a job-level block replaces the workflow's, so
+    # `contents: read` is repeated for actions/checkout.
+    permissions:
+      contents: read
+      id-token: write
     strategy:
       # One mode failing says nothing about the other.
       fail-fast: false
