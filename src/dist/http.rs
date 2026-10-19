@@ -359,10 +359,13 @@ mod server {
             .append_extension(ext_key_usage)
             .context("fails to append EKU extension for x509")?;
 
-        // Finish the certificate
+        // Finish the certificate. SHA-256, not the SHA-1 this was written with:
+        // reqwest 0.13 verifies through rustls, which refuses SHA-1 signatures
+        // outright, so a SHA-1 server certificate fails every connection the
+        // scheduler and clients make to it. OpenSSL, under 0.12, let it pass.
         builder
-            .sign(&privkey, openssl::hash::MessageDigest::sha1())
-            .context("failed to sign x509 with sha1")?;
+            .sign(&privkey, openssl::hash::MessageDigest::sha256())
+            .context("failed to sign x509 with sha256")?;
         let cert: openssl::x509::X509 = builder.build();
         let cert_pem = cert.to_pem().context("failed to create pem from x509")?;
         let cert_digest = cert
@@ -1087,6 +1090,26 @@ mod server {
                     .bincode(&state)?,
             )
             .context("POST to scheduler job_state failed")
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::create_https_cert_and_privkey;
+        use openssl::nid::Nid;
+
+        /// rustls rejects a SHA-1 signature, and the failure surfaces only as
+        /// every dist job being un-assigned -- the dist tests caught it, but
+        /// only on Linux, in a container, after minutes of retries.
+        #[test]
+        fn server_certificate_is_signed_with_sha256() {
+            let (_, cert_pem, _) =
+                create_https_cert_and_privkey("127.0.0.1:10501".parse().unwrap()).unwrap();
+            let cert = openssl::x509::X509::from_pem(&cert_pem).unwrap();
+            assert_eq!(
+                cert.signature_algorithm().object().nid(),
+                Nid::SHA256WITHRSAENCRYPTION
+            );
         }
     }
 }

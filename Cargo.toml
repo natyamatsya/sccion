@@ -196,9 +196,12 @@ sha2 = "0.11"
 daemonix = "0.1"
 
 # Where the OS trust store can be empty, and reqwest 0.13 refuses to build a
-# client over an empty one; see `util::bundled_root_certs`. Already in the lock
-# as rustls-platform-verifier's own fallback on wasm.
+# client over an empty one; see `util::bundled_root_certs`. Both already in the
+# lock: `rustls-native-certs` is what rustls-platform-verifier reads the store
+# with -- the same version, so the emptiness check is the verifier's own -- and
+# `webpki-root-certs` is its fallback on wasm.
 [target.'cfg(all(unix, not(target_vendor = "apple"), not(target_os = "android")))'.dependencies]
+rustls-native-certs = "0.8.4"
 webpki-root-certs = "1.0.9"
 
 [target.'cfg(not(target_os = "freebsd"))'.dependencies.libmount]

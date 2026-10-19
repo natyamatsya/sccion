@@ -3822,6 +3822,7 @@ dependencies = [
  "reqsign",
  "reqwest",
  "rouille",
+ "rustls-native-certs",
  "sccion-bincode",
  "semver",
  "serde",
