@@ -2,9 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use anyhow::{Context, Result, bail};
-use base64::Engine;
 use sccion::dist::http::{ClientAuthCheck, ClientVisibleMsg};
-use sccion::util::{BASE64_URL_SAFE_ENGINE, new_reqwest_blocking_client};
+use sccion::util::new_reqwest_blocking_client;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::result::Result as StdResult;
@@ -26,29 +25,17 @@ pub struct Jwk {
 }
 
 impl Jwk {
-    // https://github.com/lawliet89/biscuit/issues/96#issuecomment-399149872
-    pub fn to_der_pkcs1(&self) -> Result<Vec<u8>> {
+    /// The key this JWK describes, ready to verify a signature with.
+    ///
+    /// `n` and `e` go to jsonwebtoken as they are -- base64url without
+    /// padding, which is how a JWK spells them and how it decodes them -- so
+    /// there is no detour through a DER-encoded public key, and no openssl.
+    pub fn decoding_key(&self) -> Result<jwt::DecodingKey> {
         if self.kty != "RSA" {
             bail!("Cannot handle non-RSA JWK")
         }
-
-        // JWK is big-endian, openssl bignum from_slice is big-endian
-        let n = BASE64_URL_SAFE_ENGINE
-            .decode(&self.n)
-            .context("Failed to base64 decode n")?;
-        let e = BASE64_URL_SAFE_ENGINE
-            .decode(&self.e)
-            .context("Failed to base64 decode e")?;
-        let n_bn = openssl::bn::BigNum::from_slice(&n)
-            .context("Failed to create openssl bignum from n")?;
-        let e_bn = openssl::bn::BigNum::from_slice(&e)
-            .context("Failed to create openssl bignum from e")?;
-        let pubkey = openssl::rsa::Rsa::from_public_components(n_bn, e_bn)
-            .context("Failed to create pubkey from n and e")?;
-        let der: Vec<u8> = pubkey
-            .public_key_to_der_pkcs1()
-            .context("Failed to convert public key to der pkcs1")?;
-        Ok(der)
+        jwt::DecodingKey::from_rsa_components(&self.n, &self.e)
+            .context("Failed to read the RSA modulus and exponent")
     }
 }
 
@@ -146,7 +133,7 @@ impl ProxyTokenCheck {
 pub struct ValidJWTCheck {
     audience: String,
     issuer: String,
-    kid_to_pkcs1: HashMap<String, Vec<u8>>,
+    kid_to_key: HashMap<String, jwt::DecodingKey>,
 }
 
 impl ClientAuthCheck for ValidJWTCheck {
@@ -170,16 +157,16 @@ impl ValidJWTCheck {
             bail!("Could not retrieve JWKs, HTTP error: {}", res.status())
         }
         let jwks: Jwks = res.json().context("Failed to parse JWKs json")?;
-        let kid_to_pkcs1 = jwks
+        let kid_to_key = jwks
             .keys
             .into_iter()
-            .map(|k| k.to_der_pkcs1().map(|pkcs1| (k.kid, pkcs1)))
+            .map(|k| k.decoding_key().map(|key| (k.kid, key)))
             .collect::<Result<_>>()
-            .context("Failed to convert JWKs into pkcs1")?;
+            .context("Failed to read the JWKs")?;
         Ok(Self {
             audience,
             issuer,
-            kid_to_pkcs1,
+            kid_to_key,
         })
     }
 
@@ -188,19 +175,146 @@ impl ValidJWTCheck {
         trace!("Validating JWT in scheduler");
         // Prepare validation
         let kid = header.kid.context("No kid found")?;
-        let pkcs1 = jwt::DecodingKey::from_rsa_der(
-            self.kid_to_pkcs1
-                .get(&kid)
-                .context("kid not found in jwks")?,
-        );
+        let key = self.kid_to_key.get(&kid).context("kid not found in jwks")?;
         let mut validation = jwt::Validation::new(header.alg);
         validation.set_audience(&[&self.audience]);
         validation.set_issuer(&[&self.issuer]);
         #[derive(Deserialize)]
         struct Claims {}
         // Decode the JWT, discarding any claims - we just care about validity
-        let _tokendata = jwt::decode::<Claims>(token, &pkcs1, &validation)
+        let _tokendata = jwt::decode::<Claims>(token, key, &validation)
             .context("Unable to validate and decode jwt")?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Jwk, ValidJWTCheck};
+    use base64::Engine;
+    use sccion::util::BASE64_URL_SAFE_ENGINE;
+    use serde::Serialize;
+    use std::collections::HashMap;
+
+    /// `(n, e)` from a PKCS#1 RSAPublicKey -- SEQUENCE { INTEGER n, INTEGER e }
+    /// -- which is how rcgen hands out an RSA key's public half.
+    fn rsa_components(der: &[u8]) -> (Vec<u8>, Vec<u8>) {
+        fn tlv(b: &[u8]) -> (u8, &[u8], &[u8]) {
+            let (len, header) = if b[1] & 0x80 == 0 {
+                (usize::from(b[1]), 2)
+            } else {
+                let n = usize::from(b[1] & 0x7f);
+                let len = b[2..2 + n].iter().fold(0, |a, &x| a << 8 | usize::from(x));
+                (len, 2 + n)
+            };
+            (b[0], &b[header..header + len], &b[header + len..])
+        }
+        let (sequence, body, _) = tlv(der);
+        let (int_n, n, rest) = tlv(body);
+        let (int_e, e, _) = tlv(rest);
+        assert_eq!((sequence, int_n, int_e), (0x30, 0x02, 0x02));
+        // DER pads a positive integer with a leading zero byte; a JWK does not.
+        let unpad = |v: &[u8]| {
+            v.iter()
+                .skip_while(|&&b| b == 0)
+                .copied()
+                .collect::<Vec<_>>()
+        };
+        (unpad(n), unpad(e))
+    }
+
+    #[derive(Serialize)]
+    struct Claims<'a> {
+        aud: &'a str,
+        iss: &'a str,
+        exp: u64,
+    }
+
+    /// A token signed by a key is accepted through that key's JWK, and nothing
+    /// else is: not another key, not another audience or issuer. The JWK is
+    /// built from the key's modulus and exponent the way an identity provider
+    /// publishes them -- which is the conversion that used to go through
+    /// openssl, and is now jsonwebtoken's own.
+    #[test]
+    fn a_jwk_verifies_tokens_signed_by_its_key_and_no_others() {
+        let jwk_for = |key: &rcgen::KeyPair, kid: &str| {
+            let (n, e) = rsa_components(key.public_key_raw());
+            Jwk {
+                kid: kid.to_owned(),
+                kty: "RSA".to_owned(),
+                n: BASE64_URL_SAFE_ENGINE.encode(n),
+                e: BASE64_URL_SAFE_ENGINE.encode(e),
+            }
+        };
+        let generate = || {
+            rcgen::KeyPair::generate_rsa_for(&rcgen::PKCS_RSA_SHA256, rcgen::RsaKeySize::_2048)
+                .unwrap()
+        };
+        let (signer, other) = (generate(), generate());
+        let check = ValidJWTCheck {
+            audience: "sccion".to_owned(),
+            issuer: "https://issuer.example".to_owned(),
+            kid_to_key: HashMap::from([
+                (
+                    "signer".to_owned(),
+                    jwk_for(&signer, "signer").decoding_key().unwrap(),
+                ),
+                (
+                    "other".to_owned(),
+                    jwk_for(&other, "other").decoding_key().unwrap(),
+                ),
+            ]),
+        };
+
+        let exp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+            + 600;
+        let sign = |kid: &str, aud: &str, iss: &str| {
+            let mut header = jwt::Header::new(jwt::Algorithm::RS256);
+            header.kid = Some(kid.to_owned());
+            let key = jwt::EncodingKey::from_rsa_pem(signer.serialize_pem().as_bytes()).unwrap();
+            jwt::encode(&header, &Claims { aud, iss, exp }, &key).unwrap()
+        };
+
+        let good = sign("signer", "sccion", "https://issuer.example");
+        assert!(
+            check.check_jwt_validity(&good).is_ok(),
+            "{:?}",
+            check.check_jwt_validity(&good)
+        );
+        // Signed by `signer` but claiming to be `other`'s: the signature fails.
+        assert!(
+            check
+                .check_jwt_validity(&sign("other", "sccion", "https://issuer.example"))
+                .is_err()
+        );
+        assert!(
+            check
+                .check_jwt_validity(&sign("signer", "elsewhere", "https://issuer.example"))
+                .is_err()
+        );
+        assert!(
+            check
+                .check_jwt_validity(&sign("signer", "sccion", "https://evil.example"))
+                .is_err()
+        );
+        assert!(
+            check
+                .check_jwt_validity(&sign("unknown", "sccion", "https://issuer.example"))
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn a_non_rsa_jwk_is_refused() {
+        let jwk = Jwk {
+            kid: "k".to_owned(),
+            kty: "EC".to_owned(),
+            n: String::new(),
+            e: String::new(),
+        };
+        assert!(jwk.decoding_key().is_err());
     }
 }
