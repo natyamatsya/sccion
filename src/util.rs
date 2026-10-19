@@ -2039,7 +2039,7 @@ mod tests {
             if input.is_empty() {
                 break;
             }
-            output.extend(input.as_slice().escape_ascii());
+            output.extend(input.escape_ascii());
             let result = super::ascii_unescape_default(&output).unwrap();
             assert_eq!(input, result, "{:?}", output);
             tested_cases += 1;
