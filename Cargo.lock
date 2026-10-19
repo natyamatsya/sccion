@@ -3281,18 +3281,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 
 [[package]]
-name = "reqsign"
-version = "0.20.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4d7c30433793fee9e229829da7435a8c202ccd34521449c05f2892db0911a5c6"
-dependencies = [
- "reqsign-command-execute-tokio",
- "reqsign-core",
- "reqsign-file-read-tokio",
- "reqsign-http-send-reqwest",
-]
-
-[[package]]
 name = "reqsign-aliyun-oss"
 version = "3.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3367,16 +3355,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "reqsign-command-execute-tokio"
-version = "3.0.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e167fe8ecbc5457590ff23750c11ba227f77ed18093d07ae0d3177f9d4c93656"
-dependencies = [
- "reqsign-core",
- "tokio",
-]
-
-[[package]]
 name = "reqsign-core"
 version = "3.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3428,22 +3406,6 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
-]
-
-[[package]]
-name = "reqsign-http-send-reqwest"
-version = "4.0.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "20bec5cedaf07cf8d6694c8e282feec87907bab3398d4422ac08822c615d5f0e"
-dependencies = [
- "anyhow",
- "bytes",
- "futures-channel",
- "http",
- "http-body-util",
- "reqsign-core",
- "reqwest",
- "wasm-bindgen-futures",
 ]
 
 [[package]]
@@ -3819,7 +3781,6 @@ dependencies = [
  "predicates",
  "rand 0.10.2",
  "regex",
- "reqsign",
  "reqwest",
  "rouille",
  "rustls-native-certs",

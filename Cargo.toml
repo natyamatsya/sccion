@@ -85,7 +85,6 @@ flate2 = { version = "1.0", optional = true, default-features = false, features 
 ] }
 fs-err = "3"
 futures = "0.3"
-gzp = { version = "2", default-features = false, features = ["deflate_rust"] }
 http = "1.0"
 http-body-util = { version = "0.1", optional = true }
 hyper = { version = "1.1", optional = true, features = ["server", "http1"] }
@@ -101,7 +100,7 @@ linked-hash-map = "0.5"
 log = "0.4"
 memchr = "2"
 memmap2 = "0.9.4"
-mime = "0.3"
+mime = { version = "0.3", optional = true }
 number_prefix = "0.4"
 object = "0.40"
 opendal = { version = "0.58.1", optional = true, default-features = false, features = [
@@ -113,7 +112,6 @@ opendal-http-transport-reqwest = { version = "0.58.1", optional = true }
 openssl = { version = "0.10.75", optional = true }
 rand = "0.10.2"
 regex = "1.10.3"
-reqsign = { version = "0.20.5", optional = true }
 reqwest = { version = "0.13.4", features = [
   "json",
   "blocking",
@@ -204,6 +202,15 @@ daemonix = "0.1"
 rustls-native-certs = "0.8.4"
 webpki-root-certs = "1.0.9"
 
+# The parallel gzip behind `into_compressed_tar`, which packages a toolchain for
+# a distributed compile -- only where that packaging exists, the targets
+# `dist::pkg::toolchain_imp` is built for. Everywhere else it was compiled and
+# never called.
+[target.'cfg(all(target_os = "linux", any(target_arch = "x86_64", target_arch = "aarch64")))'.dependencies]
+gzp = { version = "2", optional = true, default-features = false, features = [
+  "deflate_rust",
+] }
+
 [target.'cfg(not(target_os = "freebsd"))'.dependencies.libmount]
 optional = true
 version = "0.1.15"
@@ -238,22 +245,11 @@ all = [
   "oss",
   "cos",
 ]
-azure = [
-  "opendal/services-azblob",
-  "reqsign",
-  "reqwest",
-  "opendal-http-transport-reqwest",
-]
-cos = [
-  "opendal/services-cos",
-  "reqsign",
-  "reqwest",
-  "opendal-http-transport-reqwest",
-]
+azure = ["opendal/services-azblob", "reqwest", "opendal-http-transport-reqwest"]
+cos = ["opendal/services-cos", "reqwest", "opendal-http-transport-reqwest"]
 default = ["all"]
 gcs = [
   "opendal/services-gcs",
-  "reqsign",
   "url",
   "reqwest",
   "opendal-http-transport-reqwest",
@@ -261,19 +257,9 @@ gcs = [
 gha = ["opendal/services-ghac", "reqwest", "opendal-http-transport-reqwest"]
 memcached = ["opendal/services-memcached"]
 native-zlib = []
-oss = [
-  "opendal/services-oss",
-  "reqsign",
-  "reqwest",
-  "opendal-http-transport-reqwest",
-]
+oss = ["opendal/services-oss", "reqwest", "opendal-http-transport-reqwest"]
 redis = ["url", "opendal/services-redis"]
-s3 = [
-  "opendal/services-s3",
-  "reqsign",
-  "reqwest",
-  "opendal-http-transport-reqwest",
-]
+s3 = ["opendal/services-s3", "reqwest", "opendal-http-transport-reqwest"]
 webdav = [
   "opendal/services-webdav",
   "reqwest",
@@ -288,9 +274,11 @@ unstable = []
 # Enables distributed support in the sccache client
 dist-client = [
   "flate2",
+  "gzp",
   "hyper",
   "http-body-util",
   "hyper-util",
+  "mime",
   "reqwest",
   "url",
   "sha2",
@@ -300,6 +288,7 @@ dist-server = [
   "jwt",
   "flate2",
   "libmount",
+  "mime",
   "nix",
   "openssl",
   "reqwest",
