@@ -3426,11 +3426,20 @@ mod dependency_keying_test {
         assert_eq!(first.cacheable, Cacheable::Yes);
     }
 
-    /// A caller that already asked for a report gets its own file used. A second
-    /// `/sourceDependencies` would fight over the path with theirs.
+    /// A caller that already asked for a report keeps the compilation out of
+    /// preprocessor cache mode, and so out of dependency keying: a hit in that
+    /// mode runs no compiler, and the caller's file -- not a cached output --
+    /// would never be written. Their report is still the only one asked for,
+    /// on the preprocessor run that now always happens; a second
+    /// `/sourceDependencies` would stop theirs being written at all.
+    ///
+    /// This was `a_callers_own_report_is_reused`, which had keying write the
+    /// caller's file on a miss. True, and beside the point once the hit after
+    /// it wrote nothing; `c.rs` keeps that path for when a hit can write the
+    /// file from the manifest.
     #[test]
-    fn a_callers_own_report_is_reused() {
-        let (_f, cwd, hdr) = fixture();
+    fn a_callers_own_report_keeps_the_compilation_out_of_the_mode() {
+        let (_f, cwd, _hdr) = fixture();
         let args = ovec![
             "-c",
             "foo.c",
@@ -3438,21 +3447,34 @@ mod dependency_keying_test {
             "/sourceDependenciesfoo.obj.json"
         ];
 
-        let r = run(&cwd, &args, Some(vec![hdr]), 0);
+        // No report body: the preprocessor run names the caller's path
+        // relative to the compilation's directory, and the mock, which runs in
+        // the test's own, would write it there instead.
+        let r = run(&cwd, &args, None, 0);
 
-        let asked = r
+        let asked: Vec<_> = r
             .command_line
             .iter()
-            .filter(|a| a.to_string_lossy().starts_with("/sourceDependencies"))
-            .count();
+            .enumerate()
+            .filter(|(_, a)| a.to_string_lossy().starts_with("/sourceDependencies"))
+            .collect();
         assert_eq!(
-            asked, 1,
+            asked.len(),
+            1,
             "the caller's report should be the only one asked for: {:?}",
             r.command_line
         );
-        // And it is theirs that was written, where they asked for it.
-        assert!(cwd.join("foo.obj.json").exists());
-        assert_eq!(r.cacheable, Cacheable::Yes);
+        let (i, flag) = asked[0];
+        let path = match flag.to_string_lossy().strip_prefix("/sourceDependencies") {
+            Some("") => r.command_line[i + 1].clone(),
+            Some(joined) => joined.into(),
+            None => unreachable!(),
+        };
+        assert_eq!(path, OsString::from("foo.obj.json"), "and it is theirs");
+        assert!(
+            r.manifests.is_empty(),
+            "no manifest: the mode was not in play for this compilation"
+        );
     }
 
     /// A compilation that opens nothing is still cacheable. Qt's generated

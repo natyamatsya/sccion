@@ -183,8 +183,15 @@ jobs:
           cl "@args.rsp"
           test -e ./foo.o || { echo "No compiler output found"; exit -1; }
 
+      # Preprocessor cache mode on by name, not by default. The disk cache does
+      # default to it, but these steps exist to test that mode -- a hit there
+      # runs no compiler, so nothing writes the caller's dependency file unless
+      # sccion sees to it -- and a changed default must not quietly turn them
+      # into tests of the other mode.
       - name: Start Server
         shell: bash
+        env:
+          SCCION_DIRECT: "true"
         run: $SCCACHE_EXE --start-server
 
       - name: Compile - Cache Miss
@@ -198,16 +205,35 @@ jobs:
           test -e ./foo.o || { echo "No compiler output found"; exit -1; }
           test -e ./foo.o.json || { echo "No dependency list found"; exit -1; }
 
+      # The dependency list is deleted along with the object. It used not to
+      # be, so the check below found the miss's copy and could never fail --
+      # which is how a hit that wrote no `foo.o.json` went unnoticed here while
+      # `test_sccache_command::with_preprocessor_cache` failed on it.
       - name: Compile - Cache Hit
         shell: bash
         working-directory: ./tests/integration/msvc
         run: |
-          rm ./foo.o || true
+          rm ./foo.o ./foo.o.json || true
           $SCCACHE_EXE "$(where cl.exe)" -c "@args.rsp"
           $SCCACHE_EXE --show-stats
           $SCCACHE_EXE --show-stats | grep -e "Cache hits\s*[1-9]"
           test -e ./foo.o || { echo "No compiler output found"; exit -1; }
-          test -e ./foo.o.json || { echo "No dependency list found"; exit -1; }
+          test -e ./foo.o.json || { echo "No dependency list regenerated on the hit"; exit -1; }
+
+      # The control for the step above: without a dependency file the mode is
+      # really in play, and a second compile is a preprocessor cache hit. If
+      # this stops hitting, the step above no longer tests what it says.
+      - name: Compile - Preprocessor cache hit without a dependency file
+        shell: bash
+        working-directory: ./tests/integration/msvc
+        run: |
+          for i in 1 2; do
+            rm ./direct.o || true
+            $SCCACHE_EXE "$(where cl.exe)" -c foo.cpp -Fodirect.o
+            test -e ./direct.o || { echo "No compiler output found"; exit -1; }
+          done
+          $SCCACHE_EXE --show-stats
+          $SCCACHE_EXE --show-stats | grep -e "Preprocessor cache hits\s*[1-9]"
 
       - name: Compile - Preprocessing Compiler Bug
         shell: bash

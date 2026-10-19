@@ -34,6 +34,15 @@ sccion uses the caller's rather than adding a second, because two
 `/sourceDependencies` flags mean `cl` writes only the last, and the file the
 build asked for would never appear.
 
+For MSVC that guarantee currently costs preprocessor cache mode. A
+compilation that passes `/sourceDependencies` (or clang-cl's `/deps`) does not
+use the mode, because a hit there runs no compiler and the dependency file is
+not a cached output -- the build would find nothing where it asked for one.
+Those compilations still hit the cache; each hit pays for a preprocessor run.
+A build that relies on `/showIncludes` instead is not affected. Writing the
+file on a hit, from the include list the manifest has already verified, would
+lift this.
+
 **Manifests are checkout-independent.** The paths in a manifest key, and the
 include paths recorded inside it, are normalized against the declared checkout
 root like everything else — otherwise a second checkout matches no manifest and

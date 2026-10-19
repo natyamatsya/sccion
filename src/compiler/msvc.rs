@@ -569,6 +569,7 @@ pub fn parse_arguments(
     let mut pch_path = None;
     let mut pdb = None;
     let mut depfile = None;
+    let mut depfile_flag = None;
     let mut show_includes = false;
     let mut xclangs: Vec<OsString> = vec![];
     let mut clangs: Vec<OsString> = vec![];
@@ -608,7 +609,10 @@ pub fn parse_arguments(
                     cannot_cache!("output to nul")
                 }
             }
-            Some(DepFile(p)) => depfile = Some(p.clone()),
+            Some(DepFile(p)) => {
+                depfile = Some(p.clone());
+                depfile_flag = Some(arg.to_os_string());
+            }
             Some(ProgramDatabase(p)) => pdb = Some(p.clone()),
             Some(DebugInfo) => debug_info = true,
             Some(PreprocessorArgument(_))
@@ -1019,7 +1023,13 @@ pub fn parse_arguments(
         // FIXME: implement color_mode for msvc.
         color_mode: ColorMode::Auto,
         suppress_rewrite_includes_only: false,
-        too_hard_for_preprocessor_cache_mode: None,
+        // A dependency file the caller asked for is written by the compiler
+        // run that happens on a miss -- the preprocessor run, or the compile
+        // itself when keying on dependencies -- and it is not a cached output.
+        // A preprocessor cache hit runs neither, so the build would find no
+        // file where it asked for one. Until a hit can write it from the
+        // manifest, such a compilation does not use the mode at all.
+        too_hard_for_preprocessor_cache_mode: depfile_flag,
     })
 }
 
@@ -3435,6 +3445,59 @@ mod test {
             .filter(|a| a.to_string_lossy().starts_with("/sourceDependencies"))
             .count();
         assert_eq!(asked, 1, "asked for the report twice: {:?}", *seen);
+    }
+
+    /// A preprocessor cache hit runs no compiler, and the caller's dependency
+    /// file is written only by one -- so a compilation that asks for one must
+    /// not take that hit, or the build finds nothing where it asked for its
+    /// dependency file. `test_sccache_command::with_preprocessor_cache` caught
+    /// this on Windows, where a direct-mode hit left `test.o.json` unwritten.
+    #[test]
+    fn a_requested_dependency_file_keeps_the_compilation_out_of_preprocessor_cache_mode() {
+        for (args, flag) in [
+            (
+                ovec!["-c", "foo.c", "/Fofoo.obj", "/depsfoo.obj.json"],
+                "/deps",
+            ),
+            (
+                ovec![
+                    "-c",
+                    "foo.c",
+                    "/Fofoo.obj",
+                    "/sourceDependenciesfoo.obj.json"
+                ],
+                "/sourceDependencies",
+            ),
+            (
+                ovec![
+                    "-c",
+                    "foo.c",
+                    "/Fofoo.obj",
+                    "/sourceDependencies",
+                    "foo.obj.json"
+                ],
+                "/sourceDependencies",
+            ),
+        ] {
+            let parsed = match parse_arguments(args.clone()) {
+                CompilerArguments::Ok(parsed) => parsed,
+                o => panic!("Got unexpected parse result: {:?}", o),
+            };
+            let reason = parsed
+                .too_hard_for_preprocessor_cache_mode
+                .unwrap_or_else(|| panic!("{args:?} left preprocessor cache mode on"));
+            assert!(
+                reason.to_string_lossy().starts_with(flag),
+                "{args:?}: the reason should name {flag}, got {reason:?}"
+            );
+        }
+
+        // ...and only those: an ordinary compilation keeps the mode.
+        let parsed = match parse_arguments(ovec!["-c", "foo.c", "/Fofoo.obj"]) {
+            CompilerArguments::Ok(parsed) => parsed,
+            o => panic!("Got unexpected parse result: {:?}", o),
+        };
+        assert_eq!(parsed.too_hard_for_preprocessor_cache_mode, None);
     }
 
     /// Preprocessor cache mode reconstructs the include list from linemarkers in the
