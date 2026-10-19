@@ -209,7 +209,7 @@ pub fn try_parse_from(
                     matches
                         .get_one::<String>("secret-key")
                         .expect("`secret-key` is required")
-                        .to_string()
+                        .clone()
                 };
 
                 AuthSubcommand::JwtHS256ServerToken {
@@ -284,7 +284,7 @@ mod tests {
 
     #[test]
     fn debug_assert() {
-        get_clap_command().debug_assert()
+        get_clap_command().debug_assert();
     }
 
     #[test]
