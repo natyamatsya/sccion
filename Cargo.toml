@@ -109,8 +109,20 @@ opendal = { version = "0.58.1", optional = true, default-features = false, featu
 # opendal 0.58 made the HTTP transport pluggable and moved the reqwest one
 # out of the facade, so setting a user agent means naming this crate.
 opendal-http-transport-reqwest = { version = "0.58.1", optional = true }
+# No longer called by sccion itself: the dist server's certificates come from
+# rcgen and its JWKs go to jsonwebtoken directly. It stays as the lever that
+# vendors the OpenSSL rouille's TLS (tiny_http) links against --
+# `--features=openssl/vendored` in the release builds, and `vendored-openssl`
+# -- until the dist server moves to rustls and the lever has nothing to move.
 openssl = { version = "0.10.75", optional = true }
 rand = "0.10.2"
+# The dist server's self-signed certificate. RSA keys need aws-lc-rs, which
+# rustls already brings in.
+rcgen = { version = "0.14.10", optional = true, default-features = false, features = [
+  "aws_lc_rs",
+  "crypto",
+  "pem",
+] }
 regex = "1.10.3"
 reqwest = { version = "0.13.4", features = [
   "json",
@@ -134,6 +146,10 @@ shlex = "2.0.1"
 strip-ansi-escapes = "0.2"
 tar = "0.4.40"
 tempfile = "3"
+# The certificate's validity window, which rcgen takes as a `time` date.
+time = { version = "0.3", optional = true, default-features = false, features = [
+  "std",
+] }
 tokio = { version = "1", features = [
   "rt-multi-thread",
   "io-util",
@@ -175,6 +191,13 @@ chrono = "0.4.42"
 divan = { package = "codspeed-divan-compat", version = "5" }
 filetime = "0.2"
 predicates = "3.1.4"
+# Verifying the dist server's certificate the way its clients do, through
+# rustls's own verifier.
+rustls-pki-types = "1.15"
+rustls-webpki = { version = "0.103", default-features = false, features = [
+  "std",
+  "aws-lc-rs",
+] }
 serial_test = "3.1"
 temp-env = "0.3.6"
 test-case = "3.3.1"
@@ -291,9 +314,12 @@ dist-server = [
   "mime",
   "nix",
   "openssl",
+  "rcgen",
   "reqwest",
   "rouille",
+  "sha2",
   "syslog",
+  "time",
   "version-compare",
 ]
 # Enables dist tests with external requirements

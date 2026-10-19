@@ -294,87 +294,45 @@ mod server {
         }
     }
 
+    /// A self-signed certificate for this server's address, and its private key.
+    ///
+    /// What the scheduler and clients verify against: they take this certificate
+    /// as the only root for this server, through rustls. So it carries the
+    /// address as an IP subject alternative name, the server-auth key usage and
+    /// a SHA-256 signature -- rustls refuses SHA-1, which this used to sign
+    /// with -- and is otherwise as before: RSA 2048, valid for a year, the
+    /// address as the subject's common name. The serial is derived from the
+    /// public key rather than fixed at 0, which RFC 5280 does not allow.
+    ///
+    /// rcgen rather than openssl, toward one TLS stack on both ends of a
+    /// dist connection. The key comes out as PKCS#8 rather than PKCS#1; the
+    /// server's TLS reads it with `PKey::private_key_from_pem`, which takes both.
     fn create_https_cert_and_privkey(addr: SocketAddr) -> Result<(Vec<u8>, Vec<u8>, Vec<u8>)> {
-        let rsa_key = openssl::rsa::Rsa::<openssl::pkey::Private>::generate(2048)
-            .context("failed to generate rsa privkey")?;
-        let privkey_pem = rsa_key
-            .private_key_to_pem()
-            .context("failed to create pem from rsa privkey")?;
-        let privkey: openssl::pkey::PKey<openssl::pkey::Private> =
-            openssl::pkey::PKey::from_rsa(rsa_key)
-                .context("failed to create openssl pkey from rsa privkey")?;
-        let mut builder =
-            openssl::x509::X509::builder().context("failed to create x509 builder")?;
+        use sha2::Digest as _;
 
-        // Populate the certificate with the necessary parts, mostly from mkcert in openssl
-        builder
-            .set_version(2)
-            .context("failed to set x509 version")?;
-        let serial_number = openssl::bn::BigNum::from_u32(0)
-            .and_then(|bn| bn.to_asn1_integer())
-            .context("failed to create openssl asn1 0")?;
-        builder
-            .set_serial_number(serial_number.as_ref())
-            .context("failed to set x509 serial number")?;
-        let not_before = openssl::asn1::Asn1Time::days_from_now(0)
-            .context("failed to create openssl not before asn1")?;
-        builder
-            .set_not_before(not_before.as_ref())
-            .context("failed to set not before on x509")?;
-        let not_after = openssl::asn1::Asn1Time::days_from_now(365)
-            .context("failed to create openssl not after asn1")?;
-        builder
-            .set_not_after(not_after.as_ref())
-            .context("failed to set not after on x509")?;
-        builder
-            .set_pubkey(privkey.as_ref())
-            .context("failed to set pubkey for x509")?;
-
-        let mut name = openssl::x509::X509Name::builder()?;
-        name.append_entry_by_nid(openssl::nid::Nid::COMMONNAME, &addr.to_string())?;
-        let name = name.build();
-
-        builder
-            .set_subject_name(&name)
-            .context("failed to set subject name")?;
-        builder
-            .set_issuer_name(&name)
-            .context("failed to set issuer name")?;
-
-        // Add the SubjectAlternativeName
-        let extension = openssl::x509::extension::SubjectAlternativeName::new()
-            .ip(&addr.ip().to_string())
-            .build(&builder.x509v3_context(None, None))
-            .context("failed to build SAN extension for x509")?;
-        builder
-            .append_extension(extension)
-            .context("failed to append SAN extension for x509")?;
-
-        // Add ExtendedKeyUsage
-        let ext_key_usage = openssl::x509::extension::ExtendedKeyUsage::new()
-            .server_auth()
-            .build()
-            .context("failed to build EKU extension for x509")?;
-        builder
-            .append_extension(ext_key_usage)
-            .context("fails to append EKU extension for x509")?;
-
-        // Finish the certificate. SHA-256, not the SHA-1 this was written with:
-        // reqwest 0.13 verifies through rustls, which refuses SHA-1 signatures
-        // outright, so a SHA-1 server certificate fails every connection the
-        // scheduler and clients make to it. OpenSSL, under 0.12, let it pass.
-        builder
-            .sign(&privkey, openssl::hash::MessageDigest::sha256())
-            .context("failed to sign x509 with sha256")?;
-        let cert: openssl::x509::X509 = builder.build();
-        let cert_pem = cert.to_pem().context("failed to create pem from x509")?;
-        let cert_digest = cert
-            .digest(openssl::hash::MessageDigest::sha256())
-            .context("failed to create digest of x509 certificate")?
-            .as_ref()
-            .to_owned();
-
-        Ok((cert_digest, cert_pem, privkey_pem))
+        let key =
+            rcgen::KeyPair::generate_rsa_for(&rcgen::PKCS_RSA_SHA256, rcgen::RsaKeySize::_2048)
+                .context("failed to generate rsa privkey")?;
+        let mut params = rcgen::CertificateParams::default();
+        params
+            .distinguished_name
+            .push(rcgen::DnType::CommonName, addr.to_string());
+        params.subject_alt_names = vec![rcgen::SanType::IpAddress(addr.ip())];
+        params.extended_key_usages = vec![rcgen::ExtendedKeyUsagePurpose::ServerAuth];
+        let now = time::OffsetDateTime::now_utc();
+        params.not_before = now;
+        params.not_after = now + time::Duration::days(365);
+        let cert = params
+            .self_signed(&key)
+            .context("failed to sign the server certificate")?;
+        // The digest identifies the certificate to the scheduler and clients:
+        // SHA-256 over its DER, as openssl's `X509::digest` computed it.
+        let cert_digest = sha2::Sha256::digest(cert.der()).to_vec();
+        Ok((
+            cert_digest,
+            cert.pem().into_bytes(),
+            key.serialize_pem().into_bytes(),
+        ))
     }
 
     // Messages that are non-sensitive and can be sent to the client
@@ -1096,20 +1054,45 @@ mod server {
     #[cfg(test)]
     mod tests {
         use super::create_https_cert_and_privkey;
-        use openssl::nid::Nid;
+        use rustls_pki_types::pem::PemObject as _;
+        use rustls_pki_types::{CertificateDer, ServerName, UnixTime};
+        use sha2::Digest as _;
 
-        /// rustls rejects a SHA-1 signature, and the failure surfaces only as
-        /// every dist job being un-assigned -- the dist tests caught it, but
-        /// only on Linux, in a container, after minutes of retries.
+        /// The certificate is checked the way the scheduler and every client
+        /// check it: as the only root for this server, by rustls's verifier, for
+        /// the address it was issued for. Each piece has failed in its time --
+        /// a SHA-1 signature rustls refused surfaced only as every dist job
+        /// being un-assigned, found by the dist tests in a container after
+        /// minutes of retries -- and this says so in a unit test instead.
         #[test]
-        fn server_certificate_is_signed_with_sha256() {
-            let (_, cert_pem, _) =
+        fn rustls_accepts_the_server_certificate_for_its_address() {
+            let (digest, cert_pem, key_pem) =
                 create_https_cert_and_privkey("127.0.0.1:10501".parse().unwrap()).unwrap();
-            let cert = openssl::x509::X509::from_pem(&cert_pem).unwrap();
-            assert_eq!(
-                cert.signature_algorithm().object().nid(),
-                Nid::SHA256WITHRSAENCRYPTION
+            let der = CertificateDer::from_pem_slice(&cert_pem).unwrap();
+
+            let anchor = webpki::anchor_from_trusted_cert(&der).unwrap().to_owned();
+            let cert = webpki::EndEntityCert::try_from(&der).unwrap();
+            cert.verify_for_usage(
+                webpki::ALL_VERIFICATION_ALGS,
+                &[anchor],
+                &[],
+                UnixTime::now(),
+                webpki::KeyUsage::server_auth(),
+                None,
+                None,
+            )
+            .unwrap();
+            cert.verify_is_valid_for_subject_name(&ServerName::try_from("127.0.0.1").unwrap())
+                .unwrap();
+            // ...and only for that address.
+            assert!(
+                cert.verify_is_valid_for_subject_name(&ServerName::try_from("127.0.0.2").unwrap())
+                    .is_err()
             );
+
+            // The digest that identifies it is SHA-256 over the DER.
+            assert_eq!(digest, sha2::Sha256::digest(der.as_ref()).to_vec());
+            assert!(String::from_utf8_lossy(&key_pem).starts_with("-----BEGIN PRIVATE KEY-----"));
         }
     }
 }
