@@ -1,0 +1,13 @@
+{
+  "//": "Type-checking only. The action runs these .mts files as they are, on the runner's Node 24, with no dependencies installed; nothing here is needed to use it.",
+  "name": "sccion-action",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "check": "tsc -p ."
+  },
+  "devDependencies": {
+    "@types/node": "24.19.1",
+    "typescript": "7.0.2"
+  }
+}

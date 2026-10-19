@@ -5,11 +5,24 @@ on:
   # A third of the commits on `main` touch only prose, and each one paid for a
   # full matrix. Nothing in the build reads these paths. Tag pushes are not
   # path-filtered, so a release still runs whatever the tag's commit touched.
+  #
+  # Nor does it read the GitHub Action (action.yml, .github/action/): nothing
+  # here runs it from the working tree, and integration-tests' `gha` job is
+  # what tests it.
+  #
+  # Every branch, but only version tags. Without the tag filter any tag at all
+  # ran the full matrix and all eight release builds -- macOS at ten times a
+  # Linux minute -- before `release` refused it; and tags now double as the
+  # action's versions, so one that is not a release must not try to be one.
   push:
+    branches: ['**']
+    tags: ['v[0-9]+.[0-9]+.[0-9]+*']
     paths-ignore: &prose
       - 'context/**'
       - 'docs/**'
       - '**.md'
+      - 'action.yml'
+      - '.github/action/**'
   pull_request:
     paths-ignore: *prose
   # Beta and nightly, and the CUDA 11.8 entry, once a week instead of on every
@@ -593,9 +606,13 @@ jobs:
         run: |
           tag_name=${GITHUB_REF#refs/tags/}
           v=$(grep -m 1 "^version" Cargo.toml|sed -e "s|version = \"\(.*\)\"|\1|")
-          if ! echo $tag_name|grep -q $v; then
-             echo "Mistmatch of the version:"
-             echo "Cargo.toml says $v while the tag is $tag_name"
+          # Exactly `v` and the version. This was an unanchored grep, so for a
+          # Cargo.toml saying 0.17.0 it passed v10.17.0, v0.17.0-rc.1 and even
+          # v0.1730 (the dots are wildcards) -- and the action installs the
+          # release named by its own tag's Cargo.toml.
+          if [ "$tag_name" != "v$v" ]; then
+             echo "Mismatch of the version:"
+             echo "Cargo.toml says $v, so the tag must be v$v, not $tag_name"
              exit 2
           fi
 

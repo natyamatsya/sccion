@@ -1,0 +1,107 @@
+# SPDX-License-Identifier: Apache-2.0
+#
+# sccion as a GitHub Action: `uses: natyamatsya/sccion@v0.17.0`.
+#
+# A JavaScript action, for the two things a composite one cannot do: read the
+# Actions cache credentials, which the runner hands only to JavaScript actions,
+# and run a post step. Written in TypeScript and run as written -- Node 24
+# strips the types itself -- so there is no build and no bundled dist/ to keep
+# in step with the source. See .github/action/.
+
+name: sccion
+description: >-
+  Install sccion, start its server with the GitHub Actions cache as the
+  backend, and report what it cached when the job ends.
+author: natyamatsya
+
+inputs:
+  version:
+    description: >-
+      The release to install: a tag such as v0.17.0, or `latest` for the newest
+      published one. Empty installs the release this copy of the action belongs
+      to -- the version in the Cargo.toml beside it -- so
+      natyamatsya/sccion@v0.17.0 installs sccion v0.17.0.
+    default: ''
+  repository:
+    description: Where the releases are.
+    default: natyamatsya/sccion
+  token:
+    description: >-
+      Reads the releases. github.token can, in natyamatsya/sccion's own
+      workflows; any other repository needs a fine-grained token with
+      Contents: read on natyamatsya/sccion, passed from a secret.
+    default: ${{ github.token }}
+  sha256:
+    description: >-
+      Digests to insist on, one `<sha256>  <archive>` line per platform as
+      sha256sum prints them. Checked as well as the release's own .sha256.
+    default: ''
+  binary:
+    description: >-
+      An sccion executable to use instead of downloading one. For testing
+      sccion's own builds.
+    default: ''
+  backend:
+    description: >-
+      `gha` keeps the cache in the GitHub Actions cache. `env` sets no backend
+      and leaves the choice to SCCION_* settings in the job's environment or a
+      config file -- S3, Redis, WebDAV, Azure and the rest -- falling back to a
+      local disk cache.
+    default: gha
+  gha-version:
+    description: >-
+      SCCION_GHA_VERSION, a namespace inside the Actions cache. Change it to
+      start over. sccion adds its own version to it either way.
+    default: ''
+  port:
+    description: The server's port. Empty leaves sccion's default, 4226.
+    default: ''
+  export-env:
+    description: >-
+      Put sccion on PATH and set SCCION_PATH, RUSTC_WRAPPER and the rest for
+      the steps that follow. `false` sets nothing -- the outputs carry what a
+      step needs -- for workflows that must keep every sccion setting out of
+      some step.
+    default: 'true'
+  rustc-wrapper:
+    description: Set RUSTC_WRAPPER, and CARGO_INCREMENTAL=0 if unset. Needs export-env.
+    default: 'true'
+  cmake-launcher:
+    description: >-
+      Set CMAKE_{C,CXX,CUDA}_COMPILER_LAUNCHER, which CMake 3.17+ reads when a
+      build directory is first configured. Needs export-env.
+    default: 'false'
+  log:
+    description: >-
+      SCCION_LOG for the server, which writes to a file under RUNNER_TEMP. The
+      post step quotes its errors when a cache read or write failed. Failed
+      writes are logged at debug level, hence the server's debug filter.
+    default: warn,sccion::server=debug
+  required:
+    description: >-
+      Fail the step when sccion cannot be set up. By default the step warns
+      and sets nothing, and the job compiles uncached -- as a pull request from
+      a fork, which receives no secrets, always will.
+    default: 'false'
+  summary:
+    description: Write hit and miss counts to an annotation and the job summary.
+    default: 'true'
+
+outputs:
+  installed:
+    description: "`true` once the server is running."
+  path:
+    description: The sccion executable.
+  rustc-wrapper:
+    description: >-
+      The same executable under the name `sccache`, for RUSTC_WRAPPER. cc-rs
+      puts build scripts' C and C++ through RUSTC_WRAPPER only when it has a
+      name cc-rs recognises, and `sccion` is not one.
+  version:
+    description: The release installed, or `local` for `binary`.
+
+runs:
+  using: node24
+  main: .github/action/main.mts
+  post: .github/action/post.mts
+  post-if: always()

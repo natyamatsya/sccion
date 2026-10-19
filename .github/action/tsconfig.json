@@ -1,0 +1,22 @@
+{
+  // Checking, not compiling: Node 24 runs these files itself, so tsc emits
+  // nothing and the options below exist to keep the source runnable as is.
+  "compilerOptions": {
+    "noEmit": true,
+    // Only syntax Node can strip -- no enum, namespace or parameter
+    // properties -- since nothing else ever transforms these files.
+    "erasableSyntaxOnly": true,
+    // `import ... from './runner.mts'`, extension and all, which is what Node
+    // resolves.
+    "allowImportingTsExtensions": true,
+    "verbatimModuleSyntax": true,
+    "module": "nodenext",
+    "target": "es2024",
+    "types": ["node"],
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "noImplicitReturns": true,
+    "noFallthroughCasesInSwitch": true
+  },
+  "include": ["*.mts"]
+}

@@ -5,12 +5,15 @@ name: Benchmarks
 # spell-checker:ignore codspeed dtolnay Swatinem
 
 on:
-  # Prose-only commits are skipped, as in `ci.yml`: nothing here reads these paths.
+  # Prose-only and action-only commits are skipped, as in `ci.yml`: nothing
+  # here reads these paths.
   pull_request:
     paths-ignore: &prose
       - 'context/**'
       - 'docs/**'
       - '**.md'
+      - 'action.yml'
+      - '.github/action/**'
   # `main` only, for two reasons. CodSpeed compares a pull request against the
   # base branch's last run, so pushes here are the baseline and cannot simply be
   # dropped. And the previous pattern was `'*'`, which does not match a branch

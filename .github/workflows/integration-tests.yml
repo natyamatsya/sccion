@@ -102,25 +102,38 @@ jobs:
         env:
           CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
 
+  # This repository's GitHub Action (action.yml at the root), against the sccion
+  # this workflow just built: its TypeScript type-checks, the Actions cache
+  # credentials stay with the server, every write reaches the Actions cache, and
+  # a clean rebuild reads every lookup back from it. A small crate rather than
+  # sccion itself, so a run adds a few entries to the repository's cache, not
+  # hundreds of megabytes.
+  #
+  # The write assertion is the one that matters most: a cache that stores
+  # nothing passes every build, only slower. That is how ci.yml's own cache ran
+  # for a whole run -- 794 misses, 794 failed writes -- before anyone looked.
   gha:
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 15
     needs: build
-
     env:
-      SCCACHE_GHA_ENABLED: "on"
-      RUSTC_WRAPPER: /home/runner/.cargo/bin/sccion
+      # tests/test-crate reads it with env!(), and fails to compile without it.
+      TEST_ENV_VAR: "1"
+    defaults:
+      run:
+        working-directory: tests/test-crate
 
     steps:
       - name: Clone repository
         uses: actions/checkout@v5
 
-      - name: Configure Cache Env
-        uses: actions/github-script@v8
-        with:
-          script: |
-            core.exportVariable('ACTIONS_RESULTS_URL', process.env.ACTIONS_RESULTS_URL || '');
-            core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '');
+      # The action runs as written, on the runner's Node 24, so this is the only
+      # check its source gets before a runner executes it.
+      - name: Type-check the action
+        working-directory: .github/action
+        run: |
+          npm ci --ignore-scripts --no-audit --no-fund
+          npm run check
 
       - name: Install rust
         uses: ./.github/actions/rust-toolchain
@@ -132,25 +145,40 @@ jobs:
           name: integration-tests
           path: /home/runner/.cargo/bin/
       - name: Chmod for binary
+        working-directory: .
         run: chmod +x ${SCCACHE_PATH}
 
-      - name: Test
-        run: cargo clean && cargo build
+      - name: Set up sccion through the action
+        id: sccion
+        uses: ./
+        with:
+          binary: ${{ env.SCCACHE_PATH }}
+          # No earlier run wrote here, so every hit below is this job's own write.
+          gha-version: action-${{ github.run_id }}-${{ github.run_attempt }}
+          required: true
 
-      - name: Output
+      - name: The cache credentials stayed with the server
         run: |
-          ${SCCACHE_PATH} --show-stats
+          for v in ACTIONS_RUNTIME_TOKEN ACTIONS_RESULTS_URL SCCION_GHA_ENABLED SCCACHE_GHA_ENABLED; do
+            if [ -n "${!v:-}" ]; then echo "::error::$v reached a run step"; exit 1; fi
+          done
+          [ "$RUSTC_WRAPPER" = '${{ steps.sccion.outputs.rustc-wrapper }}' ]
+          [ "$(basename "$RUSTC_WRAPPER")" = sccache ]
 
-          ${SCCACHE_PATH} --show-stats | grep gha
-
-      - name: Test Twice for Cache Read
-        run: cargo clean && cargo build
-
-      - name: Output
+      - name: Cold build; every write reaches the Actions cache
         run: |
-          ${SCCACHE_PATH} --show-stats
+          cargo build
+          sccion --show-stats
+          sccion --show-stats --stats-format=json | jq -e '.stats.cache_writes > 0 and .stats.cache_write_errors == 0'
+          sccion --zero-stats
 
-          ${SCCACHE_PATH} --show-stats | grep -e "Cache hits\s*[1-9]"
+      - name: Clean build; every lookup a hit
+        run: |
+          cargo clean
+          cargo build
+          sccion --show-stats
+          sccion --show-stats --stats-format=json \
+            | jq -e '([.stats.cache_hits.counts[]] | add // 0) > 0 and ([.stats.cache_misses.counts[]] | add // 0) == 0'
 
   test-mock-msvc:
     runs-on: windows-2022

@@ -24,3 +24,7 @@ result
 
 # Benchmark harness output (see scripts/bench/README.md)
 scripts/bench/results/
+
+# The action's type-check dependencies (.github/action/package.json); nothing
+# needs them at run time.
+.github/action/node_modules
