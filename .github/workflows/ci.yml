@@ -262,6 +262,82 @@ jobs:
           sudo apt clean
           sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android /usr/local/share/boost /usr/share/swift /var/lib/apt/lists/*
 
+      # Compilation through a compiler cache kept in the Actions cache, so a
+      # push recompiles what it changed rather than all ~400 crates. The tests
+      # themselves run with no wrapper and no SCCACHE_* in sight: they start
+      # sccion servers of their own and read that namespace, and a cache
+      # setting leaking into them would change what they test.
+      #
+      # Upstream sccache, pinned and checksum-verified, rather than sccion:
+      # the cache must not break when the code under test does, and sccion has
+      # no release to download yet. Port 4227, clear of the 4226 the tests use.
+      #
+      # The cache URL and runtime token are handed over under names nothing
+      # reads except the step that starts the server -- not ACTIONS_*, which
+      # the test run would otherwise carry under the names a GHA backend
+      # looks for.
+      - name: Expose the Actions cache to the compiler cache
+        uses: actions/github-script@v8
+        with:
+          script: |
+            core.exportVariable('CI_CACHE_RESULTS_URL', process.env.ACTIONS_RESULTS_URL || '');
+            core.exportVariable('CI_CACHE_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '');
+
+      # Failing here costs speed, not the build: the step shows red, and
+      # without CI_SCCACHE the build below runs uncached. A binary whose
+      # checksum is wrong is never run either way.
+      - name: Start the compiler cache
+        continue-on-error: true
+        shell: bash
+        env:
+          ACTIONS_RESULTS_URL: ${{ env.CI_CACHE_RESULTS_URL }}
+          ACTIONS_RUNTIME_TOKEN: ${{ env.CI_CACHE_RUNTIME_TOKEN }}
+          SCCACHE_GHA_ENABLED: "on"
+          SCCACHE_GHA_VERSION: sccion-ci-1
+          SCCACHE_SERVER_PORT: "4227"
+          SCCACHE_IDLE_TIMEOUT: "0"
+        run: |
+          set -euo pipefail
+          version=v0.18.0
+          case "$RUNNER_OS-$RUNNER_ARCH" in
+            Linux-X64)   asset=x86_64-unknown-linux-musl sum=45f1447fbe231e3037bde351ef70677dd212216c8d62ae7ca409fecc4d6acc89 ;;
+            macOS-ARM64) asset=aarch64-apple-darwin      sum=308184519b646f5125289e8515b36f6ca65a13a041923994aebe702348674e8e ;;
+            Windows-X64) asset=x86_64-pc-windows-msvc    sum=1a63c1be2beab3f04d27e4cc145443e092e02d3dd83a51030989829d7023091b ;;
+            *) echo "::notice::no pinned sccache for $RUNNER_OS-$RUNNER_ARCH; compiling uncached"; exit 0 ;;
+          esac
+          name="sccache-$version-$asset"
+          curl -sSfL -o sccache.tar.gz "https://github.com/mozilla/sccache/releases/download/$version/$name.tar.gz"
+          # Compared by hand: macOS has a BSD `sha256sum` whose `-c` will not
+          # read GNU's format from stdin, and Windows may lack `shasum`.
+          if command -v shasum >/dev/null; then got=$(shasum -a 256 sccache.tar.gz); else got=$(sha256sum sccache.tar.gz); fi
+          got=${got%% *}
+          [ "$got" = "$sum" ] || { echo "::error::sccache $version $asset: sha256 $got, expected $sum"; exit 1; }
+          tar -xzf sccache.tar.gz
+          exe=sccache; [ "$RUNNER_OS" = Windows ] && exe=sccache.exe
+          dir="$RUNNER_TEMP/sccache"; mkdir -p "$dir"; mv "$name/$exe" "$dir/"; rm -rf "$name" sccache.tar.gz
+          "$dir/$exe" --start-server
+          echo "CI_SCCACHE=$dir/$exe" >> "$GITHUB_ENV"
+
+      - name: Build tests
+        run: cargo test --locked --lib --bins --tests --no-run ${{ matrix.extra_args }}
+        env:
+          CARGO_INCREMENTAL: "0"
+          # Empty, and so uncached, wherever no sccache was installed.
+          RUSTC_WRAPPER: ${{ env.CI_SCCACHE }}
+          SCCACHE_SERVER_PORT: "4227"
+          # A cache that falls over must cost speed, never the build.
+          SCCACHE_IGNORE_SERVER_IO_ERROR: "1"
+          RUSTFLAGS: "-Cinstrument-coverage -Ccodegen-units=1 -Copt-level=0 -Coverflow-checks=off"
+
+      - name: Stop the compiler cache
+        if: ${{ always() && env.CI_SCCACHE != '' }}
+        shell: bash
+        env:
+          SCCACHE_SERVER_PORT: "4227"
+        run: '"$CI_SCCACHE" --stop-server'
+
+      # Built by the step above; cargo does not count the wrapper toward
+      # freshness, so dropping it here recompiles nothing.
       - name: Execute tests
         run: cargo test --locked --lib --bins --tests ${{ matrix.extra_args }}
         env:
