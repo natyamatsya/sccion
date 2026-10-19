@@ -193,7 +193,7 @@ fn load_next<Prototype: Copy>(name: &[u8]) -> Prototype {
             panic!("failed to load libc function pointer");
         }
 
-        *(&sym as *const *mut c_void as *const Prototype)
+        *(&sym as *const *mut c_void).cast::<Prototype>()
     }
 }
 
