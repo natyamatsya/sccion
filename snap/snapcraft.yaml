@@ -41,7 +41,6 @@ parts:
       craftctl default
       craftctl set version="$( git -C "${CRAFT_PART_SRC}" describe --tags )"
     build-packages:
-      - libssl-dev
       - make
       - pkg-config
     rust-features:

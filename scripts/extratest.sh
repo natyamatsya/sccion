@@ -12,13 +12,9 @@ gnutarget=x86_64-unknown-linux-gnu
 wintarget=x86_64-pc-windows-gnu
 
 gnutarget() {
-    unset OPENSSL_DIR
-    export OPENSSL_STATIC=1
     target=$gnutarget
 }
 wintarget() {
-    export OPENSSL_DIR=$(pwd)/openssl-win
-    export OPENSSL_STATIC=1
     target=$wintarget
 }
 

@@ -136,10 +136,9 @@ endif
 		-v $(PROJECT_ROOT):/sccion \
 		-v $(PROJECT_ROOT)/target/integration-cargo-cache:/usr/local/cargo/registry \
 		-w /sccion \
-		-e OPENSSL_NO_VENDOR=1 \
 		$(if $(WITH_COVERAGE),-e RUSTFLAGS="-Cinstrument-coverage -Ccodegen-units=1 -Copt-level=0 -Coverflow-checks=off" -e CARGO_INCREMENTAL=0 -e "LLVM_PROFILE_FILE=/tmp/build-%p-%m.profraw") \
 		rust:latest \
-		bash -c "apt-get update -qq && apt-get install -y -qq libssl-dev pkg-config && \
+		bash -c "apt-get update -qq && apt-get install -y -qq pkg-config && \
 		         cargo build --all-features $(BUILD_TARGET_DIR) && \
 		         chown -R $(UID):$(GID) target"
 	@echo "Binary built: $(SCCACHE_BIN)"

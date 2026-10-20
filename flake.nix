@@ -31,7 +31,6 @@
         };
 
         nativeBuildInputs = [final.pkg-config];
-        buildInputs = [final.openssl];
 
         cargoBuildFlags =
           if features != []
@@ -78,7 +77,6 @@
 
           buildInputs = with pkgs; [
             rustup
-            openssl
             pkg-config
             gcc
           ];
