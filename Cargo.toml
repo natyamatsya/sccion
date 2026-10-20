@@ -298,7 +298,12 @@ memcached = ["opendal/services-memcached"]
 native-zlib = []
 oss = ["opendal/services-oss", "reqwest", "opendal-http-transport-reqwest"]
 redis = ["url", "opendal/services-redis"]
-s3 = ["opendal/services-s3", "http", "reqwest", "opendal-http-transport-reqwest"]
+s3 = [
+  "opendal/services-s3",
+  "http",
+  "reqwest",
+  "opendal-http-transport-reqwest",
+]
 webdav = [
   "opendal/services-webdav",
   "reqwest",
