@@ -6,14 +6,14 @@ This repository is also a GitHub Action. It installs sccion, starts its server
 with the Actions cache as the backend, and points the rest of the job at it:
 
 ```yaml
-- uses: natyamatsya/sccion@v0.1.1
+- uses: natyamatsya/sccion@v0.1.2
 - run: cargo build
 ```
 
 What it does:
 
-- **Installs** the release the action is tagged with (`@v0.1.1` installs sccion
-  v0.1.1), downloaded through the GitHub API and checked against the release's
+- **Installs** the release the action is tagged with (`@v0.1.2` installs sccion
+  v0.1.2), downloaded through the GitHub API and checked against the release's
   published SHA-256 -- and against `sha256:` if you pin digests yourself.
 - **Starts the server** with the Actions cache credentials in its environment
   and nowhere else. They are not written to `GITHUB_ENV`, so later steps, build
