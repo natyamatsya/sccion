@@ -41,6 +41,8 @@ mod common;
 mod scheduler;
 mod serve;
 mod server;
+#[cfg(test)]
+mod tests;
 
 pub use scheduler::Scheduler;
 pub use server::Server;
