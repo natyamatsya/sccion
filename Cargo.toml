@@ -107,12 +107,12 @@ memmap2 = "0.9.4"
 mime = { version = "0.3", optional = true }
 number_prefix = "0.4"
 object = "0.40"
-opendal = { version = "0.58.1", optional = true, default-features = false, features = [
+opendal = { version = "0.59.4", optional = true, default-features = false, features = [
   "layers-logging",
 ] }
 # opendal 0.58 made the HTTP transport pluggable and moved the reqwest one
 # out of the facade, so setting a user agent means naming this crate.
-opendal-http-transport-reqwest = { version = "0.58.1", optional = true }
+opendal-http-transport-reqwest = { version = "0.59.4", optional = true }
 rand = "0.10.2"
 # The dist server's self-signed certificate. RSA keys need aws-lc-rs, which
 # rustls already brings in.
