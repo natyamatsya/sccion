@@ -10,7 +10,7 @@ version = "0.1.0"
 ctor = "0.2"
 libc = "0.2.99"
 log = "0.4"
-rand = "0.8"
+rand = "0.10"
 simplelog = "0.12"
 
 [lib]
