@@ -5,13 +5,6 @@ target
 .cargo
 *.pyc
 
-# snapcraft artifacts
-/parts
-/prime
-/snap/.snapcraft
-/stage
-/*.snap
-
 # Ignore lockfiles of test crates used in the integration tests
 tests/**/Cargo.lock
 
