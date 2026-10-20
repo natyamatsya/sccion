@@ -434,3 +434,43 @@ Until these binaries [are included in releases](https://github.com/mozilla/sccac
 ```
 docker run -ti --rm -v $PWD:/sccion luser/sccion-musl-build:0.1 /bin/bash -c "cd /sccion; cargo build --release --target x86_64-unknown-linux-musl --features=dist-server && strip target/x86_64-unknown-linux-musl/release/sccion-dist && cd target/x86_64-unknown-linux-musl/release/ && tar czf sccion-dist.tar.gz sccion-dist"
 ```
+
+## The axum server: `dist-server-axum`
+
+`sccion-dist` can be built on either of two HTTP stacks:
+
+- `--features=dist-server`: rouille on tiny_http, with the build server's TLS
+  through OpenSSL. The default, and what the release builds use.
+- `--features=dist-server-axum`: axum on hyper 1 and tokio, with the build
+  server's TLS through rustls -- the stack the client, and the scheduler's
+  connections to build servers, already verify with. It implies
+  `dist-server`.
+
+```
+cargo build --release --features=dist-server-axum --bin sccion-dist
+```
+
+Nothing else changes: the binary is still `sccion-dist`, with the same
+commands, configuration files and wire protocol, so a scheduler, build server
+or client built either way works with the others, and a cluster can move over
+one machine at a time. The build server's certificate is the same self-signed
+RSA/SHA-256 certificate, generated at startup.
+
+What is different in operation:
+
+- Requests are tokio tasks rather than threads from a pool of eight per CPU.
+  The work that blocks -- running a compile, writing a toolchain to the cache,
+  the scheduler's bookkeeping -- runs on tokio's blocking thread pool.
+- Toolchain uploads and job inputs are streamed into the build server as they
+  arrive, as before; if the build server answers without needing all of an
+  upload (it already has the toolchain), it reads the rest before answering, so
+  the client sees the answer rather than a reset connection.
+- A client has 30 seconds to complete the TLS handshake, and 30 seconds to
+  send a request's headers. tiny_http had no limit on either.
+- A request for a path the server does not have, or with the wrong method, is
+  an empty 404, as before; a `HEAD` request for a `GET` route is now answered
+  like the `GET`.
+
+rouille stays the default until the axum server has replaced it; building with
+`dist-server-axum` still compiles rouille and OpenSSL meanwhile, but
+`sccion-dist` no longer uses them.

@@ -14,6 +14,8 @@ cargo build --release --features="dist-client dist-server"
 
 The `target/release/sccion` binary will be used on the client, and the `target/release/sccion-dist` binary will be used on the scheduler and build server.
 
+To build `sccion-dist` on axum and rustls instead of rouille and OpenSSL, use `dist-server-axum` in place of `dist-server`; see [the axum server](Distributed.md#the-axum-server-dist-server-axum). The two interoperate, so the choice can differ from machine to machine.
+
 If you're only planning to use the client, it is enabled by default, so just `cargo install sccion` should do the trick.
 
 Configure a scheduler
