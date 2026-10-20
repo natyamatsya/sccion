@@ -49,17 +49,31 @@ fn test_rust_cargo_build_readonly() -> Result<()> {
 #[test]
 #[serial]
 #[cfg(unix)]
-fn test_run_log_no_perm() -> Result<()> {
+fn test_run_log_cannot_open() -> Result<()> {
     trace!("sccache with log");
     stop_sccache()?;
+
+    // A log path under a regular file: opening it fails with ENOTDIR for
+    // every user. `/no-perm.log` relied on `/` being unwritable, which it is
+    // not for root -- and tests run as root in many containers.
+    let tempdir = tempfile::Builder::new()
+        .prefix("sccache_test_rust_cargo")
+        .tempdir()
+        .context("Failed to create tempdir")?;
+    let not_a_dir = tempdir.path().join("not-a-dir");
+    fs::write(&not_a_dir, "")?;
+    let log = not_a_dir.join("cannot-open.log");
     let mut cmd = Command::new(SCCACHE_BIN.as_os_str());
     cmd.arg("gcc")
-        .env("SCCACHE_ERROR_LOG", "/no-perm.log") // Should not work
+        .env("SCCACHE_ERROR_LOG", &log) // Should not work
         .env("SCCACHE_LOG", "debug");
 
-    cmd.assert().failure().stderr(predicate::str::contains(
-        "Cannot open/write log file '/no-perm.log'",
-    ));
+    cmd.assert()
+        .failure()
+        .stderr(predicate::str::contains(format!(
+            "Cannot open/write log file '{}'",
+            log.display()
+        )));
     Ok(())
 }
 
