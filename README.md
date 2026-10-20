@@ -1,6 +1,7 @@
 ![Status](https://img.shields.io/badge/status-experimental-orange)
 ![License](https://img.shields.io/badge/license-Apache--2.0-blue)
 [![Upstream](https://img.shields.io/badge/forked%20from-mozilla%2Fsccache-lightgrey)](https://github.com/mozilla/sccache)
+[![CodSpeed](https://img.shields.io/endpoint?url=https://codspeed.io/badge.json)](https://app.codspeed.io/natyamatsya/sccion?utm_source=badge)
 
 sccion - Shared Compilation Cache (experimental fork)
 =====================================================

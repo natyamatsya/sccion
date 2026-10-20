@@ -38,11 +38,10 @@ jobs:
     name: Run ${{ matrix.mode }} benchmarks (CodSpeed)
     runs-on: ubuntu-latest
     timeout-minutes: 45
-    # CodSpeed authenticates the upload with the job's OIDC token: the
-    # repository has no CODSPEED_TOKEN secret, and without a token the action
-    # asks for OIDC and stops there unless it may mint one. Scoped to this job,
-    # as CodSpeed's docs show; a job-level block replaces the workflow's, so
-    # `contents: read` is repeated for actions/checkout.
+    # CodSpeed authenticates the upload with the job's OIDC token, so there is
+    # no CODSPEED_TOKEN secret to keep. Scoped to this job, as CodSpeed's docs
+    # show; a job-level block replaces the workflow's, so `contents: read` is
+    # repeated for actions/checkout.
     permissions:
       contents: read
       id-token: write
@@ -79,13 +78,12 @@ jobs:
         env:
           CARGO_PROFILE_RELEASE_LTO: thin
           CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
-        run: cargo codspeed build
+        run: cargo codspeed build -m ${{ matrix.mode }}
 
       - name: Run benchmarks
-        uses: CodSpeedHQ/action@v4
+        uses: CodSpeedHQ/action@v5
         env:
           CODSPEED_LOG: debug
         with:
           mode: ${{ matrix.mode }}
           run: cargo codspeed run > /dev/null
-          token: ${{ secrets.CODSPEED_TOKEN }}
