@@ -36,14 +36,6 @@ mod token_check;
 
 use cmdline::{AuthSubcommand, Command};
 
-// The HTTP servers behind `sccion-dist scheduler` and `sccion-dist server`:
-// axum's under `dist-server-axum`, rouille's otherwise. The two take the same
-// arguments and speak the same protocol, so nothing else here knows which.
-#[cfg(not(feature = "dist-server-axum"))]
-use sccion::dist::http as dist_http;
-#[cfg(feature = "dist-server-axum")]
-use sccion::dist::http_axum as dist_http;
-
 pub const INSECURE_DIST_SERVER_TOKEN: &str = "dangerously_insecure_server";
 
 #[cfg(not(any(
@@ -232,7 +224,7 @@ fn run(command: Command) -> Result<i32> {
 
             daemonize()?;
             let scheduler = Scheduler::new();
-            let http_scheduler = dist_http::Scheduler::new(
+            let http_scheduler = dist::http::Scheduler::new(
                 public_addr,
                 scheduler,
                 check_client_auth,
@@ -311,7 +303,7 @@ fn run(command: Command) -> Result<i32> {
 
             let server = Server::new(builder, &cache_dir, toolchain_cache_size)
                 .context("Failed to create sccache server instance")?;
-            let http_server = dist_http::Server::new(
+            let http_server = dist::http::Server::new(
                 public_addr,
                 bind_address,
                 scheduler_url.to_url(),

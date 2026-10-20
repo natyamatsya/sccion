@@ -26,8 +26,6 @@ use axum::body::{Body, Bytes, HttpBody};
 use axum::http::Request;
 use axum::response::Response;
 use hyper_util::rt::{TokioIo, TokioTimer};
-use rustls::pki_types::pem::PemObject as _;
-use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 use std::convert::Infallible;
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -38,8 +36,7 @@ use tokio::net::TcpListener;
 use tokio_rustls::TlsAcceptor;
 use tower::ServiceExt as _;
 
-use super::common::{RemoteAddr, ReqId};
-use crate::errors::*;
+use super::handler::{RemoteAddr, ReqId};
 
 /// How long a client has to complete the TLS handshake. tiny_http set no
 /// limit; without one, a connection that never finishes its handshake would
@@ -53,29 +50,6 @@ const HEADER_READ_TIMEOUT: Duration = Duration::from_secs(30);
 /// After a failed `accept` -- out of file descriptors, most likely -- how
 /// long to wait before the next, rather than spinning on the error.
 const ACCEPT_ERROR_BACKOFF: Duration = Duration::from_millis(100);
-
-/// The rustls configuration for the build server's certificate.
-///
-/// The certificate and key are `create_https_cert_and_privkey`'s: rcgen's
-/// PEM, the key PKCS#8. The provider is aws-lc-rs, named rather than taken
-/// from the process default so that it is the one rustls already builds with
-/// here, for the scheduler's and clients' verification, and never a second.
-/// TLS 1.2 and 1.3, as rustls offers by default; no ALPN, as tiny_http offered
-/// none, so clients speak HTTP/1.1.
-pub(super) fn tls_acceptor(cert_pem: &[u8], privkey_pem: &[u8]) -> Result<TlsAcceptor> {
-    let cert = CertificateDer::from_pem_slice(cert_pem)
-        .map_err(|e| anyhow!("failed to read the server certificate PEM: {e}"))?;
-    let key = PrivateKeyDer::from_pem_slice(privkey_pem)
-        .map_err(|e| anyhow!("failed to read the server private key PEM: {e}"))?;
-    let provider = Arc::new(rustls::crypto::aws_lc_rs::default_provider());
-    let config = rustls::ServerConfig::builder_with_provider(provider)
-        .with_safe_default_protocol_versions()
-        .context("failed to choose TLS protocol versions")?
-        .with_no_client_auth()
-        .with_single_cert(vec![cert], key)
-        .context("failed to configure TLS with the server certificate")?;
-    Ok(TlsAcceptor::from(Arc::new(config)))
-}
 
 /// Accepts connections on `listener` forever, each in a task of its own,
 /// through TLS if there is an acceptor, and serves their requests with

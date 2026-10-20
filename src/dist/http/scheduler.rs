@@ -27,24 +27,23 @@ use std::convert::Infallible;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::{Arc, Mutex};
 
-use super::common::{
-    HttpError, OUTGOING_TIMEOUT, PathParam, RemoteAddr, ReqId, bearer_token, bincode_req, block_on,
-    blocking, new_reqwest_client, not_found, path_param, prepare_response, read_bincode, respond,
+use super::auth::{
+    ClientAuthCheck, ClientVisibleMsg, JWTJobAuthorizer, ServerAuthCheck, bearer_token,
 };
-use super::serve::serve;
-use crate::dist::http::common::{
+use super::common::{
     AllocJobHttpResponse, HeartbeatServerHttpRequest, ReqwestRequestBuilderExt,
     ServerCertificateHttpResponse,
 };
-use crate::dist::http::server::{
-    ClientAuthCheck, ClientVisibleMsg, JWTJobAuthorizer, ServerAuthCheck,
+use super::handler::{
+    HttpError, OUTGOING_TIMEOUT, PathParam, RemoteAddr, ReqId, bincode_req, block_on, blocking,
+    new_reqwest_client, not_found, path_param, prepare_response, read_bincode, respond,
 };
-use crate::dist::http::urls;
+use super::serve::serve;
+use super::urls;
 use crate::dist::{self, AssignJobResult, JobId, JobState, SchedulerIncoming, ServerId, Toolchain};
 use crate::errors::*;
 
-/// The scheduler's HTTP server. Constructed and started as the rouille one,
-/// [`crate::dist::http::Scheduler`], is.
+/// The scheduler's HTTP server.
 pub struct Scheduler<S> {
     public_addr: SocketAddr,
     handler: S,
@@ -303,7 +302,7 @@ async fn status<S: SchedulerIncoming + 'static>(
 
 /// Which build server a request is from: its bearer token names it, and the
 /// request must come from that server's address -- or say it does, in
-/// `X-Real-IP`, from behind a proxy. rouille's `check_server_auth_or_err!`.
+/// `X-Real-IP`, from behind a proxy.
 ///
 /// Run on the runtime: the check is a token comparison or an HS256 signature,
 /// and touches no shared state.
@@ -351,7 +350,7 @@ struct SchedulerRequester {
 impl SchedulerRequester {
     /// Trusts `cert_pem` for `server_id` from now on, if it is not the
     /// certificate already trusted for it: rebuilds the client with every
-    /// known certificate as a root. rouille's `maybe_update_certs`.
+    /// known certificate as a root.
     ///
     /// The caller holds the certificate map's lock, so the map and the
     /// client change together.

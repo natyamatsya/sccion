@@ -31,20 +31,17 @@ use std::convert::Infallible;
 use std::io::Read;
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::Duration;
 
-use super::common::{
-    HttpError, PathParam, ReqId, bearer_token, bincode_req, block_on, blocking, body_reader, drain,
-    new_reqwest_client, not_found, path_param, prepare_response, read_bincode, respond,
+use super::auth::{JWT_KEY_LENGTH, JWTJobAuthorizer, bearer_token};
+use super::common::{HeartbeatServerHttpRequest, ReqwestRequestBuilderExt, RunJobHttpRequest};
+use super::handler::{
+    HttpError, MAX_BINCODE_BODY, PathParam, ReqId, bincode_req, block_on, blocking, body_reader,
+    drain, new_reqwest_client, not_found, path_param, prepare_response, read_bincode, respond,
 };
-use super::serve::{serve, tls_acceptor};
-use crate::dist::http::common::{
-    HeartbeatServerHttpRequest, ReqwestRequestBuilderExt, RunJobHttpRequest,
-};
-use crate::dist::http::server::{
-    HEARTBEAT_ERROR_INTERVAL, HEARTBEAT_INTERVAL, JWT_KEY_LENGTH, JWTJobAuthorizer,
-    MAX_BINCODE_BODY, create_https_cert_and_privkey,
-};
-use crate::dist::http::urls;
+use super::serve::serve;
+use super::tls::{create_https_cert_and_privkey, tls_acceptor};
+use super::urls;
 use crate::dist::{
     self, HeartbeatServerResult, InputsReader, JobAuthorizer, JobId, JobState, RunJobResult,
     ServerIncoming, ServerNonce, Toolchain, ToolchainReader, UpdateJobStateResult,
@@ -52,8 +49,15 @@ use crate::dist::{
 use crate::errors::*;
 use crate::util::num_cpus;
 
-/// The build server's HTTP server. Constructed and started as the rouille
-/// one, [`crate::dist::http::Server`], is.
+/// How often a build server tells the scheduler it is there.
+const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(30);
+/// How soon it tries again after a heartbeat failed.
+const HEARTBEAT_ERROR_INTERVAL: Duration = Duration::from_secs(10);
+/// How long the scheduler waits to hear from a build server before it takes
+/// it to be gone.
+pub const HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(90);
+
+/// The build server's HTTP server.
 pub struct Server<S> {
     bind_address: SocketAddr,
     scheduler_url: reqwest::Url,
@@ -136,8 +140,9 @@ impl<S: ServerIncoming + 'static> Server<S> {
             scheduler_auth.clone(),
         ));
 
-        // Listening before the first heartbeat, where rouille sent it first:
-        // the scheduler may assign a job the moment it hears of a server.
+        // Listening before the first heartbeat, where the rouille server sent
+        // it first: the scheduler may assign a job the moment it hears of a
+        // server.
         let listener = tokio::net::TcpListener::bind(bind_address)
             .await
             .with_context(|| {
@@ -233,7 +238,7 @@ pub(super) fn router<S: ServerIncoming + 'static>(state: Arc<ServerState<S>>) ->
 
 type Shared<S> = State<Arc<ServerState<S>>>;
 
-/// The request's bearer token must be the job's: rouille's `job_auth_or_401!`.
+/// The request's bearer token must be the job's.
 ///
 /// On the runtime: an HS256 signature over a few bytes, no shared state.
 fn check_job_auth<S>(

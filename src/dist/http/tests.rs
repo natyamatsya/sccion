@@ -1,16 +1,16 @@
 // SPDX-FileCopyrightText: Copyright natyamatsya and sccion contributors
 // SPDX-License-Identifier: Apache-2.0
 
-//! The axum scheduler and build server, in process.
+//! The scheduler and build server, in process.
 //!
 //! The router tests send requests built as the clients build them straight to
 //! the routers, with a scheduler and a build server that only record what they
 //! are given: routing, authentication, error responses and streaming, each
-//! against what the rouille handlers answered. The TLS tests put a real
-//! connection in between. The mixed tests start a rouille scheduler with an
-//! axum build server and the other way round, on loopback, and take a job
-//! through both: heartbeat, certificate exchange, assignment over TLS,
-//! toolchain upload, job run and job state.
+//! against the answers the protocol expects -- the statuses, headers and
+//! bodies that clients and peers of any version, the rouille servers' among
+//! them, rely on. The TLS tests put a real connection in between. The last
+//! starts a scheduler and a build server on loopback and takes a job through
+//! both.
 
 use axum::Router;
 use axum::body::{Body, Bytes};
@@ -27,19 +27,17 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use super::common::new_reqwest_client;
-use super::scheduler::{self, SchedulerState};
-use super::serve::{dispatch, serve, tls_acceptor};
-use super::server::{self, ServerState};
-use crate::dist::http::common::{
+use super::auth::{ClientAuthCheck, ClientVisibleMsg, JWTJobAuthorizer, ServerAuthCheck};
+use super::common::{
     AllocJobHttpResponse, HeartbeatServerHttpRequest, ReqwestRequestBuilderExt, RunJobHttpRequest,
     ServerCertificateHttpResponse,
 };
-use crate::dist::http::server::{
-    ClientAuthCheck, ClientVisibleMsg, JWTJobAuthorizer, MAX_BINCODE_BODY, ServerAuthCheck,
-    bincode_req, create_https_cert_and_privkey,
-};
-use crate::dist::http::urls;
+use super::handler::{MAX_BINCODE_BODY, bincode_req, new_reqwest_client};
+use super::scheduler::{self, SchedulerState};
+use super::serve::{dispatch, serve};
+use super::server::{self, ServerState};
+use super::tls::{create_https_cert_and_privkey, tls_acceptor};
+use super::urls;
 use crate::dist::{
     AllocJobResult, AssignJobResult, CompileCommand, HeartbeatServerResult, InputsReader, JobAlloc,
     JobAuthorizer, JobId, JobState, RunJobResult, SchedulerIncoming, SchedulerOutgoing,
@@ -47,7 +45,6 @@ use crate::dist::{
     SubmitToolchainResult, Toolchain, ToolchainReader, UpdateJobStateResult,
 };
 use crate::errors::*;
-use crate::util::new_reqwest_blocking_client;
 
 const CLIENT_TOKEN: &str = "the client token";
 const JWT_KEY: [u8; 32] = [7; 32];
@@ -334,7 +331,7 @@ async fn status_is_bincode_unless_json_is_preferred() {
     assert_eq!(res.status(), StatusCode::OK);
     assert_eq!(body_json(res).await["num_servers"], 0);
 
-    // A type it cannot give is answered with bincode, as rouille did.
+    // A type it cannot give is answered with bincode.
     let res = call(
         &router,
         status()
@@ -355,8 +352,7 @@ async fn anything_unrouted_is_an_empty_404() {
     let server = server_router(StubServer::default());
     let cases = [
         (&scheduler, Request::get("/api/v1/scheduler/nothing")),
-        // A known path with the wrong method: rouille's router did not match
-        // it either.
+        // A known path with the wrong method: a 404 too, not axum's 405.
         (&scheduler, Request::get("/api/v1/scheduler/alloc_job")),
         (&scheduler, Request::post("/api/v1/scheduler/status")),
         (&scheduler, Request::get("/api/v1/scheduler/status/")),
@@ -727,7 +723,7 @@ async fn a_toolchain_the_handler_does_not_read_is_drained_before_the_answer() {
     let chunks =
         futures::stream::iter((0..32).map(move |_| Ok::<_, std::io::Error>(chunk.clone())));
     let url = format!("http://{addr}/api/v1/distserver/submit_toolchain/{UNREAD_JOB}");
-    let res: SubmitToolchainResult = super::common::bincode_req(
+    let res: SubmitToolchainResult = bincode_req(
         reqwest::Client::new()
             .post(url)
             .bearer_auth(job_token(UNREAD_JOB))
@@ -772,24 +768,11 @@ async fn run_job_splits_the_frame_and_inflates_the_inputs() {
         assert_eq!(received, &inputs);
     }
 
-    // Too short to hold even the length: a 500, as rouille answered it.
+    // Too short to hold even the length: a 500.
     let res = call(&router, run_job(JobId(4), vec![0, 0])).await;
     assert_eq!(res.status(), StatusCode::INTERNAL_SERVER_ERROR);
     let json = body_json(res).await;
     assert_eq!(json["description"], "failed to read run job input length");
-}
-
-#[test]
-fn tls_takes_the_rcgen_certificate_and_key() {
-    let (_, cert_pem, key_pem) =
-        create_https_cert_and_privkey("127.0.0.1:10501".parse().unwrap()).unwrap();
-    tls_acceptor(&cert_pem, &key_pem).unwrap();
-    // The other way round is not a certificate and a key.
-    assert!(tls_acceptor(&key_pem, &cert_pem).is_err());
-    // A key that is not the certificate's.
-    let (_, _, other_key_pem) =
-        create_https_cert_and_privkey("127.0.0.1:10501".parse().unwrap()).unwrap();
-    assert!(tls_acceptor(&cert_pem, &other_key_pem).is_err());
 }
 
 /// The scheduler's and the clients' side of TLS, against the build server's:
@@ -817,7 +800,7 @@ async fn a_rustls_client_reaches_the_build_server_over_tls() {
     let tc = Toolchain {
         archive_id: "tc".to_owned(),
     };
-    let res: AssignJobResult = super::common::bincode_req(
+    let res: AssignJobResult = bincode_req(
         client
             .post(url)
             .bearer_auth(job_token(job_id))
@@ -833,58 +816,17 @@ async fn a_rustls_client_reaches_the_build_server_over_tls() {
     assert!(client.post(plain).send().await.is_err());
 }
 
-#[derive(Clone, Copy, Debug)]
-enum Implementation {
-    Rouille,
-    Axum,
-}
-
 fn free_addr() -> SocketAddr {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     listener.local_addr().unwrap()
 }
 
-fn start_scheduler(implementation: Implementation, addr: SocketAddr, stub: StubScheduler) {
-    thread::spawn(move || {
-        // `start` returns only to fail.
-        let Err(e) = match implementation {
-            Implementation::Rouille => {
-                crate::dist::http::Scheduler::new(addr, stub, Box::new(TokenCheck), server_auth())
-                    .start()
-            }
-            Implementation::Axum => {
-                super::Scheduler::new(addr, stub, Box::new(TokenCheck), server_auth()).start()
-            }
-        };
-        panic!("{implementation:?} scheduler stopped: {e:?}");
-    });
-}
-
-fn start_server(
-    implementation: Implementation,
-    addr: SocketAddr,
-    scheduler_url: reqwest::Url,
-    stub: StubServer,
-) {
-    let token = addr.to_string();
-    thread::spawn(move || {
-        let Err(e) = match implementation {
-            Implementation::Rouille => {
-                crate::dist::http::Server::new(addr, None, scheduler_url, token, stub)
-                    .unwrap()
-                    .start()
-            }
-            Implementation::Axum => super::Server::new(addr, None, scheduler_url, token, stub)
-                .unwrap()
-                .start(),
-        };
-        panic!("{implementation:?} server stopped: {e:?}");
-    });
-}
-
-/// A job through a scheduler and a build server of the given kinds, as a
-/// client takes it.
-fn a_job_goes_through(scheduler: Implementation, server: Implementation) {
+/// A job through a scheduler and a build server, each started as
+/// `sccion-dist` starts them, on loopback, as a client takes it: heartbeat,
+/// certificate exchange, assignment over TLS, toolchain upload, job run and
+/// the job state the build server reports back.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_job_goes_through_the_scheduler_and_a_build_server() {
     let scheduler_addr = free_addr();
     let scheduler_url: reqwest::Url = format!("http://{scheduler_addr}").parse().unwrap();
     let server_addr = free_addr();
@@ -893,25 +835,40 @@ fn a_job_goes_through(scheduler: Implementation, server: Implementation) {
         report_job_state: true,
         ..Default::default()
     };
-    start_scheduler(scheduler, scheduler_addr, stub_scheduler.clone());
-    start_server(
-        server,
-        server_addr,
-        scheduler_url.clone(),
-        stub_server.clone(),
-    );
+    // Each on a thread of its own, as `start` makes a runtime of its own and
+    // returns only to fail.
+    {
+        let stub = stub_scheduler.clone();
+        thread::spawn(move || {
+            let Err(e) =
+                super::Scheduler::new(scheduler_addr, stub, Box::new(TokenCheck), server_auth())
+                    .start();
+            panic!("scheduler stopped: {e:?}");
+        });
+    }
+    {
+        let stub = stub_server.clone();
+        let scheduler_url = scheduler_url.clone();
+        let token = server_addr.to_string();
+        thread::spawn(move || {
+            let Err(e) = super::Server::new(server_addr, None, scheduler_url, token, stub)
+                .unwrap()
+                .start();
+            panic!("server stopped: {e:?}");
+        });
+    }
 
     // The build server's heartbeat reaches the scheduler.
-    let client = new_reqwest_blocking_client();
+    let client = new_reqwest_client().unwrap();
     let deadline = Instant::now() + Duration::from_secs(30);
     loop {
         let status: Result<SchedulerStatusResult> =
-            bincode_req(client.get(urls::scheduler_status(&scheduler_url)));
+            bincode_req(client.get(urls::scheduler_status(&scheduler_url))).await;
         if matches!(status, Ok(SchedulerStatusResult { num_servers: 1, .. })) {
             break;
         }
         assert!(Instant::now() < deadline, "no heartbeat: {status:?}");
-        thread::sleep(Duration::from_millis(50));
+        tokio::time::sleep(Duration::from_millis(50)).await;
     }
 
     // The scheduler assigns the job to the build server, over TLS.
@@ -925,6 +882,7 @@ fn a_job_goes_through(scheduler: Implementation, server: Implementation) {
             .bincode(&tc)
             .unwrap(),
     )
+    .await
     .unwrap();
     let AllocJobHttpResponse::Success {
         job_alloc,
@@ -941,9 +899,10 @@ fn a_job_goes_through(scheduler: Implementation, server: Implementation) {
     let cert: ServerCertificateHttpResponse = bincode_req(client.get(
         urls::scheduler_server_certificate(&scheduler_url, job_alloc.server_id),
     ))
+    .await
     .unwrap();
     assert_eq!(cert.cert_digest, cert_digest);
-    let server_client = reqwest::blocking::Client::builder()
+    let server_client = reqwest::Client::builder()
         .add_root_certificate(reqwest::Certificate::from_pem(&cert.cert_pem).unwrap())
         .pool_max_idle_per_host(0)
         .build()
@@ -958,6 +917,7 @@ fn a_job_goes_through(scheduler: Implementation, server: Implementation) {
             .bearer_auth(job_alloc.auth.clone())
             .body(b"a toolchain".to_vec()),
     )
+    .await
     .unwrap();
     assert!(matches!(res, SubmitToolchainResult::Success));
 
@@ -968,6 +928,7 @@ fn a_job_goes_through(scheduler: Implementation, server: Implementation) {
             .bearer_auth(job_alloc.auth.clone())
             .bytes(run_job_body(&compile_command(), &["x.o"], &inputs)),
     )
+    .await
     .unwrap();
     assert!(matches!(res, RunJobResult::JobNotFound));
 
@@ -981,19 +942,4 @@ fn a_job_goes_through(scheduler: Implementation, server: Implementation) {
         stub_scheduler.job_states.lock().unwrap()[..],
         [(job_alloc.job_id, job_alloc.server_id, JobState::Started)]
     );
-}
-
-#[test]
-fn a_job_goes_through_a_rouille_scheduler_and_an_axum_server() {
-    a_job_goes_through(Implementation::Rouille, Implementation::Axum);
-}
-
-#[test]
-fn a_job_goes_through_an_axum_scheduler_and_a_rouille_server() {
-    a_job_goes_through(Implementation::Axum, Implementation::Rouille);
-}
-
-#[test]
-fn a_job_goes_through_an_axum_scheduler_and_an_axum_server() {
-    a_job_goes_through(Implementation::Axum, Implementation::Axum);
 }
