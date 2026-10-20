@@ -14,8 +14,10 @@ on:
   # ran the full matrix and all eight release builds -- macOS at ten times a
   # Linux minute -- before `release` refused it; and tags now double as the
   # action's versions, so one that is not a release must not try to be one.
+  # Dependabot's branches are left to `pull_request`: each of its updates is a
+  # pull request, and running the push as well ran the whole matrix twice.
   push:
-    branches: ['**']
+    branches: ['**', '!dependabot/**']
     tags: ['v[0-9]+.[0-9]+.[0-9]+*']
     paths-ignore: &prose
       - 'context/**'

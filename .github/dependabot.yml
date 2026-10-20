@@ -1,14 +1,30 @@
 # SPDX-License-Identifier: Apache-2.0
 
+# One pull request per ecosystem and month, not one per dependency per week:
+# each pull request runs the whole CI matrix, and this is a fork no one is
+# triaging updates for daily. A crate's major update stays a pull request of
+# its own, since it is the kind that needs reading rather than merging; the
+# actions are grouped whole. The cooldown lets a release settle for two weeks
+# before it is proposed.
 version: 2
 updates:
   - package-ecosystem: "cargo"
     directory: "/"
     schedule:
-      interval: weekly 
-    open-pull-requests-limit: 8
+      interval: monthly
+    cooldown:
+      default-days: 14
+    groups:
+      cargo:
+        update-types: [minor, patch]
+    open-pull-requests-limit: 3
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
-      interval: weekly
-    open-pull-requests-limit: 5
+      interval: monthly
+    cooldown:
+      default-days: 14
+    groups:
+      github-actions:
+        patterns: ["*"]
+    open-pull-requests-limit: 2
