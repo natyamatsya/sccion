@@ -59,7 +59,6 @@ use libc::dirent64;
 use libc::{c_char, c_int, c_void, dirent, dlsym, DIR, RTLD_NEXT};
 use log::{error, info};
 use rand::seq::SliceRandom;
-use rand::thread_rng;
 use simplelog::{Config, LevelFilter, WriteLogger};
 use std::collections::HashMap;
 use std::env;
@@ -148,7 +147,7 @@ impl State {
                         entries.push(unsafe { *entry });
                     }
 
-                    entries.shuffle(&mut thread_rng());
+                    entries.shuffle(&mut rand::rng());
 
                     *iter = Some(DirentIterator { entries, index: 0 });
                 }
