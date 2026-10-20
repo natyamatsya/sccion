@@ -601,6 +601,10 @@ jobs:
     timeout-minutes: 15
     needs: [ build, lint, test ]
     if: ${{ startsWith(github.ref, 'refs/tags/') }}
+    # The repository's default token is read-only; creating the release and
+    # uploading its assets is the one write any workflow here makes.
+    permissions:
+      contents: write
     steps:
       - name: Clone repository
         uses: actions/checkout@v7
@@ -635,15 +639,16 @@ jobs:
             fi
           done
 
+      # Published, not a draft: the action installs releases through the API
+      # with the consuming workflow's own `github.token`, and that token sees
+      # no drafts. `gh` rather than `hub`, which is archived and had to be
+      # installed from apt; `gh` is on the runner.
       - name: Create release
         run: |
-          sudo apt-get update && sudo apt-get install -y hub
           tag_name=${GITHUB_REF#refs/tags/}
-          for f in sccion-*.tar.gz* sccion-*.zip*; do
-              if [[ -f "$f" ]]; then
-                files="$files -a $f";
-              fi
-          done
-          hub release create -d -m $tag_name $tag_name $files
+          shopt -s nullglob
+          gh release create "$tag_name" --verify-tag --title "$tag_name" \
+            --notes "A snapshot of sccion's \`main\` at $tag_name -- experimental and unsupported; see the [fork status](https://github.com/${{ github.repository }}#fork-status-experimental--unsupported). Each archive has its \`.sha256\` beside it." \
+            sccion-*.tar.gz* sccion-*.zip*
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
