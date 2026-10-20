@@ -19,6 +19,7 @@ use opendal::layers::LoggingLayer;
 use opendal::services::Webdav;
 
 use super::http_client::set_user_agent;
+use super::retry::retry_layer;
 
 /// A cache that stores entries in a Webdav.
 pub struct WebdavCache;
@@ -41,7 +42,8 @@ impl WebdavCache {
 
         let op = Operator::new(builder)?
             .with_context(set_user_agent())
-            .layer(LoggingLayer::default());
+            .layer(LoggingLayer::default())
+            .layer(retry_layer());
         Ok(op)
     }
 }

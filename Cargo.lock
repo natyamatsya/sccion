@@ -303,6 +303,8 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cffb0e931875b666fc4fcb20fee52e9bbd1ef836fd9e9e04ec21555f9f85f7ef"
 dependencies = [
  "fastrand",
+ "gloo-timers",
+ "tokio",
 ]
 
 [[package]]
@@ -1398,6 +1400,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e4eba85ea1d0a966a983acd07deee566e67395d2d96b6fb39e62b5a833f1eb0b"
 
 [[package]]
+name = "gloo-timers"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bbb143cf96099802033e0d4f4963b19fd2e0b728bcf076cd9cf7f6634f092994"
+dependencies = [
+ "futures-channel",
+ "futures-core",
+ "js-sys",
+ "wasm-bindgen",
+]
+
+[[package]]
 name = "gzp"
 version = "2.0.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2452,6 +2466,7 @@ checksum = "3cbd193aec6d62efaff87611dfae52c132aed650bb3cb0c684c0a9394f09a42a"
 dependencies = [
  "opendal-core",
  "opendal-layer-logging",
+ "opendal-layer-retry",
  "opendal-service-azblob",
  "opendal-service-cos",
  "opendal-service-gcs",
@@ -2509,6 +2524,17 @@ version = "0.59.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4ad43246d2cb7b7ad32b10e22bfa7b6ced8a6677cb6d6f005ae7e1d94cb19c6a"
 dependencies = [
+ "log",
+ "opendal-core",
+]
+
+[[package]]
+name = "opendal-layer-retry"
+version = "0.59.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4aeb54be4940c68609483591934a813f7bdd97d747826783a393914d3139e363"
+dependencies = [
+ "backon",
  "log",
  "opendal-core",
 ]

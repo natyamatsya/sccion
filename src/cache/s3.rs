@@ -20,6 +20,7 @@ use opendal::services::S3;
 use crate::errors::*;
 
 use super::http_client::set_user_agent;
+use super::retry::retry_layer;
 
 pub struct S3Cache {
     bucket: String,
@@ -127,7 +128,8 @@ impl S3Cache {
 
         let op = Operator::new(builder)?
             .with_context(set_user_agent())
-            .layer(LoggingLayer::default());
+            .layer(LoggingLayer::default())
+            .layer(retry_layer());
         Ok(op)
     }
 }

@@ -23,6 +23,7 @@ use opendal::services::Azblob;
 use crate::errors::*;
 
 use super::http_client::set_user_agent;
+use super::retry::retry_layer;
 
 pub struct AzureBlobCache;
 
@@ -34,7 +35,8 @@ impl AzureBlobCache {
 
         let op = Operator::new(builder)?
             .with_context(set_user_agent())
-            .layer(LoggingLayer::default());
+            .layer(LoggingLayer::default())
+            .layer(retry_layer());
         Ok(op)
     }
 }

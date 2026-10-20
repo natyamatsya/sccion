@@ -21,6 +21,7 @@ use opendal::Operator;
 use opendal::layers::LoggingLayer;
 use opendal::services::Memcached;
 
+use super::retry::retry_layer;
 use crate::errors::*;
 
 #[derive(Clone)]
@@ -47,7 +48,9 @@ impl MemcachedCache {
             .root(key_prefix)
             .default_ttl(Duration::from_secs(expiration.into()));
 
-        let op = Operator::new(builder)?.layer(LoggingLayer::default());
+        let op = Operator::new(builder)?
+            .layer(LoggingLayer::default())
+            .layer(retry_layer());
         Ok(op)
     }
 }

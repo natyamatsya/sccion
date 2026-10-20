@@ -53,6 +53,18 @@ pub mod webdav;
     feature = "cos"
 ))]
 pub(crate) mod http_client;
+#[cfg(any(
+    feature = "azure",
+    feature = "gcs",
+    feature = "gha",
+    feature = "memcached",
+    feature = "redis",
+    feature = "s3",
+    feature = "webdav",
+    feature = "oss",
+    feature = "cos"
+))]
+pub(crate) mod retry;
 
 pub use crate::cache::cache::*;
 pub use crate::cache::cache_io::*;

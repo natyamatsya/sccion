@@ -15,6 +15,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use super::retry::retry_layer;
 use crate::errors::*;
 use opendal::Operator;
 use opendal::layers::LoggingLayer;
@@ -49,7 +50,9 @@ impl RedisCache {
             .map(|v| v.parse().unwrap_or_default())
             .unwrap_or_default());
 
-        let op = Operator::new(builder)?.layer(LoggingLayer::default());
+        let op = Operator::new(builder)?
+            .layer(LoggingLayer::default())
+            .layer(retry_layer());
         Ok(op)
     }
 
@@ -98,7 +101,9 @@ impl RedisCache {
             builder = builder.default_ttl(Duration::from_secs(ttl));
         }
 
-        let op = Operator::new(builder)?.layer(LoggingLayer::default());
+        let op = Operator::new(builder)?
+            .layer(LoggingLayer::default())
+            .layer(retry_layer());
         Ok(op)
     }
 }

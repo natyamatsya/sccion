@@ -22,6 +22,7 @@ use crate::VERSION;
 use crate::errors::*;
 
 use super::http_client::set_user_agent;
+use super::retry::retry_layer;
 
 /// A cache that stores entries in GHA Cache Services.
 pub struct GHACache;
@@ -44,7 +45,8 @@ impl GHACache {
 
         let op = Operator::new(builder)?
             .with_context(set_user_agent())
-            .layer(LoggingLayer::default());
+            .layer(LoggingLayer::default())
+            .layer(retry_layer());
         Ok(op)
     }
 }
