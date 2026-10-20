@@ -298,7 +298,7 @@ jobs:
       # the test run would otherwise carry under the names a GHA backend
       # looks for.
       - name: Expose the Actions cache to the compiler cache
-        uses: actions/github-script@v8
+        uses: actions/github-script@v9
         with:
           script: |
             core.exportVariable('CI_CACHE_RESULTS_URL', process.env.ACTIONS_RESULTS_URL || '');
