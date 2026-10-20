@@ -2,8 +2,8 @@
 ![License](https://img.shields.io/badge/license-Apache--2.0-blue)
 [![Upstream](https://img.shields.io/badge/forked%20from-mozilla%2Fsccache-lightgrey)](https://github.com/mozilla/sccache)
 
-sccion - Shared Compilation Cache
-=================================
+sccion - Shared Compilation Cache (experimental fork)
+=====================================================
 
 **sccion** is a compiler cache: a wrapper you put in front of your compiler that
 avoids compiling anything twice, storing results on [local disk](docs/Local.md)
@@ -11,21 +11,42 @@ or in one of [several cloud storage backends](#storage-options). Multi-level
 caching with automatic backfill is supported for hierarchical cache
 architectures (see [Multi-Level Cache](docs/MultiLevel.md)).
 
-> **Experimental.** This is a fork under active development, not a supported
-> release of anything, and it is worth knowing what that means concretely rather
-> than as a disclaimer. There are no tags and no published artifacts: you build
-> from a checkout at whatever commit you cloned, and two people saying "sccion"
-> may not mean the same program. The on-disk cache format is not stable — the
-> entry version byte is at 3, and each bump so far has discarded every entry
-> written before it, which costs one cold build and is meant to. The
-> client and daemon check that they speak the same protocol, and refuse each
-> other when they do not — so a daemon left running across an upgrade is
-> reported rather than obeyed. The remedy is what the error says: `sccion
-> --stop-server`, and the next command starts one that matches. Defaults and
-> measurements move as the work continues.
->
-> Mozilla's [sccache](https://github.com/mozilla/sccache) is the maintained
-> project, and is what you want if you need one. See [Lineage](#lineage).
+## Fork status: experimental & unsupported
+
+This is a personal fork of Mozilla's
+[sccache](https://github.com/mozilla/sccache). The code is public so that anyone
+can read and use it, but it is developed for my own use — to experiment with
+what a compiler cache needs once agents build in worktrees of their own — and is
+**not** run as a community project. Please note:
+
+* this fork is **not** a successor to sccache, nor a replacement for it;
+* there are no plans for serious maintenance or support;
+* issues and pull requests may not be reviewed or answered;
+* there are no releases and no stability guarantees: things may break or change
+  without notice, and history may be rewritten — use at your own risk;
+* please do not take problems with sccion to the sccache project unless they
+  reproduce with sccache itself.
+
+If you need a dependable compiler cache, use
+[**mozilla/sccache**](https://github.com/mozilla/sccache), which is actively
+maintained, released and packaged, and which all of this builds upon — see
+[Lineage](#lineage).
+
+The project remains available under the Apache License 2.0
+([LICENSE](LICENSE)). Feel free to use, modify and fork it under its terms.
+
+**What "experimental" means here, concretely.** There are no tags and no
+published artifacts: you build from a checkout at whatever commit you cloned,
+and two people saying "sccion" may not mean the same program. The on-disk cache
+format is not stable — the entry version byte is at 3, and each bump so far has
+discarded every entry written before it, which costs one cold build and is meant
+to. The client and daemon check that they speak the same protocol, and refuse
+each other when they do not — so a daemon left running across an upgrade is
+reported rather than obeyed. The remedy is what the error says: `sccion
+--stop-server`, and the next command starts one that matches. Defaults and
+measurements move as the work continues.
+
+## What it is for
 
 It is a fork of Mozilla's [sccache](https://github.com/mozilla/sccache) — see
 [Lineage](#lineage) — and a *scion* is a cutting grafted onto established
