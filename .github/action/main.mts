@@ -55,10 +55,10 @@ interface Release {
 }
 
 const NOT_VISIBLE =
-  'A private repository answers 404, not 403, to a token that cannot read it. ' +
-  'github.token reaches only the repository its workflow runs in; anywhere else, pass ' +
-  `a token with Contents: read on ${REPO}. A draft release is visible only to a token ` +
-  'with push access.';
+  'A repository answers 404, not 403, to a token that cannot read it. If ' +
+  `${REPO} is private, github.token reaches it only from its own workflows; anywhere ` +
+  'else, pass a token with Contents: read on it. A draft release is visible only to a ' +
+  'token with push access.';
 
 async function get(url: string, token: string, accept = 'application/vnd.github+json'): Promise<Response> {
   const headers: Record<string, string> = {

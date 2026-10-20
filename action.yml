@@ -27,9 +27,9 @@ inputs:
     default: natyamatsya/sccion
   token:
     description: >-
-      Reads the releases. github.token can, in natyamatsya/sccion's own
-      workflows; any other repository needs a fine-grained token with
-      Contents: read on natyamatsya/sccion, passed from a secret.
+      Reads the releases. github.token can read a public repository's
+      releases from any workflow; a draft release needs a token with push
+      access to the repository holding it.
     default: ${{ github.token }}
   sha256:
     description: >-

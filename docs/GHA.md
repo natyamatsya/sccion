@@ -40,18 +40,16 @@ All inputs and outputs are described in [`action.yml`](../action.yml).
 
 ### From another repository
 
-`natyamatsya/sccion` is private, which limits who can use it:
+Any repository can use the action. Releases are read through the GitHub API
+with the job's own `github.token`, which can read a public repository's
+releases, so no secret is needed. Draft releases are the exception: only a
+token with push access to `natyamatsya/sccion` sees them.
 
-- **Other private repositories of the same owner** can, once the repository's
-  Settings → Actions → General → Access allows it. They also need a token that
-  can read the releases -- a fine-grained token with *Contents: read* on
-  `natyamatsya/sccion`, passed as `token:` from a secret -- since `github.token`
-  reaches only the repository its workflow runs in. Release downloads go
-  through the API; the browser download URLs do not work for a private
-  repository, with or without a token.
-- **Public repositories** cannot use an action from a private repository at
-  all.
-- **Draft releases** are visible only to a token with push access.
+There are no releases yet -- sccion is an experimental fork that is built from
+a checkout (see the [README](../README.md#fork-status-experimental--unsupported)).
+Until there are, there is no tag to use either: use the action at `@main` and
+pass a sccion you built as `binary:`, and everything else it does works the
+same.
 
 ## Without the action
 
