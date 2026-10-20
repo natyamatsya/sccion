@@ -92,7 +92,7 @@ jobs:
       # CODECOV_TOKEN or an outage at Codecov fails the upload, not the job.
       - name: Upload coverage results (to Codecov.io)
         continue-on-error: true
-        uses: codecov/codecov-action@v5
+        uses: codecov/codecov-action@v7
         with:
           files: target/integration-coverage/reports/lcov.info
           name: codecov-umbrella-integration-${{ matrix.type }}
