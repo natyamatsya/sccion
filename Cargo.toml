@@ -113,12 +113,6 @@ opendal = { version = "0.58.1", optional = true, default-features = false, featu
 # opendal 0.58 made the HTTP transport pluggable and moved the reqwest one
 # out of the facade, so setting a user agent means naming this crate.
 opendal-http-transport-reqwest = { version = "0.58.1", optional = true }
-# No longer called by sccion itself: the dist server's certificates come from
-# rcgen and its JWKs go to jsonwebtoken directly. It stays as the lever that
-# vendors the OpenSSL rouille's TLS (tiny_http) links against --
-# `--features=openssl/vendored` in the release builds, and `vendored-openssl`
-# -- until the dist server moves to rustls and the lever has nothing to move.
-openssl = { version = "0.10.75", optional = true }
 rand = "0.10.2"
 # The dist server's self-signed certificate. RSA keys need aws-lc-rs, which
 # rustls already brings in.
@@ -304,10 +298,6 @@ webdav = [
   "reqwest",
   "opendal-http-transport-reqwest",
 ]
-# Enable features that will build a vendored version of openssl and
-# statically linked with it, instead of linking against the system-wide openssl
-# dynamically or statically.
-vendored-openssl = ["openssl?/vendored", "reqwest?/native-tls-vendored"]
 # Enable features that require unstable features of Nightly Rust.
 unstable = []
 # Enables distributed support in the sccache client
@@ -333,7 +323,6 @@ dist-server = [
   "libmount",
   "mime",
   "nix",
-  "openssl",
   "rcgen",
   "reqwest",
   "rustls",
