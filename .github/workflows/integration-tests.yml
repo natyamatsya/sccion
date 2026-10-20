@@ -202,7 +202,7 @@ jobs:
           target: $TARGET
 
       - name: Build
-        run: cargo build --bin sccion --target $env:TARGET --features=vendored-openssl
+        run: cargo build --bin sccion --target $env:TARGET
 
       - name: Compile MSVC (no cache)
         shell: bash

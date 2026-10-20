@@ -91,13 +91,12 @@ jobs:
             os: ubuntu-latest
           - component: clippy
             cargo_cmd: clippy --locked --all-targets -- -D warnings -A unknown-lints -A clippy::type_complexity -A clippy::new-without-default
-          # Linux also lints the dist server, which no default build compiles:
-          # `dist-server-axum` brings in `dist-server` and so both
-          # implementations. A later include may replace a value an earlier
-          # include added, which is how this one replaces `cargo_cmd` above.
+          # Linux also lints the dist server, which no default build compiles.
+          # A later include may replace a value an earlier include added,
+          # which is how this one replaces `cargo_cmd` above.
           - os: ubuntu-latest
             component: clippy
-            cargo_cmd: clippy --locked --all-targets --features dist-server-axum -- -D warnings -A unknown-lints -A clippy::type_complexity -A clippy::new-without-default
+            cargo_cmd: clippy --locked --all-targets --features dist-server -- -D warnings -A unknown-lints -A clippy::type_complexity -A clippy::new-without-default
     steps:
       - name: Clone repository
         uses: actions/checkout@v5
@@ -164,19 +163,12 @@ jobs:
             rustc: "1.91.0"
             extra_desc: dist-tests
             extra_args: --no-default-features --features=dist-tests test_dist_ -- --test-threads 1
-          # The same dist tests with `sccion-dist` on axum: the containers'
-          # scheduler and build servers, and the harness's own build server.
-          - os: ubuntu-22.04
-            rustc: "1.91.0"
-            extra_desc: dist-tests-axum
-            extra_args: --no-default-features --features=dist-tests,dist-server-axum test_dist_ -- --test-threads 1
-          # `dist-server-axum` brings in `dist-server`, so this one job runs
-          # the unit tests of both dist server implementations, and the tests
-          # that run one against the other.
+          # The dist server's unit tests, `dist::http`'s among them, which
+          # build only with `dist-server`.
           - os: ubuntu-22.04
             rustc: stable
             extra_desc: dist-server
-            extra_args: --features=dist-server-axum
+            extra_args: --features=dist-server
           - os: ubuntu-22.04
             rustc: stable
           - os: ubuntu-22.04
@@ -564,32 +556,24 @@ jobs:
           rustup toolchain install nightly --profile minimal
           rustup component add rust-src --toolchain nightly
 
-      - name: fix build openssl error on s390x
-        if: ${{  matrix.target  == 's390x-unknown-linux-musl' }}
-        run: |
-          # see https://github.com/openssl/openssl/issues/27323
-          echo CFLAGS="-march=z10 -mzarch" >> $GITHUB_ENV
-          echo CXXFLAGS="$CFLAGS" >> $GITHUB_ENV
-          echo RUSTFLAGS="-C target-cpu=z10" >> $GITHUB_ENV
-
       - name: Build (s390x-musl with build-std)
         if: ${{ matrix.target == 's390x-unknown-linux-musl' }}
-        run: cargo +nightly build --locked --release --bin ${{ matrix.binary || 'sccion' }} --target ${{ matrix.target }} --features=openssl/vendored ${{ matrix.extra_args }} -Zbuild-std
+        run: cargo +nightly build --locked --release --bin ${{ matrix.binary || 'sccion' }} --target ${{ matrix.target }} ${{ matrix.extra_args }} -Zbuild-std
         env:
           MACOSX_DEPLOYMENT_TARGET: ${{ matrix.macosx_deployment_target }}
           DEVELOPER_DIR: ${{ matrix.developer_dir }}
           SDKROOT: ${{ matrix.sdkroot }}
-          RUSTFLAGS: ${{ env.RUSTFLAGS || matrix.rustflags }}
+          RUSTFLAGS: ${{ matrix.rustflags }}
           CARGO_PROFILE_RELEASE_LTO: ${{ matrix.lto || 'true' }}
 
       - name: Build
         if: ${{ matrix.target != 's390x-unknown-linux-musl' }}
-        run: cargo build --locked --release --bin ${{ matrix.binary || 'sccion' }} --target ${{ matrix.target }} --features=openssl/vendored ${{ matrix.extra_args }}
+        run: cargo build --locked --release --bin ${{ matrix.binary || 'sccion' }} --target ${{ matrix.target }} ${{ matrix.extra_args }}
         env:
           MACOSX_DEPLOYMENT_TARGET: ${{ matrix.macosx_deployment_target }}
           DEVELOPER_DIR: ${{ matrix.developer_dir }}
           SDKROOT: ${{ matrix.sdkroot }}
-          RUSTFLAGS: ${{ env.RUSTFLAGS || matrix.rustflags }}
+          RUSTFLAGS: ${{ matrix.rustflags }}
           CARGO_PROFILE_RELEASE_LTO: ${{ matrix.lto || 'true' }}
 
       # Workaround for the lack of substring() function in github actions expressions.
