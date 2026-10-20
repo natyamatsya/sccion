@@ -36,6 +36,8 @@ mod cache;
 pub mod client_auth;
 #[cfg(any(feature = "dist-client", feature = "dist-server"))]
 pub mod http;
+#[cfg(feature = "dist-server-axum")]
+pub mod http_axum;
 #[cfg(test)]
 mod test;
 

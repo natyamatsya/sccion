@@ -460,7 +460,13 @@ impl DistSystem {
             listener.local_addr().unwrap()
         };
         let token = create_server_token(ServerId::new(server_addr), DIST_SERVER_TOKEN);
-        let server = dist::http::Server::new(
+        // The implementation `sccion-dist` was built with, so that a custom
+        // server is tested on the same one as the containers.
+        #[cfg(not(feature = "dist-server-axum"))]
+        use dist::http as dist_http;
+        #[cfg(feature = "dist-server-axum")]
+        use dist::http_axum as dist_http;
+        let server = dist_http::Server::new(
             server_addr,
             Some(SocketAddr::from(([0, 0, 0, 0], server_addr.port()))),
             self.scheduler_url().to_url(),

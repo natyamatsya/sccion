@@ -53,6 +53,10 @@ strip = false
 anyhow = { version = "1.0", features = ["backtrace"] }
 ar = "0.9"
 async-trait = "0.1"
+# The dist server's HTTP layer under `dist-server-axum`: routing and
+# extraction only. Serving is sccion's own loop over hyper, which is where TLS
+# goes in, so none of axum's serving, JSON or form features are needed.
+axum = { version = "0.8.9", optional = true, default-features = false }
 backon = { version = "1", default-features = false, features = [
   "std-blocking-sleep",
 ] }
@@ -133,6 +137,14 @@ reqwest = { version = "0.13.4", features = [
   "rustls",
   "hickory-dns",
 ], optional = true }
+# The dist server's TLS under `dist-server-axum`: the rustls clients and the
+# scheduler already verify with, on the aws-lc-rs provider already in the
+# build. Named only to build a `ServerConfig` and read the PEM certificate.
+rustls = { version = "0.23.43", optional = true, default-features = false, features = [
+  "aws_lc_rs",
+  "std",
+  "tls12",
+] }
 semver = "1.0"
 serde = { version = "1.0", features = ["derive"] }
 # `Vec<u8>` through serde is a sequence of `u8`, which bincode encodes one
@@ -158,9 +170,16 @@ tokio = { version = "1", features = [
   "process",
   "macros",
 ] }
+# Accepting TLS connections for the dist server under `dist-server-axum`.
+tokio-rustls = { version = "0.26.4", optional = true, default-features = false }
 tokio-serde = "0.9"
 tokio-util = { version = "0.7.18", features = ["codec", "io", "rt"] }
 toml = "1.1"
+# `ServiceExt::oneshot`, to hand each request on a connection to the dist
+# server's router under `dist-server-axum`. axum depends on it already.
+tower = { version = "0.5.3", optional = true, default-features = false, features = [
+  "util",
+] }
 tower-service = "0.3"
 typed-path = "0.12.0"
 url = { version = "2", optional = true }
@@ -321,6 +340,22 @@ dist-server = [
   "syslog",
   "time",
   "version-compare",
+]
+# The dist server (`sccion-dist`, scheduler and build server) on axum, hyper 1
+# and tokio, with TLS through rustls, instead of rouille and tiny_http over
+# OpenSSL. Same binary, command line, configuration and wire protocol; only
+# the implementation behind `sccion-dist scheduler` and `sccion-dist server`
+# changes. rouille stays, and is what `dist-server` alone builds, until this
+# has run in CI long enough to replace it.
+dist-server-axum = [
+  "dist-server",
+  "axum",
+  "hyper",
+  "hyper-util",
+  "rustls",
+  "tokio-rustls",
+  "tokio-util/io-util",
+  "tower",
 ]
 # Enables dist tests with external requirements
 dist-tests = ["dist-client", "dist-server"]
