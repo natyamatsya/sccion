@@ -101,7 +101,7 @@ jobs:
             cargo_cmd: clippy --locked --all-targets --features dist-server -- -D warnings -A unknown-lints -A clippy::type_complexity -A clippy::new-without-default
     steps:
       - name: Clone repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
 
       - name: Install rust
         uses: ./.github/actions/rust-toolchain
@@ -125,7 +125,7 @@ jobs:
         feature: [ azure, gcs, gha, memcached, redis, s3, webdav ]
     steps:
       - name: Clone repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
 
       - name: Check feature ${{ matrix.feature }}
         run: cargo check --no-default-features --features ${{ matrix.feature }}
@@ -135,7 +135,7 @@ jobs:
     timeout-minutes: 5
     steps:
       - name: Clone repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
 
       - name: Check
         run: npx --yes @taplo/cli fmt --check
@@ -207,7 +207,7 @@ jobs:
         uses: ilammy/msvc-dev-cmd@v1
 
       - name: Clone repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
 
       - name: Install rust
         uses: ./.github/actions/rust-toolchain
@@ -300,7 +300,7 @@ jobs:
       # the test run would otherwise carry under the names a GHA backend
       # looks for.
       - name: Expose the Actions cache to the compiler cache
-        uses: actions/github-script@v8
+        uses: actions/github-script@v9
         with:
           script: |
             core.exportVariable('CI_CACHE_RESULTS_URL', process.env.ACTIONS_RESULTS_URL || '');
@@ -415,7 +415,7 @@ jobs:
       - name: Upload coverage results (to Codecov.io)
         continue-on-error: true
         if: ${{ ! matrix.no_coverage }}
-        uses: codecov/codecov-action@v5
+        uses: codecov/codecov-action@v7
         with:
           files: ${{ steps.coverage.outputs.report }}
           ## flags: IntegrationTests, UnitTests, ${{ steps.vars.outputs.CODECOV_FLAGS }}
@@ -528,7 +528,7 @@ jobs:
             rustflags: -Ctarget-feature=+crt-static
     steps:
       - name: Clone repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
 
       - name: Install rust
         uses: ./.github/actions/rust-toolchain
@@ -603,7 +603,7 @@ jobs:
     if: ${{ startsWith(github.ref, 'refs/tags/') }}
     steps:
       - name: Clone repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
 
       - name: Check versions
         run: |

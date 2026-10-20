@@ -61,7 +61,7 @@ This cache type needs `ACTIONS_RESULTS_URL` and `ACTIONS_RUNTIME_TOKEN`, which G
 
 ```yaml
 - name: Configure sccion
-  uses: actions/github-script@v7
+  uses: actions/github-script@v9
   with:
     script: |
       core.exportVariable('ACTIONS_RESULTS_URL', process.env.ACTIONS_RESULTS_URL || '');

@@ -49,7 +49,7 @@ jobs:
     timeout-minutes: 30
     steps:
       - name: Clone repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
 
       - name: Install rust
         uses: ./.github/actions/rust-toolchain
@@ -74,7 +74,7 @@ jobs:
 
     steps:
       - name: Clone repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
 
       - name: Test
         run: cd tests/integration && WITH_COVERAGE=1 make test-${{ matrix.type }}
@@ -92,7 +92,7 @@ jobs:
       # CODECOV_TOKEN or an outage at Codecov fails the upload, not the job.
       - name: Upload coverage results (to Codecov.io)
         continue-on-error: true
-        uses: codecov/codecov-action@v5
+        uses: codecov/codecov-action@v7
         with:
           files: target/integration-coverage/reports/lcov.info
           name: codecov-umbrella-integration-${{ matrix.type }}
@@ -124,7 +124,7 @@ jobs:
 
     steps:
       - name: Clone repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
 
       # The action runs as written, on the runner's Node 24, so this is the only
       # check its source gets before a runner executes it.
@@ -192,7 +192,7 @@ jobs:
       - uses: ilammy/msvc-dev-cmd@v1
 
       - name: Clone repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
 
       - name: Install rust
         uses: ./.github/actions/rust-toolchain
@@ -308,20 +308,20 @@ jobs:
 
     steps:
       - name: Clone repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
 
       # I don't want to break the cache during testing. Will turn on after I
       # make sure it's working.
       #
       # - name: Configure Cache Env
-      #   uses: actions/github-script@v8
+      #   uses: actions/github-script@v9
       #   with:
       #     script: |
       #       core.exportVariable('ACTIONS_RESULTS_URL', process.env.ACTIONS_RESULTS_URL || '');
       #       core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '')
 
       # - name: Configure ROCm Env
-      #   uses: actions/github-script@v8
+      #   uses: actions/github-script@v9
       #   with:
       #     script: |
       #       core.exportVariable('ROCM_PATH', process.env.ROCM_PATH || '');
@@ -398,7 +398,7 @@ jobs:
       SCCACHE_PATH: target/debug/sccion
     steps:
       - name: Clone repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
 
       - name: Install rust
         uses: ./.github/actions/rust-toolchain
