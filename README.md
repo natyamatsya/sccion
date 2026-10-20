@@ -17,8 +17,8 @@ architectures (see [Multi-Level Cache](docs/MultiLevel.md)).
 This is a personal fork of Mozilla's
 [sccache](https://github.com/mozilla/sccache). The code is public so that anyone
 can read and use it, but it is developed for my own use — to experiment with
-what a compiler cache needs once agents build in worktrees of their own — and is
-**not** run as a community project. Please note:
+the ideas described [below](#what-it-is-for) — and is **not** run as a community
+project. Please note:
 
 * this fork is **not** a successor to sccache, nor a replacement for it;
 * there are no plans for serious maintenance or support;
@@ -30,15 +30,18 @@ what a compiler cache needs once agents build in worktrees of their own — and 
 
 If you need a dependable compiler cache, use
 [**mozilla/sccache**](https://github.com/mozilla/sccache), which is actively
-maintained, released and packaged, and which all of this builds upon — see
-[Lineage](#lineage).
+maintained and released — on [its releases
+page](https://github.com/mozilla/sccache/releases/latest), in Homebrew,
+MacPorts, scoop, winget, nixpkgs and crates.io — and which all of this builds
+upon (see [Lineage](#lineage)). It is a different program with a different
+name, and this project has no bearing on it.
 
 The project remains available under the Apache License 2.0
 ([LICENSE](LICENSE)). Feel free to use, modify and fork it under its terms.
 
-**What "experimental" means here, concretely.** There are no tags and no
-published artifacts: you build from a checkout at whatever commit you cloned,
-and two people saying "sccion" may not mean the same program. The on-disk cache
+**What "experimental" means here, concretely.** You build from a checkout at
+whatever commit you cloned, and two people saying "sccion" may not mean the same
+program. The on-disk cache
 format is not stable — the entry version byte is at 3, and each bump so far has
 discarded every entry written before it, which costs one cold build and is meant
 to. The client and daemon check that they speak the same protocol, and refuse
@@ -49,20 +52,20 @@ measurements move as the work continues.
 
 ## What it is for
 
-It is a fork of Mozilla's [sccache](https://github.com/mozilla/sccache) — see
-[Lineage](#lineage) — and a *scion* is a cutting grafted onto established
-rootstock. The rootstock is the cache: one store that persists while checkouts
+A *scion* is a cutting grafted onto established rootstock. The rootstock is the cache: one store that persists while checkouts
 are cut from it and thrown away. Most of what this fork adds serves that shape,
 which is the shape of a build once agents work in their own worktrees. Two
 checkouts should hit each other's entries; a repository should state the facts
 that decide its own cache keys once, in a committed file; and a build that
 misses anyway should be answerable about *that* tree.
 
-sccion includes support for caching the compilation of Assembler, C/C++ code,
-[Rust](docs/Rust.md), as well as NVIDIA's CUDA using
-[nvcc](https://docs.nvidia.com/cuda/cuda-compiler-driver-nvcc/index.html), and
-[clang](https://llvm.org/docs/CompileCudaWithLLVM.html), [AMD's ROCm
-HIP](https://rocm.docs.amd.com/projects/HIP/en/latest/index.html).
+sccion caches the compilation of Assembler, C/C++, [Rust](docs/Rust.md), NVIDIA's
+CUDA and [AMD's ROCm HIP](https://rocm.docs.amd.com/projects/HIP/en/latest/index.html),
+with gcc, clang, MSVC, rustc,
+[NVCC](https://docs.nvidia.com/cuda/cuda-compiler-driver-nvcc/index.html),
+[NVC++](https://docs.nvidia.com/hpc-sdk//compilers/hpc-compilers-user-guide/index.html),
+[clang's CUDA](https://llvm.org/docs/CompileCudaWithLLVM.html), hipcc and
+[Wind River's diab compiler](https://www.windriver.com/products/development-tools/#diab_compiler).
 
 sccion also provides [icecream](https://github.com/icecc/icecream)-style
 distributed compilation (automatic packaging of local toolchains) for all
@@ -79,14 +82,14 @@ information.
 > variables naming the configuration file itself -- `SCCACHE_CONF` and
 > `SCCACHE_CACHED_CONF` -- keep their names outright, being read before there is
 > any configuration to say otherwise; everything else, the cache directory
-> included, answers to both spellings. The one thing to rename is the project
-> file, `.sccache.toml` -> `.sccion.toml`: it never existed in sccache, so there
-> is no older setup for it to be compatible with.
+> included, answers to both spellings. Where the cache and configuration files
+> live, and why the project file has no `SCCACHE` name, is under
+> [Lineage](#lineage).
 
 ---
 
-Table of Contents (ToC)
-=======================
+Contents
+--------
 
 * [Installation](#installation)
 * [Usage](#usage)
@@ -101,29 +104,18 @@ Table of Contents (ToC)
 * [Measuring and checking](docs/Benchmarks.md)
 * [Asking sccion why it missed, from an agent](docs/MCP.md)
 * [Interaction with GNU `make` jobserver](#interaction-with-gnu-make-jobserver)
+* [Normalizing Paths with `SCCION_BASEDIRS`](#normalizing-paths-with-sccion_basedirs)
 * [Known Caveats](#known-caveats)
 * [Lineage](#lineage)
 * [Storage Options](#storage-options)
-  * [Multi-Level (Hierarchical Caching)](docs/MultiLevel.md)
-  * [Local](docs/Local.md)
-  * [S3](docs/S3.md)
-  * [R2](docs/S3.md#R2)
-  * [Redis](docs/Redis.md)
-  * [Memcached](docs/Memcached.md)
-  * [Google Cloud Storage](docs/Gcs.md)
-  * [Azure](docs/Azure.md)
-  * [GitHub Actions](docs/GHA.md)
-  * [WebDAV (Ccache/Bazel/Gradle compatible)](docs/Webdav.md)
-  * [Alibaba OSS](docs/OSS.md)
-  * [Tencent Cloud Object Storage](docs/COS.md)
 
 ---
 
 ## Installation
 
-**Build it from a checkout.** sccion is not published to crates.io and has no
-prebuilt binaries or package-manager entries; anything you install under the
-name `sccache` is upstream, not this.
+**Build it from a checkout** — there are no packages (see [Fork
+status](#fork-status-experimental--unsupported)), and anything you install under
+the name `sccache` is upstream, not this.
 
 ```bash
 git clone https://github.com/natyamatsya/sccion
@@ -142,13 +134,6 @@ The flake in this repository builds it too:
 nix build          # result/bin/sccion
 nix run . -- --help
 ```
-
-### If you want the upstream instead
-
-Packaged builds of Mozilla's sccache are on [its releases
-page](https://github.com/mozilla/sccache/releases/latest), in Homebrew,
-MacPorts, scoop, winget, nixpkgs and crates.io. They are a different program
-with a different name, and this project has no bearing on them.
 
 ---
 
@@ -188,7 +173,7 @@ export RUSTC_WRAPPER=/path/to/sccion
 cargo build
 ```
 
-sccion supports gcc, clang, MSVC, rustc, [NVCC](https://docs.nvidia.com/cuda/cuda-compiler-driver-nvcc/index.html), [NVC++](https://docs.nvidia.com/hpc-sdk//compilers/hpc-compilers-user-guide/index.html), [hipcc](https://rocm.docs.amd.com/projects/HIP/en/latest/index.html), and [Wind River's diab compiler](https://www.windriver.com/products/development-tools/#diab_compiler). Both gcc and msvc support Response Files, read more about their implementation [here](docs/ResponseFiles.md).
+Response files work with both gcc and MSVC; see [Response Files](docs/ResponseFiles.md).
 
 If you don't [specify otherwise](#storage-options), sccion will use a local disk cache.
 
@@ -204,6 +189,8 @@ By default sccion server will listen on `127.0.0.1:4226`, you can specify enviro
 You can run `sccion --stop-server` to terminate the server. It will also terminate after (by default) 10 minutes of inactivity.
 
 Running `sccion --show-stats` will print a summary of cache statistics.
+
+By default, sccion will fail your build if it fails to successfully communicate with its associated server. To have sccion instead gracefully failover to the local compiler without stopping, set the environment variable `SCCION_IGNORE_SERVER_IO_ERROR=1`.
 
 Some notes about using `sccion` with [Jenkins](https://jenkins.io) are [here](docs/Jenkins.md).
 
@@ -228,8 +215,6 @@ elseif(CMAKE_BUILD_TYPE STREQUAL "RelWithDebInfo")
   string(REPLACE "/Zi" "/Z7" CMAKE_C_FLAGS_RELWITHDEBINFO "${CMAKE_C_FLAGS_RELWITHDEBINFO}")
 endif()
 ```
-
-By default, sccion will fail your build if it fails to successfully communicate with its associated server. To have sccion instead gracefully failover to the local compiler without stopping, set the environment variable `SCCION_IGNORE_SERVER_IO_ERROR=1`.
 
 **For versions of cmake 3.25 and later**, to compile with MSVC, you have to use the new `CMAKE_MSVC_DEBUG_INFORMATION_FORMAT` option, meant to configure the `-Z7` flag.  Additionally, you must set the cmake policy number 0141 to the NEW setting:
 ```cmake
@@ -266,15 +251,13 @@ sccion is a [Rust](https://www.rust-lang.org/) program. Building it requires `ca
 Build
 -----
 
-If you are building sccion for non-development purposes make sure you use `cargo build --release` to get optimized binaries:
+By default, `sccion` builds with support for all storage backends. To build only some, reset the list of features and name the ones you want:
 
 ```bash
-cargo build --release [--no-default-features --features=s3|redis|gcs|memcached|azure|gha|webdav|oss|cos]
+cargo build --release --no-default-features --features=s3,redis   # any of s3|redis|gcs|memcached|azure|gha|webdav|oss|cos
 ```
 
-The list of features can be found in the `Cargo.toml` file, `[features]` section.
-
-By default, `sccion` builds with support for all storage backends, but individual backends may be disabled by resetting the list of features and enabling all the other backends. Refer the [Cargo Documentation](http://doc.crates.io/manifest.html#the-features-section) for details on how to select features with Cargo.
+The full list of features is in the `[features]` section of `Cargo.toml`. Refer the [Cargo Documentation](http://doc.crates.io/manifest.html#the-features-section) for details on how to select features with Cargo.
 
 ### Building portable binaries
 
@@ -381,10 +364,6 @@ basedirs = ["/home/user/project", "/home/user/workspace"]
 Known Caveats
 -------------
 
-### General
-
-* By default, absolute paths to files must match to get a cache hit. To work around this, use `SCCION_BASEDIRS` (see above) to normalize paths before hashing.
-
 ### Rust
 
 * Crates that invoke the system linker cannot be cached. This includes `bin`, `dylib`, `cdylib`, and `proc-macro` crates. You may be able to improve compilation time of large `bin` crates by converting them to a `lib` crate with a thin `bin` wrapper.
@@ -422,8 +401,7 @@ beginning at `115016e` — nothing was squashed, so every upstream commit remain
 attributable to whoever wrote it.
 
 **Licence.** sccache is licensed under the Apache License, Version 2.0, and
-sccion is distributed under the same licence. A copy is in [LICENSE](LICENSE).
-You may obtain a copy at <http://www.apache.org/licenses/LICENSE-2.0>. Unless
+sccion is distributed under the same licence ([LICENSE](LICENSE)). Unless
 required by applicable law or agreed to in writing, software distributed under
 the Licence is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS
 OF ANY KIND, either express or implied.
@@ -456,8 +434,8 @@ sccion adds:
 * **Windows and MSVC work** — see [docs/Windows.md](docs/Windows.md).
 * **Measurement** — see [docs/Benchmarks.md](docs/Benchmarks.md).
 
-**Names.** The binaries are `sccion`, `sccion-dist` and `sccion-mcp`. Settings
-are spelled `SCCION_*` and are read under `SCCACHE_*` as well. The cache and the
+**Names.** The binaries are `sccion`, `sccion-dist` and `sccion-mcp`; settings,
+as above, are `SCCION_*` and `SCCACHE_*` alike. The cache and the
 configuration file are `~/.cache/sccion` and `~/.config/sccion/config` on Linux
 and macOS alike, and under `%LOCALAPPDATA%` and `%APPDATA%` on Windows: the
 convention a command-line program follows, rather than the per-platform one that
