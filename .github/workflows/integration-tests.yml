@@ -49,7 +49,7 @@ jobs:
     timeout-minutes: 30
     steps:
       - name: Clone repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
 
       - name: Install rust
         uses: ./.github/actions/rust-toolchain
@@ -74,7 +74,7 @@ jobs:
 
     steps:
       - name: Clone repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
 
       - name: Test
         run: cd tests/integration && WITH_COVERAGE=1 make test-${{ matrix.type }}
@@ -124,7 +124,7 @@ jobs:
 
     steps:
       - name: Clone repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
 
       # The action runs as written, on the runner's Node 24, so this is the only
       # check its source gets before a runner executes it.
@@ -192,7 +192,7 @@ jobs:
       - uses: ilammy/msvc-dev-cmd@v1
 
       - name: Clone repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
 
       - name: Install rust
         uses: ./.github/actions/rust-toolchain
@@ -308,7 +308,7 @@ jobs:
 
     steps:
       - name: Clone repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
 
       # I don't want to break the cache during testing. Will turn on after I
       # make sure it's working.
@@ -398,7 +398,7 @@ jobs:
       SCCACHE_PATH: target/debug/sccion
     steps:
       - name: Clone repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
 
       - name: Install rust
         uses: ./.github/actions/rust-toolchain

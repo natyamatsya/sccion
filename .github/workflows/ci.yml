@@ -99,7 +99,7 @@ jobs:
             cargo_cmd: clippy --locked --all-targets --features dist-server -- -D warnings -A unknown-lints -A clippy::type_complexity -A clippy::new-without-default
     steps:
       - name: Clone repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
 
       - name: Install rust
         uses: ./.github/actions/rust-toolchain
@@ -123,7 +123,7 @@ jobs:
         feature: [ azure, gcs, gha, memcached, redis, s3, webdav ]
     steps:
       - name: Clone repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
 
       - name: Check feature ${{ matrix.feature }}
         run: cargo check --no-default-features --features ${{ matrix.feature }}
@@ -133,7 +133,7 @@ jobs:
     timeout-minutes: 5
     steps:
       - name: Clone repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
 
       - name: Check
         run: npx --yes @taplo/cli fmt --check
@@ -205,7 +205,7 @@ jobs:
         uses: ilammy/msvc-dev-cmd@v1
 
       - name: Clone repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
 
       - name: Install rust
         uses: ./.github/actions/rust-toolchain
@@ -526,7 +526,7 @@ jobs:
             rustflags: -Ctarget-feature=+crt-static
     steps:
       - name: Clone repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
 
       - name: Install rust
         uses: ./.github/actions/rust-toolchain
@@ -601,7 +601,7 @@ jobs:
     if: ${{ startsWith(github.ref, 'refs/tags/') }}
     steps:
       - name: Clone repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
 
       - name: Check versions
         run: |
