@@ -22,7 +22,8 @@ pub use self::server::{
     ClientAuthCheck, ClientVisibleMsg, HEARTBEAT_TIMEOUT, Scheduler, ServerAuthCheck,
 };
 
-mod common {
+// Visible to the rest of `dist` for `http_axum`, which speaks the same protocol.
+pub(in crate::dist) mod common {
     use reqwest::header;
     use serde::{Deserialize, Serialize};
     #[cfg(feature = "dist-server")]
@@ -238,7 +239,7 @@ pub mod urls {
 }
 
 #[cfg(feature = "dist-server")]
-mod server {
+pub(in crate::dist) mod server {
     use crate::util::{new_reqwest_blocking_client, num_cpus};
     use bincode::Options as _;
     use byteorder::{BigEndian, ReadBytesExt};
@@ -268,8 +269,8 @@ mod server {
     };
     use crate::errors::*;
 
-    const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(30);
-    const HEARTBEAT_ERROR_INTERVAL: Duration = Duration::from_secs(10);
+    pub(in crate::dist) const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(30);
+    pub(in crate::dist) const HEARTBEAT_ERROR_INTERVAL: Duration = Duration::from_secs(10);
     pub const HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(90);
 
     pub fn bincode_req<T: serde::de::DeserializeOwned + 'static>(
@@ -306,8 +307,11 @@ mod server {
     ///
     /// rcgen rather than openssl, toward one TLS stack on both ends of a
     /// dist connection. The key comes out as PKCS#8 rather than PKCS#1; the
-    /// server's TLS reads it with `PKey::private_key_from_pem`, which takes both.
-    fn create_https_cert_and_privkey(addr: SocketAddr) -> Result<(Vec<u8>, Vec<u8>, Vec<u8>)> {
+    /// rouille server's TLS reads it with `PKey::private_key_from_pem`, which
+    /// takes both, and the axum server's (`http_axum`) with rustls.
+    pub(in crate::dist) fn create_https_cert_and_privkey(
+        addr: SocketAddr,
+    ) -> Result<(Vec<u8>, Vec<u8>, Vec<u8>)> {
         use sha2::Digest as _;
 
         let key =
@@ -337,7 +341,7 @@ mod server {
 
     // Messages that are non-sensitive and can be sent to the client
     #[derive(Debug)]
-    pub struct ClientVisibleMsg(String);
+    pub struct ClientVisibleMsg(pub(in crate::dist) String);
     impl ClientVisibleMsg {
         pub fn from_nonsensitive(s: String) -> Self {
             ClientVisibleMsg(s)
@@ -349,7 +353,7 @@ mod server {
     }
     pub type ServerAuthCheck = Box<dyn Fn(&str) -> Option<ServerId> + Send + Sync>;
 
-    const JWT_KEY_LENGTH: usize = 256 / 8;
+    pub(in crate::dist) const JWT_KEY_LENGTH: usize = 256 / 8;
     static JWT_HEADER: LazyLock<jwt::Header> =
         LazyLock::new(|| jwt::Header::new(jwt::Algorithm::HS256));
     static JWT_VALIDATION: LazyLock<jwt::Validation> = LazyLock::new(|| {
@@ -415,7 +419,7 @@ mod server {
     /// compile command with its environment, which is tens of kilobytes. The
     /// limit costs nothing when it is not hit and is checked before the
     /// allocation, not after.
-    const MAX_BINCODE_BODY: u64 = 8 * 1024 * 1024;
+    pub(in crate::dist) const MAX_BINCODE_BODY: u64 = 8 * 1024 * 1024;
 
     fn bincode_input<O>(request: &rouille::Request) -> std::result::Result<O, RouilleBincodeError>
     where
@@ -453,7 +457,7 @@ mod server {
     }
 
     impl ErrJson {
-        fn from_err<E: ?Sized + std::error::Error>(err: &E) -> ErrJson {
+        pub(in crate::dist) fn from_err<E: ?Sized + std::error::Error>(err: &E) -> ErrJson {
             let cause = err.source().map(ErrJson::from_err).map(Box::new);
             ErrJson {
                 description: err.to_string(),
@@ -461,7 +465,7 @@ mod server {
             }
         }
 
-        fn into_data(self) -> String {
+        pub(in crate::dist) fn into_data(self) -> String {
             serde_json::to_string(&self).expect("infallible serialization for ErrJson failed")
         }
     }
@@ -583,11 +587,11 @@ mod server {
     }
 
     // Generation and verification of job auth
-    struct JWTJobAuthorizer {
+    pub(in crate::dist) struct JWTJobAuthorizer {
         server_key: Vec<u8>,
     }
     impl JWTJobAuthorizer {
-        fn new(server_key: Vec<u8>) -> Box<Self> {
+        pub(in crate::dist) fn new(server_key: Vec<u8>) -> Box<Self> {
             Box::new(Self { server_key })
         }
     }
