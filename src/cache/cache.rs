@@ -295,6 +295,14 @@ impl Storage for RemoteStorage {
         let can_write = match self.operator.write(path, "Hello, World!").await {
             Ok(_) => true,
             Err(err) if err.kind() == ErrorKind::AlreadyExists => true,
+            // As for the read above: a rate limit says nothing about whether
+            // writing is allowed, and taking it for "no" made the whole
+            // session read-only for one 429 at startup. Not retried for long
+            // here either, since the server is starting.
+            Err(err) if err.kind() == ErrorKind::RateLimited => {
+                eprintln!("cache storage write check: {err:?}, but we decide to keep writing");
+                true
+            }
             // Tolerate all other write errors because we can do read at least.
             Err(err) => {
                 eprintln!("storage write check failed: {err:?}");
@@ -384,7 +392,8 @@ impl Storage for RemoteStorage {
             bail!("storage is read-only");
         }
 
-        self.operator.write(&normalize_key(key), data).await?;
+        let key = normalize_key(key);
+        super::retry::write_with_backoff(|| self.operator.write(&key, data.clone())).await?;
 
         Ok(start.elapsed())
     }

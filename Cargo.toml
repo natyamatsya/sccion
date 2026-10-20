@@ -215,6 +215,10 @@ temp-env = "0.3.6"
 test-case = "3.3.1"
 thirtyfour = "0.37"
 
+# Paused time for the cache write backoff's tests, which would otherwise wait
+# out its half-minute.
+tokio = { version = "1", features = ["test-util"] }
+
 # Reading PDBs is how the debug-information tests confirm that a cache hit from
 # another checkout still points a debugger at the right sources -- checked by
 # resolving the recorded paths and comparing source checksums, rather than by
