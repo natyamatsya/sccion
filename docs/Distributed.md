@@ -435,28 +435,27 @@ Until these binaries [are included in releases](https://github.com/mozilla/sccac
 docker run -ti --rm -v $PWD:/sccion luser/sccion-musl-build:0.1 /bin/bash -c "cd /sccion; cargo build --release --target x86_64-unknown-linux-musl --features=dist-server && strip target/x86_64-unknown-linux-musl/release/sccion-dist && cd target/x86_64-unknown-linux-musl/release/ && tar czf sccion-dist.tar.gz sccion-dist"
 ```
 
-## The axum server: `dist-server-axum`
+## The HTTP stack
 
-`sccion-dist` can be built on either of two HTTP stacks:
-
-- `--features=dist-server`: rouille on tiny_http, with the build server's TLS
-  through OpenSSL. The default, and what the release builds use.
-- `--features=dist-server-axum`: axum on hyper 1 and tokio, with the build
-  server's TLS through rustls -- the stack the client, and the scheduler's
-  connections to build servers, already verify with. It implies
-  `dist-server`.
+`sccion-dist` serves on axum over hyper 1 and tokio, with the build server's
+TLS through rustls -- the stack the client, and the scheduler's connections to
+build servers, already verify with. `--features=dist-server` is all it takes
+to build, and it links no OpenSSL.
 
 ```
-cargo build --release --features=dist-server-axum --bin sccion-dist
+cargo build --release --features=dist-server --bin sccion-dist
 ```
 
-Nothing else changes: the binary is still `sccion-dist`, with the same
-commands, configuration files and wire protocol, so a scheduler, build server
-or client built either way works with the others, and a cluster can move over
-one machine at a time. The build server's certificate is the same self-signed
+`sccion-dist` used to serve on rouille and tiny_http, with the build server's
+TLS through OpenSSL; for a while the axum server was the opt-in
+`dist-server-axum` feature beside it. Both that feature and
+`vendored-openssl` are gone. The binary, its commands, configuration files and
+wire protocol did not change, so a scheduler, build server or client from
+before the move works with one from after it, and a cluster can move over one
+machine at a time. The build server's certificate is the same self-signed
 RSA/SHA-256 certificate, generated at startup.
 
-What is different in operation:
+What is different in operation from the rouille server:
 
 - Requests are tokio tasks rather than threads from a pool of eight per CPU.
   The work that blocks -- running a compile, writing a toolchain to the cache,
@@ -470,7 +469,3 @@ What is different in operation:
 - A request for a path the server does not have, or with the wrong method, is
   an empty 404, as before; a `HEAD` request for a `GET` route is now answered
   like the `GET`.
-
-rouille stays the default until the axum server has replaced it; building with
-`dist-server-axum` still compiles rouille and OpenSSL meanwhile, but
-`sccion-dist` no longer uses them.

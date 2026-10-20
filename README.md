@@ -256,15 +256,7 @@ By default, `sccion` builds with support for all storage backends, but individua
 
 ### Building portable binaries
 
-When building with the `dist-server` feature, `sccion` will depend on OpenSSL, which can be an annoyance if you want to distribute portable binaries. It is possible to statically link against OpenSSL using the `vendored-openssl` feature.
-
-#### Linux
-
-Build with `cargo` and use `ldd` to check that the resulting binary does not depend on OpenSSL anymore.
-
-#### macOS
-
-Build with `cargo` and use `otool -L` to check that the resulting binary does not depend on OpenSSL anymore.
+`sccion` and `sccion-dist` do their TLS with rustls, on the aws-lc-rs provider, which is compiled into the binary. Neither links against OpenSSL, with any set of features, so there is no OpenSSL to vendor or link statically; the `vendored-openssl` feature that did so is gone.
 
 #### Windows
 
@@ -278,8 +270,6 @@ rustflags = ["-Ctarget-feature=+crt-static"]
 ```
 
 Build with `cargo` and use `dumpbin /dependents` to check that the resulting binary does not depend on MSVC CRT DLLs anymore.
-
-When statically linking with OpenSSL, you will need Perl available in your `$PATH`.
 
 ---
 

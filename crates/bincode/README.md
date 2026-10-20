@@ -83,8 +83,9 @@ is deny-by-default and fires on a test that round-trips 3.14159.
 - **Network reads are bounded.** `IoReader::fill_buffer` in `src/de/read.rs`
   still sizes its buffer from a length field in the payload before reading it,
   and the default limit is still `Infinite` -- that is upstream behaviour and is
-  left alone. The two call sites in `src/dist/http.rs` that read from the
-  network now pass a limit instead. `util::bincode_limits` in the main crate is
+  left alone. The two places in `src/dist/http/` that decode from the
+  network -- `read_bincode` in `handler.rs` and `run_job` in `server.rs` --
+  pass a limit instead. `util::bincode_limits` in the main crate is
   the test that a limit refuses before allocating rather than after.
 
 Note for anyone adding a limit elsewhere: `bincode::config()` is deprecated and
