@@ -177,7 +177,7 @@ async function install(tag: string, target: string, token: string): Promise<stri
 /**
  * The release this copy of the action belongs to: the first `version =` in the
  * Cargo.toml beside it, read the way ci.yml's release job reads it. So
- * `natyamatsya/sccion@v0.17.0` installs sccion v0.17.0 without being told.
+ * `natyamatsya/sccion@v0.1.0` installs sccion v0.1.0 without being told.
  */
 function bundledTag(): string {
   const toml = fs.readFileSync(path.join(import.meta.dirname, '..', '..', 'Cargo.toml'), 'utf8');

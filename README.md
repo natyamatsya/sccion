@@ -23,8 +23,9 @@ project. Please note:
 * this fork is **not** a successor to sccache, nor a replacement for it;
 * there are no plans for serious maintenance or support;
 * issues and pull requests may not be reviewed or answered;
-* there are no releases and no stability guarantees: things may break or change
-  without notice, and history may be rewritten — use at your own risk;
+* releases are snapshots for my own use, with no stability guarantees: things
+  may break or change without notice, and history may be rewritten — use at
+  your own risk;
 * please do not take problems with sccion to the sccache project unless they
   reproduce with sccache itself.
 
@@ -39,9 +40,15 @@ name, and this project has no bearing on it.
 The project remains available under the Apache License 2.0
 ([LICENSE](LICENSE)). Feel free to use, modify and fork it under its terms.
 
-**What "experimental" means here, concretely.** You build from a checkout at
-whatever commit you cloned, and two people saying "sccion" may not mean the same
-program. The on-disk cache
+**Versioning.** sccion versions its releases independently of upstream,
+git-tagged with [semantic versioning](https://semver.org) and starting fresh at
+**v0.1.0**. It was branched from sccache shortly after 0.17.0; the two version
+lines are unrelated, and a sccion version says nothing about the sccache
+release with the same number.
+
+**What "experimental" means here, concretely.** A release is whatever `main`
+was when it was tagged, and between releases two people saying "sccion" may not
+mean the same program. The on-disk cache
 format is not stable — the entry version byte is at 3, and each bump so far has
 discarded every entry written before it, which costs one cold build and is meant
 to. The client and daemon check that they speak the same protocol, and refuse
@@ -113,9 +120,14 @@ Contents
 
 ## Installation
 
-**Build it from a checkout** — there are no packages (see [Fork
-status](#fork-status-experimental--unsupported)), and anything you install under
-the name `sccache` is upstream, not this.
+**From a release.** Each [release](https://github.com/natyamatsya/sccion/releases)
+has `sccion` for Linux (x86_64, aarch64; static musl), macOS (Apple Silicon,
+Intel) and Windows (x64, ARM64), and `sccion-dist` for Linux, each as a
+`.tar.gz` with a `.sha256` beside it. There are no packages in any package
+manager (see [Fork status](#fork-status-experimental--unsupported)), and
+anything you install under the name `sccache` is upstream, not this.
+
+**From a checkout:**
 
 ```bash
 git clone https://github.com/natyamatsya/sccion
@@ -389,7 +401,7 @@ The following module-related flags are **not supported** and will bypass the cac
 
 ### User Agent
 
-* Requests sent to your storage option of choice will have a user agent header indicating the current sccion version, e.g. `sccion/0.17.0`.
+* Requests sent to your storage option of choice will have a user agent header indicating the current sccion version, e.g. `sccion/0.1.0`.
 
 Lineage
 -------

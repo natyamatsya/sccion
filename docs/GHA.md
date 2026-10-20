@@ -6,14 +6,14 @@ This repository is also a GitHub Action. It installs sccion, starts its server
 with the Actions cache as the backend, and points the rest of the job at it:
 
 ```yaml
-- uses: natyamatsya/sccion@v0.17.0
+- uses: natyamatsya/sccion@v0.1.0
 - run: cargo build
 ```
 
 What it does:
 
-- **Installs** the release the action is tagged with (`@v0.17.0` installs sccion
-  v0.17.0), downloaded through the GitHub API and checked against the release's
+- **Installs** the release the action is tagged with (`@v0.1.0` installs sccion
+  v0.1.0), downloaded through the GitHub API and checked against the release's
   published SHA-256 -- and against `sha256:` if you pin digests yourself.
 - **Starts the server** with the Actions cache credentials in its environment
   and nowhere else. They are not written to `GITHUB_ENV`, so later steps, build
@@ -45,11 +45,9 @@ with the job's own `github.token`, which can read a public repository's
 releases, so no secret is needed. Draft releases are the exception: only a
 token with push access to `natyamatsya/sccion` sees them.
 
-There are no releases yet -- sccion is an experimental fork that is built from
-a checkout (see the [README](../README.md#fork-status-experimental--unsupported)).
-Until there are, there is no tag to use either: use the action at `@main` and
-pass a sccion you built as `binary:`, and everything else it does works the
-same.
+At `@main`, the action installs the release named by `main`'s `Cargo.toml`,
+which may not have been cut yet: pin a tag, or pass a sccion you built as
+`binary:`.
 
 ## Without the action
 

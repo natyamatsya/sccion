@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 #
-# sccion as a GitHub Action: `uses: natyamatsya/sccion@v0.17.0`.
+# sccion as a GitHub Action: `uses: natyamatsya/sccion@v0.1.0`.
 #
 # A JavaScript action, for the two things a composite one cannot do: read the
 # Actions cache credentials, which the runner hands only to JavaScript actions,
@@ -17,10 +17,10 @@ author: natyamatsya
 inputs:
   version:
     description: >-
-      The release to install: a tag such as v0.17.0, or `latest` for the newest
+      The release to install: a tag such as v0.1.0, or `latest` for the newest
       published one. Empty installs the release this copy of the action belongs
       to -- the version in the Cargo.toml beside it -- so
-      natyamatsya/sccion@v0.17.0 installs sccion v0.17.0.
+      natyamatsya/sccion@v0.1.0 installs sccion v0.1.0.
     default: ''
   repository:
     description: Where the releases are.
