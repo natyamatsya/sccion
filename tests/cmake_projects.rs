@@ -243,6 +243,7 @@ impl ToolWorld {
                    SOURCE_TREES pkg\n\
                    INPUT_FILES pkg.lock\n\
                    TOOLS \"\\\"${{CMAKE_COMMAND}}\\\" --version\"\n\
+                     \"\\\"${{CMAKE_COMMAND}}\\\" -E true \\\"${{CMAKE_BINARY_DIR}}/a-tool\\\"\"\n\
                    ENVIRONMENT TOOL_FLAVOUR)\n"
             ),
         )

@@ -271,7 +271,10 @@ function(_sccion_tool_key_lines out)
 			message(FATAL_ERROR "sccion tool cache: ${SCCION_TOOL_NAME}: `${tool}` failed: ${also}")
 		endif()
 		string(SHA256 said "${said}${also}")
-		list(APPEND lines "tool ${tool} ${said}")
+		# The command line as the key spells paths: a tool built into the
+		# build directory -- vcpkg's flatc -- is named there in every checkout.
+		_sccion_tool_portable(named "${tool}")
+		list(APPEND lines "tool ${named} ${said}")
 	endforeach()
 	set(files "")
 	foreach(file IN LISTS SCCION_TOOL_INPUT_FILES)
