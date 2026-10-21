@@ -16,13 +16,44 @@
 
 use crate::errors::*;
 use clap::{Arg, ArgAction, ArgGroup, ValueEnum, error::ErrorKind};
+use serde::Deserialize;
+use std::collections::HashMap;
 use std::env;
 use std::ffi::{OsStr, OsString};
+use std::fs;
+use std::io;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use which::which_in;
 
 use crate::envvar::START_SERVER as ENV_VAR_INTERNAL_START_SERVER;
+
+/// The file a copy of sccion started under a tool's name reads from its own
+/// directory, to learn which executable it stands in for:
+///
+/// ```toml
+/// [wraps]
+/// moc = "C:/Qt/6.8.5/msvc2022_64/bin/moc.exe"
+/// ```
+///
+/// A build system knows which tool it means and the PATH does not, so this is
+/// how one says so: it writes the copy and this file side by side, and
+/// nothing about the environment the build later runs in can change the
+/// answer. A relative path is taken from this file's directory. Without the
+/// file, or without an entry for the name, the copy falls back to searching
+/// the PATH.
+///
+/// Read from beside the executable, never by walking up the way the project
+/// file is found: whoever can write here can already replace the copy itself,
+/// so the file grants nothing a repository or a build directory above it
+/// could not otherwise reach.
+pub const WRAPS_FILE: &str = "sccion-wraps.toml";
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WrapsFile {
+    wraps: HashMap<String, PathBuf>,
+}
 
 /// Names the tools that sccions further up this process tree stand in for, in
 /// the environment of everything they run.
@@ -206,20 +237,23 @@ fn get_clap_command() -> clap::Command {
 }
 
 /// What sccion wraps when it was started as `name` rather than as itself: the
-/// `name` on `path` that is not this executable.
+/// executable [`WRAPS_FILE`] in `dir` names for it, or else the `name` on
+/// `path` that is not this executable.
 ///
 /// Wrapping `name` as it stands would make sccion its own compiler. The
 /// compilation, and the probe that detects the compiler before it, would start
 /// sccion again under the same name, which does the same without end --
 /// measured at about 100 new processes a second, with orphans left running
-/// after the tree was killed. Both ways of getting there are refused, with an
-/// error that says what to fix: the PATH has no other `name`, or the one it
-/// has is another copy of sccion (a second hard link, say, which comparing
-/// canonical paths cannot tell from the real tool) whose own search leads
-/// back. `outer` is how the second shows itself: that copy finds its own name
-/// already among the ones sccions above it stand in for.
+/// after the tree was killed. Every way of getting there is refused, with an
+/// error that says what to fix: the wraps file names this copy or nothing that
+/// exists, the PATH has no other `name`, or what was found is another copy of
+/// sccion (a second hard link, say, which comparing canonical paths cannot
+/// tell from the real tool) that leads back. `outer` is how the last shows
+/// itself: that copy finds its own name already among the ones sccions above
+/// it stand in for.
 fn resolve_masquerade(
     name: &OsStr,
+    dir: &Path,
     path: &OsStr,
     cwd: &Path,
     own: &Path,
@@ -229,17 +263,39 @@ fn resolve_masquerade(
     let key = masquerade_key(name);
     if outer.is_some_and(|o| env::split_paths(o).any(|n| masquerade_key(n.as_os_str()) == key)) {
         bail!(
-            "started as `{shown}` ({}) by another sccion already standing in for \
-             `{shown}`, so the `{shown}` that one found on the PATH is a copy of sccion too, and \
-             running it would start sccion again without end. The first `{shown}` on the PATH \
-             after each copy of sccion named `{shown}` must be the real tool; or invoke \
-             `sccion <path to the real {shown}> ...` instead.",
+            "started as `{shown}` ({}) by another sccion already standing in for `{shown}`, so \
+             the `{shown}` that one resolved to is a copy of sccion too, and running it would \
+             start sccion again without end. What a copy of sccion named `{shown}` stands in for \
+             -- the entry in the {WRAPS_FILE} beside it, or else the next `{shown}` on the PATH \
+             -- must be the real tool; or invoke `sccion <path to the real {shown}> ...` instead.",
             own.display()
         );
     }
 
     let is_own =
         |p: &Path| matches!((p.canonicalize(), own.canonicalize()), (Ok(a), Ok(b)) if a == b);
+    if let Some((file, named)) = wrapped_by_file(dir, name)? {
+        if !named.is_file() {
+            bail!(
+                "started as `{shown}` ({}), so it stands in for the `{shown}` that {} names, \
+                 but there is no file at {}.",
+                own.display(),
+                file.display(),
+                named.display()
+            );
+        }
+        if is_own(&named) {
+            bail!(
+                "started as `{shown}` ({}), and {} names this very file as the `{shown}` to \
+                 stand in for; running it would start sccion again without end. Name the real \
+                 `{shown}` there.",
+                own.display(),
+                file.display()
+            );
+        }
+        return Ok(named);
+    }
+
     let found = match which_in(name, Some(path), cwd) {
         Ok(first) if is_own(&first) => {
             // Look again without the directory it was found in. The filter
@@ -257,11 +313,36 @@ fn resolve_masquerade(
         anyhow!(
             "started as `{shown}` ({}), a name other than its own, so it stands in for \
              the `{shown}` on the PATH -- but the PATH has no `{shown}` except this one, and \
-             running it would start sccion again without end. Put the directory of the real \
-             `{shown}` on the PATH, or invoke `sccion <path to the real {shown}> ...` instead.",
+             running it would start sccion again without end. Name the real `{shown}` in a \
+             {WRAPS_FILE} beside this copy, put its directory on the PATH, or invoke \
+             `sccion <path to the real {shown}> ...` instead.",
             own.display()
         )
     })
+}
+
+/// The entry for `name` in the [`WRAPS_FILE`] in `dir`, with the file it came
+/// from, or `None` when there is no such file or it has no entry for `name`.
+fn wrapped_by_file(dir: &Path, name: &OsStr) -> Result<Option<(PathBuf, PathBuf)>> {
+    let file = dir.join(WRAPS_FILE);
+    let text = match fs::read_to_string(&file) {
+        Ok(text) => text,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(e).with_context(|| format!("could not read {}", file.display())),
+    };
+    let wraps: WrapsFile = toml::from_str(&text).with_context(|| {
+        format!(
+            "{} is not a wraps file: it needs a [wraps] table of tool = \"path\"",
+            file.display()
+        )
+    })?;
+    let key = masquerade_key(name);
+    let named = wraps
+        .wraps
+        .into_iter()
+        .find(|(tool, _)| masquerade_key(OsStr::new(tool)) == key)
+        .map(|(_, path)| dir.join(path));
+    Ok(named.map(|named| (file, named)))
 }
 
 /// How a tool is named in [`MASQUERADING`]: its file stem, lowercased, so that
@@ -323,14 +404,24 @@ pub fn try_parse() -> Result<Command> {
                 // as if it were invoked with `sccion $name`, with $name resolved
                 // to the real tool rather than to ourselves.
                 _ => {
-                    if let (Some(path), Some(exe_filename)) = (env::var_os("PATH"), exe.file_name())
-                    {
+                    if let Some(exe_filename) = exe.file_name() {
+                        let own = env::current_exe()?;
+                        // The wraps file sits beside the copy as it was started.
+                        // A bare name was found on the PATH, which is where
+                        // `own` is.
+                        let dir = exe
+                            .parent()
+                            .filter(|d| !d.as_os_str().is_empty())
+                            .or(own.parent())
+                            .unwrap_or(cwd.as_path())
+                            .to_path_buf();
                         let outer = env::var_os(MASQUERADING);
                         let wrapped = resolve_masquerade(
                             exe_filename,
-                            &path,
+                            &dir,
+                            &env::var_os("PATH").unwrap_or_default(),
                             &cwd,
-                            &env::current_exe()?,
+                            &own,
                             outer.as_deref(),
                         )?;
                         // SAFETY: nothing else runs yet. Parsing comes before the
@@ -488,8 +579,15 @@ mod tests {
         let real = fake_tool(real_dir.path(), "tool");
         let path = env::join_paths([own_dir.path(), real_dir.path()]).unwrap();
 
-        let wrapped =
-            resolve_masquerade(&exe_name("tool"), &path, own_dir.path(), &own, None).unwrap();
+        let wrapped = resolve_masquerade(
+            &exe_name("tool"),
+            own_dir.path(),
+            &path,
+            own_dir.path(),
+            &own,
+            None,
+        )
+        .unwrap();
         assert_eq!(
             wrapped.canonicalize().unwrap(),
             real.canonicalize().unwrap()
@@ -502,9 +600,16 @@ mod tests {
         let own = fake_tool(own_dir.path(), "tool");
         let path = env::join_paths([own_dir.path()]).unwrap();
 
-        let err = resolve_masquerade(&exe_name("tool"), &path, own_dir.path(), &own, None)
-            .unwrap_err()
-            .to_string();
+        let err = resolve_masquerade(
+            &exe_name("tool"),
+            own_dir.path(),
+            &path,
+            own_dir.path(),
+            &own,
+            None,
+        )
+        .unwrap_err()
+        .to_string();
         assert!(err.contains("the PATH has no `tool"), "{err}");
         assert!(err.contains("sccion <path to the real tool"), "{err}");
     }
@@ -516,9 +621,16 @@ mod tests {
         let own = fake_tool(own_dir.path(), "tool");
         let path = env::join_paths([elsewhere.path()]).unwrap();
 
-        let err = resolve_masquerade(&exe_name("tool"), &path, own_dir.path(), &own, None)
-            .unwrap_err()
-            .to_string();
+        let err = resolve_masquerade(
+            &exe_name("tool"),
+            own_dir.path(),
+            &path,
+            own_dir.path(),
+            &own,
+            None,
+        )
+        .unwrap_err()
+        .to_string();
         assert!(err.contains("the PATH has no `tool"), "{err}");
     }
 
@@ -534,9 +646,16 @@ mod tests {
         let path = env::join_paths([own_dir.path(), real_dir.path()]).unwrap();
         let outer = masquerading_with(None, &exe_name("tool"));
 
-        let err = resolve_masquerade(&exe_name("tool"), &path, own_dir.path(), &own, Some(&outer))
-            .unwrap_err()
-            .to_string();
+        let err = resolve_masquerade(
+            &exe_name("tool"),
+            own_dir.path(),
+            &path,
+            own_dir.path(),
+            &own,
+            Some(&outer),
+        )
+        .unwrap_err()
+        .to_string();
         assert!(err.contains("already standing in for `tool"), "{err}");
     }
 
@@ -550,8 +669,15 @@ mod tests {
         let outer = masquerading_with(None, &exe_name("other"));
 
         assert!(
-            resolve_masquerade(&exe_name("tool"), &path, own_dir.path(), &own, Some(&outer))
-                .is_ok()
+            resolve_masquerade(
+                &exe_name("tool"),
+                own_dir.path(),
+                &path,
+                own_dir.path(),
+                &own,
+                Some(&outer)
+            )
+            .is_ok()
         );
     }
 
@@ -565,6 +691,158 @@ mod tests {
         assert_eq!(
             masquerade_key(OsStr::new("moc")),
             masquerade_key(OsStr::new("Moc.exe"))
+        );
+    }
+
+    /// A [`WRAPS_FILE`] in `dir` naming `target` for `stem`.
+    fn wraps_file(dir: &Path, stem: &str, target: &Path) {
+        // A literal string, so a Windows path needs no escaping.
+        let target = target.display();
+        fs::write(
+            dir.join(WRAPS_FILE),
+            format!("[wraps]\n{stem} = '{target}'\n"),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn wraps_file_names_the_tool_whatever_the_path_holds() {
+        let own_dir = tempfile::tempdir().unwrap();
+        let real_dir = tempfile::tempdir().unwrap();
+        let decoy_dir = tempfile::tempdir().unwrap();
+        let own = fake_tool(own_dir.path(), "tool");
+        let real = fake_tool(real_dir.path(), "tool");
+        fake_tool(decoy_dir.path(), "tool");
+        wraps_file(own_dir.path(), "tool", &real);
+        // The PATH offers a different `tool`, and the file still wins.
+        let path = env::join_paths([decoy_dir.path()]).unwrap();
+
+        let wrapped = resolve_masquerade(
+            &exe_name("TOOL"),
+            own_dir.path(),
+            &path,
+            own_dir.path(),
+            &own,
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            wrapped.canonicalize().unwrap(),
+            real.canonicalize().unwrap()
+        );
+    }
+
+    #[test]
+    fn wraps_file_path_is_relative_to_the_file() {
+        let own_dir = tempfile::tempdir().unwrap();
+        fs::create_dir(own_dir.path().join("real")).unwrap();
+        let own = fake_tool(own_dir.path(), "tool");
+        let real = fake_tool(&own_dir.path().join("real"), "tool");
+        let relative = Path::new("real").join(exe_name("tool"));
+        wraps_file(own_dir.path(), "tool", &relative);
+
+        let wrapped = resolve_masquerade(
+            &exe_name("tool"),
+            own_dir.path(),
+            OsStr::new(""),
+            own_dir.path(),
+            &own,
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            wrapped.canonicalize().unwrap(),
+            real.canonicalize().unwrap()
+        );
+    }
+
+    #[test]
+    fn wraps_file_without_an_entry_falls_back_to_the_path() {
+        let own_dir = tempfile::tempdir().unwrap();
+        let real_dir = tempfile::tempdir().unwrap();
+        let own = fake_tool(own_dir.path(), "tool");
+        let real = fake_tool(real_dir.path(), "tool");
+        wraps_file(own_dir.path(), "other", &real);
+        let path = env::join_paths([real_dir.path()]).unwrap();
+
+        let wrapped = resolve_masquerade(
+            &exe_name("tool"),
+            own_dir.path(),
+            &path,
+            own_dir.path(),
+            &own,
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            wrapped.canonicalize().unwrap(),
+            real.canonicalize().unwrap()
+        );
+    }
+
+    #[test]
+    fn wraps_file_naming_this_copy_is_refused() {
+        let own_dir = tempfile::tempdir().unwrap();
+        let own = fake_tool(own_dir.path(), "tool");
+        wraps_file(own_dir.path(), "tool", &own);
+
+        let err = resolve_masquerade(
+            &exe_name("tool"),
+            own_dir.path(),
+            OsStr::new(""),
+            own_dir.path(),
+            &own,
+            None,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("names this very file"), "{err}");
+    }
+
+    #[test]
+    fn wraps_file_naming_nothing_that_exists_is_refused() {
+        let own_dir = tempfile::tempdir().unwrap();
+        let own = fake_tool(own_dir.path(), "tool");
+        wraps_file(
+            own_dir.path(),
+            "tool",
+            &own_dir.path().join("gone").join(exe_name("tool")),
+        );
+
+        let err = resolve_masquerade(
+            &exe_name("tool"),
+            own_dir.path(),
+            OsStr::new(""),
+            own_dir.path(),
+            &own,
+            None,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("there is no file at"), "{err}");
+    }
+
+    #[test]
+    fn malformed_wraps_file_is_refused_and_named() {
+        let own_dir = tempfile::tempdir().unwrap();
+        let own = fake_tool(own_dir.path(), "tool");
+        fs::write(own_dir.path().join(WRAPS_FILE), "tool = \"x\"\n").unwrap();
+
+        let err = format!(
+            "{:#}",
+            resolve_masquerade(
+                &exe_name("tool"),
+                own_dir.path(),
+                OsStr::new(""),
+                own_dir.path(),
+                &own,
+                None
+            )
+            .unwrap_err()
+        );
+        assert!(
+            err.contains(WRAPS_FILE) && err.contains("[wraps] table"),
+            "{err}"
         );
     }
 }

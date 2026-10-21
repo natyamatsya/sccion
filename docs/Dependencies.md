@@ -58,6 +58,25 @@ checkout normalization. On a Qt build this is around a quarter of all
 compilations — 669 of 2557 on one project — and took its warm build from 225 s
 to 148 s.
 
+A build system does not send moc through a compiler launcher -- CMake's
+`AUTOMOC` runs the executable it is given, with no prefix -- so sccion has to
+*be* that executable. Give it a copy (or a hard link) of sccion named `moc`,
+with a `sccion-wraps.toml` beside it that names the real one:
+
+```toml
+[wraps]
+moc = "C:/Qt/6.8.5/msvc2022_64/bin/moc.exe"
+```
+
+and point the build at the copy, in CMake with `CMAKE_AUTOMOC_EXECUTABLE`. The
+build system already knows which moc it means, so it is the one to write the
+file, at configure time; the PATH the build later runs with then plays no part.
+Without the file, or without an entry for the name, the copy uses the next
+`moc` on the PATH that is not itself. A copy that would end up running itself
+-- no other `moc` anywhere, or an entry naming the copy -- stops with an error
+saying so. `sccion --check-env` reports the file name it reads, so a build can
+check that the installed sccion reads it at all before relying on it.
+
 `rcc` output is not compiled by sccion but is compiled *through* it, and it has
 a caveat worth reading before expecting two checkouts to share:
 [Generated sources](Checkouts.md#generated-sources).

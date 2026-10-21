@@ -176,6 +176,11 @@ pub struct EnvReport {
     /// is under one. Named so that an override can be traced to a file rather
     /// than left as an assertion.
     pub project_config: Option<String>,
+    /// The file a copy of sccion started under a tool's name reads from beside
+    /// itself to learn which executable it stands in for. Reported so a build
+    /// system can tell a sccion that reads it from one that only searches the
+    /// PATH, before it relies on the file.
+    pub wraps_file: String,
     pub preprocessor_cache_mode: Setting,
     pub preprocessor_cache_settings: Vec<Setting>,
     /// `None` off Windows, where there is no Defender to report on.
@@ -827,6 +832,7 @@ pub fn check(config: &Config, cwd: &Path) -> EnvReport {
         same_volume,
         compression,
         project_config: project.source.map(|p| p.display().to_string()),
+        wraps_file: crate::cmdline::WRAPS_FILE.to_string(),
         preprocessor_cache_mode,
         preprocessor_cache_settings,
         // The report gathered above, not a second `defender_report()`: each
@@ -859,6 +865,7 @@ impl EnvReport {
         if let Some(p) = &self.project_config {
             println!("  project config          {p}");
         }
+        println!("  wraps file              {}", self.wraps_file);
         println!(
             "  direct/preprocessor     {}",
             self.preprocessor_cache_mode.describe()
@@ -1162,6 +1169,7 @@ mod tests {
             max_cache_size: 0,
             compression: "none".into(),
             project_config: None,
+            wraps_file: crate::cmdline::WRAPS_FILE.into(),
             preprocessor_cache_mode: Setting::resolved(
                 "use_preprocessor_cache_mode",
                 true,
