@@ -16,10 +16,16 @@ use std::path::{Path, PathBuf};
 use crate::errors::*;
 
 /// The module's files, by name.
-pub const FILES: &[(&str, &str)] = &[(
-    "SccionCompilerCache.cmake",
-    include_str!("../cmake/SccionCompilerCache.cmake"),
-)];
+pub const FILES: &[(&str, &str)] = &[
+    (
+        "SccionCompilerCache.cmake",
+        include_str!("../cmake/SccionCompilerCache.cmake"),
+    ),
+    (
+        "SccionToolCache.cmake",
+        include_str!("../cmake/SccionToolCache.cmake"),
+    ),
+];
 
 /// Where this version of sccion keeps its module: one directory per version,
 /// so two projects pinned to different sccions never see each other's.
@@ -65,17 +71,18 @@ pub fn run() -> Result<PathBuf> {
 mod tests {
     use super::*;
 
-    /// The module names the release it comes from, which is how a project
-    /// knows what its committed copy is; a release that forgot to bump it
+    /// Each file names the release it comes from, which is how a project
+    /// knows what its committed copy is; a release that forgot to bump one
     /// fails here.
     #[test]
     fn the_module_names_this_version() {
-        let (_, text) = FILES[0];
         let line = format!(
             "set(SCCION_CMAKE_MODULE_VERSION \"{}\")",
             env!("CARGO_PKG_VERSION")
         );
-        assert!(text.contains(&line), "the module should contain `{line}`");
+        for (name, text) in FILES {
+            assert!(text.contains(&line), "{name} should contain `{line}`");
+        }
     }
 
     #[test]
