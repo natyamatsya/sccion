@@ -93,10 +93,13 @@ pub struct HandleArgs {
 pub struct ExplainMissArgs {
     /// From register_workspace.
     pub handle: String,
-    /// Only misses whose output or input contains this.
+    /// Only misses whose output or input contains this, with `\` and `/`
+    /// matching each other. Searches every record the daemon holds.
     pub output: Option<String>,
-    /// How many records to fetch. Capped at the daemon's ring size, so the
-    /// maximum is always a complete answer rather than a truncated one.
+    /// How many records to return, the most recent ones: of the matches when
+    /// `output` is given, else of all records. Capped at the daemon's ring
+    /// size, so the maximum is always a complete answer rather than a
+    /// truncated one.
     pub limit: Option<u64>,
 }
 

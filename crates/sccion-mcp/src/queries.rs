@@ -104,20 +104,40 @@ pub fn explain_miss(
     // 4096 to 1000, and the analysis that hit it only noticed because the counts
     // came back suspiciously round.
     let limit = requested.min(sccion::api::MAX_MISS_RECORDS as u64) as usize;
+    // A needle searches every record the daemon holds, and `limit` then keeps
+    // the most recent matches. Filtering only the most recent `limit` records
+    // answered "none" for a file whose misses were merely older than those --
+    // measured: `limit` 10 found no record of a header's moc and compile, 400
+    // found both -- and a complete-looking empty answer is the worst one this
+    // tool can give.
+    let fetch = match needle {
+        Some(_) => sccion::api::MAX_MISS_RECORDS,
+        None => limit,
+    };
     let records = backend
-        .miss_records(Some(handle), limit)
+        .miss_records(Some(handle), fetch)
         .map_err(handle_error)?;
-    // Whether the *fetch* was cut short, decided before any filtering: a needle
-    // that matches few records would otherwise make a truncated fetch look like
-    // a complete answer, which is the failure this field exists to prevent.
-    let truncated = records.len() == limit && limit < sccion::api::MAX_MISS_RECORDS;
-    let records: Vec<_> = records
+    let fetched = records.len();
+    // Paths are recorded the way each compiler named them, `\` from MSVC and
+    // `/` from moc, so a needle matches either spelling.
+    let needle = needle.map(|n| n.replace('\\', "/"));
+    let mentions = |s: &str| {
+        needle
+            .as_deref()
+            .is_none_or(|n| s.replace('\\', "/").contains(n))
+    };
+    let mut records: Vec<_> = records
         .into_iter()
-        .filter(|r| match needle {
-            None => true,
-            Some(n) => r.output.contains(n) || r.input.as_deref().is_some_and(|i| i.contains(n)),
-        })
+        .filter(|r| mentions(&r.output) || r.input.as_deref().is_some_and(mentions))
         .collect();
+    // Whether more would have answered than came back: more matches than
+    // `limit` allows, or without a needle, a fetch that `limit` cut short.
+    let truncated = match needle {
+        Some(_) => records.len() > limit,
+        None => fetched == limit && limit < sccion::api::MAX_MISS_RECORDS,
+    };
+    let excess = records.len().saturating_sub(limit);
+    records.drain(..excess);
     Ok(json!({
         "misses": serde_json::to_value(&records).unwrap_or_default(),
         "returned": records.len(),
@@ -306,7 +326,7 @@ fn needs_tracing(record: &sccion::api::MissRecord) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::backend::fake::{Fake, Located};
+    use crate::backend::fake::{Fake, Located, Ring};
 
     /// The question this tool exists for, and the one that cost an afternoon of
     /// shell on 2026-08-09: two workspaces compile the same input and get
@@ -355,6 +375,69 @@ mod tests {
             "time_macros"
         );
         assert_eq!(body["misses"][0]["input"], "src/foo.c");
+    }
+
+    fn inputs(body: &Value) -> Vec<String> {
+        body["misses"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|m| m["input"].as_str().unwrap().to_owned())
+            .collect()
+    }
+
+    /// A match older than the last `limit` records is still found. Filtering
+    /// only those answered "none" for a header whose moc and compile had missed
+    /// a few hundred records earlier.
+    #[test]
+    fn a_filter_searches_past_the_most_recent_records() {
+        let ring = Ring(vec![
+            "src/old/Delegate.h",
+            "src/a.cpp",
+            "src/b.cpp",
+            "src/c.cpp",
+        ]);
+        let body = explain_miss(&ring, "ok", Some("Delegate"), 2).unwrap();
+        assert_eq!(inputs(&body), ["src/old/Delegate.h"]);
+        assert_eq!(body["truncated"], false);
+    }
+
+    /// `limit` keeps the most recent matches, and says when it dropped some.
+    #[test]
+    fn a_filter_keeps_the_most_recent_matches() {
+        let ring = Ring(vec![
+            "src/x1.cpp",
+            "src/other.cpp",
+            "src/x2.cpp",
+            "src/x3.cpp",
+        ]);
+        let body = explain_miss(&ring, "ok", Some("/x"), 2).unwrap();
+        assert_eq!(inputs(&body), ["src/x2.cpp", "src/x3.cpp"]);
+        assert_eq!(body["truncated"], true);
+    }
+
+    /// MSVC records name inputs with `\`, moc's with `/`; one needle finds both.
+    #[test]
+    fn a_filter_matches_either_separator() {
+        let ring = Ring(vec!["src\\UI\\Box.cpp", "src/UI/Box.h", "src/UI/Other.h"]);
+        for needle in ["UI/Box", "UI\\Box"] {
+            let body = explain_miss(&ring, "ok", Some(needle), 50).unwrap();
+            assert_eq!(
+                inputs(&body),
+                ["src\\UI\\Box.cpp", "src/UI/Box.h"],
+                "{needle}"
+            );
+        }
+    }
+
+    /// Without a filter nothing changes: the most recent `limit` records, and
+    /// `truncated` when the ring held more.
+    #[test]
+    fn without_a_filter_the_most_recent_records_come_back() {
+        let ring = Ring(vec!["a.c", "b.c", "c.c"]);
+        let body = explain_miss(&ring, "ok", None, 2).unwrap();
+        assert_eq!(inputs(&body), ["b.c", "c.c"]);
+        assert_eq!(body["truncated"], true);
     }
 
     /// A handle is a capability. One that fell back to "everything" would be no

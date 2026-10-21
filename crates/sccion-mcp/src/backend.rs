@@ -179,6 +179,46 @@ pub mod fake {
         }
     }
 
+    /// A daemon's ring: one record per input, oldest first, and a fetch that
+    /// returns only the most recent `limit` -- the part of the real daemon a
+    /// filter has to see past.
+    pub struct Ring(pub Vec<&'static str>);
+
+    impl Backend for Ring {
+        fn register_workspace(&self, path: &Path) -> Result<WorkspaceInfo> {
+            Fake.register_workspace(path)
+        }
+
+        fn describe_workspace(&self, handle: &str) -> Result<WorkspaceInfo> {
+            Fake.describe_workspace(handle)
+        }
+
+        fn stats(&self) -> Result<ServerInfo> {
+            Fake.stats()
+        }
+
+        fn miss_records(&self, handle: Option<&str>, limit: usize) -> Result<Vec<MissRecord>> {
+            let template = Fake.miss_records(handle, limit)?.remove(0);
+            let records: Vec<MissRecord> = self
+                .0
+                .iter()
+                .enumerate()
+                .map(|(i, input)| MissRecord {
+                    seq: i as u64,
+                    input: Some((*input).to_owned()),
+                    output: format!("{input}.obj"),
+                    ..template.clone()
+                })
+                .collect();
+            let skip = records.len().saturating_sub(limit);
+            Ok(records.into_iter().skip(skip).collect())
+        }
+
+        fn environment(&self, cwd: &Path) -> EnvReport {
+            Fake.environment(cwd)
+        }
+    }
+
     /// Records which directory the environment report was asked about.
     #[derive(Default)]
     pub struct Located(Mutex<Option<PathBuf>>);
