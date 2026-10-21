@@ -72,6 +72,9 @@ allows.
 sccion-mcp
 ```
 
+It ships in each release archive beside `sccion`; from a checkout,
+`cargo install --locked --path crates/sccion-mcp`.
+
 Reads line-delimited JSON-RPC on stdin, writes responses on stdout, logs to
 stderr under `SCCION_LOG`. It needs a running daemon and will not start one:
 starting a daemon in order to ask it for statistics reports the statistics of

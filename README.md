@@ -121,9 +121,10 @@ Contents
 ## Installation
 
 **From a release.** Each [release](https://github.com/natyamatsya/sccion/releases)
-has `sccion` for Linux (x86_64, aarch64; static musl), macOS (Apple Silicon,
-Intel) and Windows (x64, ARM64), and `sccion-dist` for Linux, each as a
-`.tar.gz` with a `.sha256` beside it. There are no packages in any package
+has `sccion` and `sccion-mcp` (the [MCP server](docs/MCP.md)) for Linux
+(x86_64, aarch64; static musl), macOS (Apple Silicon, Intel) and Windows (x64,
+ARM64), and `sccion-dist` for Linux, each as a `.tar.gz` with a `.sha256` beside
+it. There are no packages in any package
 manager (see [Fork status](#fork-status-experimental--unsupported)), and
 anything you install under the name `sccache` is upstream, not this.
 
