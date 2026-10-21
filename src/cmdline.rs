@@ -17,12 +17,20 @@
 use crate::errors::*;
 use clap::{Arg, ArgAction, ArgGroup, ValueEnum, error::ErrorKind};
 use std::env;
-use std::ffi::OsString;
-use std::path::PathBuf;
+use std::ffi::{OsStr, OsString};
+use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use which::which_in;
 
 use crate::envvar::START_SERVER as ENV_VAR_INTERNAL_START_SERVER;
+
+/// Names the tools that sccions further up this process tree stand in for, in
+/// the environment of everything they run.
+///
+/// Read and written only by the masquerade handling below. It is not a
+/// setting, and it reaches no cache key: compilers hash only the variables
+/// they list.
+const MASQUERADING: &str = "SCCION_MASQUERADING";
 
 #[derive(Debug, Clone, ValueEnum, Default)]
 pub enum StatsFormat {
@@ -197,6 +205,89 @@ fn get_clap_command() -> clap::Command {
         )
 }
 
+/// What sccion wraps when it was started as `name` rather than as itself: the
+/// `name` on `path` that is not this executable.
+///
+/// Wrapping `name` as it stands would make sccion its own compiler. The
+/// compilation, and the probe that detects the compiler before it, would start
+/// sccion again under the same name, which does the same without end --
+/// measured at about 100 new processes a second, with orphans left running
+/// after the tree was killed. Both ways of getting there are refused, with an
+/// error that says what to fix: the PATH has no other `name`, or the one it
+/// has is another copy of sccion (a second hard link, say, which comparing
+/// canonical paths cannot tell from the real tool) whose own search leads
+/// back. `outer` is how the second shows itself: that copy finds its own name
+/// already among the ones sccions above it stand in for.
+fn resolve_masquerade(
+    name: &OsStr,
+    path: &OsStr,
+    cwd: &Path,
+    own: &Path,
+    outer: Option<&OsStr>,
+) -> Result<PathBuf> {
+    let shown = name.to_string_lossy();
+    let key = masquerade_key(name);
+    if outer.is_some_and(|o| env::split_paths(o).any(|n| masquerade_key(n.as_os_str()) == key)) {
+        bail!(
+            "started as `{shown}` ({}) by another sccion already standing in for \
+             `{shown}`, so the `{shown}` that one found on the PATH is a copy of sccion too, and \
+             running it would start sccion again without end. The first `{shown}` on the PATH \
+             after each copy of sccion named `{shown}` must be the real tool; or invoke \
+             `sccion <path to the real {shown}> ...` instead.",
+            own.display()
+        );
+    }
+
+    let is_own =
+        |p: &Path| matches!((p.canonicalize(), own.canonicalize()), (Ok(a), Ok(b)) if a == b);
+    let found = match which_in(name, Some(path), cwd) {
+        Ok(first) if is_own(&first) => {
+            // Look again without the directory it was found in. The filter
+            // compares spellings, so a second spelling of that directory can
+            // still lead back here, which the last check catches.
+            let dir = first.parent();
+            let rest =
+                env::join_paths(env::split_paths(path).filter(|d| Some(d.as_path()) != dir)).ok();
+            which_in(name, rest, cwd).ok().filter(|p| !is_own(p))
+        }
+        Ok(first) => Some(first),
+        Err(_) => None,
+    };
+    found.ok_or_else(|| {
+        anyhow!(
+            "started as `{shown}` ({}), a name other than its own, so it stands in for \
+             the `{shown}` on the PATH -- but the PATH has no `{shown}` except this one, and \
+             running it would start sccion again without end. Put the directory of the real \
+             `{shown}` on the PATH, or invoke `sccion <path to the real {shown}> ...` instead.",
+            own.display()
+        )
+    })
+}
+
+/// How a tool is named in [`MASQUERADING`]: its file stem, lowercased, so that
+/// `moc`, `moc.exe` and `MOC.EXE` are one tool -- the same leniency the check
+/// for sccion's own name applies.
+fn masquerade_key(name: &OsStr) -> String {
+    Path::new(name)
+        .file_stem()
+        .unwrap_or(name)
+        .to_string_lossy()
+        .to_lowercase()
+}
+
+/// [`MASQUERADING`] for what this sccion runs: the names above it, and `name`.
+fn masquerading_with(outer: Option<&OsStr>, name: &OsStr) -> OsString {
+    let key = OsString::from(masquerade_key(name));
+    let names: Vec<OsString> = outer
+        .map(|o| env::split_paths(o).map(PathBuf::into_os_string).collect())
+        .unwrap_or_default();
+    // A name holding the list separator cannot be listed; leaving it out
+    // loses only the guard for that one name.
+    env::join_paths(names.iter().cloned().chain([key]))
+        .or_else(|_| env::join_paths(names))
+        .unwrap_or_default()
+}
+
 /// Parse the commandline args into a `Result<Command>` to execute.
 pub fn try_parse() -> Result<Command> {
     trace!("parse");
@@ -229,29 +320,29 @@ pub fn try_parse() -> Result<Command> {
                 // on the PATH, and failing in a way that names no cause.
                 Some(ref e) if e == env!("CARGO_PKG_NAME") || e == "sccache" => {}
                 // Otherwise, if it was copied/linked under a different $name, act
-                // as if it were invoked with `sccion $name`, but avoid $name resolving
-                // to ourselves again if it's in the PATH.
+                // as if it were invoked with `sccion $name`, with $name resolved
+                // to the real tool rather than to ourselves.
                 _ => {
                     if let (Some(path), Some(exe_filename)) = (env::var_os("PATH"), exe.file_name())
                     {
-                        match which_in(exe_filename, Some(&path), &cwd) {
-                            Ok(ref full_path)
-                                if full_path.canonicalize()?
-                                    == env::current_exe()?.canonicalize()? =>
-                            {
-                                if let Some(dir) = full_path.parent() {
-                                    let path = env::join_paths(
-                                        env::split_paths(&path).filter(|p| p != dir),
-                                    )
-                                    .ok();
-                                    if let Ok(full_path) = which_in(exe_filename, path, &cwd) {
-                                        args[0] = full_path.into();
-                                    }
-                                }
-                            }
-                            Ok(full_path) => args[0] = full_path.into(),
-                            Err(_) => {}
+                        let outer = env::var_os(MASQUERADING);
+                        let wrapped = resolve_masquerade(
+                            exe_filename,
+                            &path,
+                            &cwd,
+                            &env::current_exe()?,
+                            outer.as_deref(),
+                        )?;
+                        // SAFETY: nothing else runs yet. Parsing comes before the
+                        // runtime, the server or any other thread is started, so
+                        // no other thread can be reading the environment.
+                        unsafe {
+                            env::set_var(
+                                MASQUERADING,
+                                masquerading_with(outer.as_deref(), exe_filename),
+                            );
                         }
+                        args[0] = wrapped.into();
                         args.insert(0, env!("CARGO_PKG_NAME").into());
                     }
                 }
@@ -364,5 +455,116 @@ pub fn try_parse() -> Result<Command> {
                 unreachable!("Either the arg group or env variable should provide a command");
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    /// The platform's spelling of a tool called `stem`.
+    fn exe_name(stem: &str) -> OsString {
+        format!("{stem}{}", env::consts::EXE_SUFFIX).into()
+    }
+
+    /// An empty file in `dir` that the PATH search accepts as tool `stem`.
+    fn fake_tool(dir: &Path, stem: &str) -> PathBuf {
+        let p = dir.join(exe_name(stem));
+        fs::write(&p, b"").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&p, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        p
+    }
+
+    #[test]
+    fn masquerade_wraps_the_real_tool_found_after_itself() {
+        let own_dir = tempfile::tempdir().unwrap();
+        let real_dir = tempfile::tempdir().unwrap();
+        let own = fake_tool(own_dir.path(), "tool");
+        let real = fake_tool(real_dir.path(), "tool");
+        let path = env::join_paths([own_dir.path(), real_dir.path()]).unwrap();
+
+        let wrapped =
+            resolve_masquerade(&exe_name("tool"), &path, own_dir.path(), &own, None).unwrap();
+        assert_eq!(
+            wrapped.canonicalize().unwrap(),
+            real.canonicalize().unwrap()
+        );
+    }
+
+    #[test]
+    fn masquerade_with_only_itself_on_the_path_is_refused() {
+        let own_dir = tempfile::tempdir().unwrap();
+        let own = fake_tool(own_dir.path(), "tool");
+        let path = env::join_paths([own_dir.path()]).unwrap();
+
+        let err = resolve_masquerade(&exe_name("tool"), &path, own_dir.path(), &own, None)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("the PATH has no `tool"), "{err}");
+        assert!(err.contains("sccion <path to the real tool"), "{err}");
+    }
+
+    #[test]
+    fn masquerade_with_no_such_tool_on_the_path_is_refused() {
+        let own_dir = tempfile::tempdir().unwrap();
+        let elsewhere = tempfile::tempdir().unwrap();
+        let own = fake_tool(own_dir.path(), "tool");
+        let path = env::join_paths([elsewhere.path()]).unwrap();
+
+        let err = resolve_masquerade(&exe_name("tool"), &path, own_dir.path(), &own, None)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("the PATH has no `tool"), "{err}");
+    }
+
+    #[test]
+    fn masquerade_reached_through_another_copy_is_refused() {
+        // Two copies of sccion named `tool`: the first resolves to the second,
+        // which a path comparison takes for the real tool. The second sees its
+        // own name in what the first set, and stops.
+        let own_dir = tempfile::tempdir().unwrap();
+        let real_dir = tempfile::tempdir().unwrap();
+        let own = fake_tool(own_dir.path(), "tool");
+        fake_tool(real_dir.path(), "tool");
+        let path = env::join_paths([own_dir.path(), real_dir.path()]).unwrap();
+        let outer = masquerading_with(None, &exe_name("tool"));
+
+        let err = resolve_masquerade(&exe_name("tool"), &path, own_dir.path(), &own, Some(&outer))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("already standing in for `tool"), "{err}");
+    }
+
+    #[test]
+    fn masquerade_inside_a_different_one_is_allowed() {
+        let own_dir = tempfile::tempdir().unwrap();
+        let real_dir = tempfile::tempdir().unwrap();
+        let own = fake_tool(own_dir.path(), "tool");
+        fake_tool(real_dir.path(), "tool");
+        let path = env::join_paths([own_dir.path(), real_dir.path()]).unwrap();
+        let outer = masquerading_with(None, &exe_name("other"));
+
+        assert!(
+            resolve_masquerade(&exe_name("tool"), &path, own_dir.path(), &own, Some(&outer))
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn masquerading_lists_each_tool_once_per_level_by_stem() {
+        let one = masquerading_with(None, OsStr::new("MOC.EXE"));
+        assert_eq!(one, OsString::from("moc"));
+        let two = masquerading_with(Some(&one), OsStr::new("cl.exe"));
+        let names: Vec<_> = env::split_paths(&two).collect();
+        assert_eq!(names, [PathBuf::from("moc"), PathBuf::from("cl")]);
+        assert_eq!(
+            masquerade_key(OsStr::new("moc")),
+            masquerade_key(OsStr::new("Moc.exe"))
+        );
     }
 }

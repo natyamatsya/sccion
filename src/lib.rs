@@ -81,10 +81,12 @@ pub fn main() {
         Err(e) => match e.downcast::<clap::error::Error>() {
             // If the error is from clap then let them handle formatting and exiting
             Ok(clap_err) => clap_err.exit(),
+            // To stderr: started as a compiler, sccion's stdout is the
+            // compiler's, where a build may expect generated output.
             Err(some_other_err) => {
-                println!("sccion: {some_other_err}");
+                eprintln!("sccion: {some_other_err}");
                 for source in some_other_err.chain().skip(1) {
-                    println!("sccion: caused by: {source}");
+                    eprintln!("sccion: caused by: {source}");
                 }
                 std::process::exit(1);
             }
