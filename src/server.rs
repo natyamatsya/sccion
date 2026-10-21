@@ -1438,9 +1438,9 @@ where
     /// Record a compilation refused before its arguments could be parsed.
     ///
     /// These are the permanent misses, and the ones with the least to go on:
-    /// there is no key, no parsed output and no language, because nothing got
-    /// that far. What there is -- the reason and the command -- is the whole
-    /// point. `/dynamicdeopt` made every translation unit of a real build
+    /// there is no key and no language, because nothing got that far. What
+    /// there is -- the reason, the command, and the input and output the
+    /// command names -- is the whole point. `/dynamicdeopt` made every translation unit of a real build
     /// uncacheable through this path, and `--show-stats` could say how many but
     /// never which.
     fn record_cannot_cache(
@@ -1453,6 +1453,7 @@ where
         env_vars: &[(OsString, OsString)],
     ) {
         let basedirs = crate::compiler::effective_basedirs_for(self.storage.basedirs(), cwd);
+        let (input, output) = missrecord::named_in_command(cmd);
         let reason = match extra_info {
             Some(extra) => format!("{why} ({extra})"),
             None => why.to_owned(),
@@ -1463,14 +1464,15 @@ where
                 classification: missrecord::Classification::Uncacheable(reason),
                 direct: missrecord::DirectState::Off,
                 key: None,
-                // The compiler's own name: the output is one of the things
-                // parsing would have told us.
-                output: exe
-                    .file_name()
-                    .unwrap_or(exe.as_os_str())
-                    .to_string_lossy()
-                    .into_owned(),
-                input: None,
+                // Read off the command line, since parsing it is what failed;
+                // the compiler's own name when it names no output plainly.
+                output: output.unwrap_or_else(|| {
+                    exe.file_name()
+                        .unwrap_or(exe.as_os_str())
+                        .to_string_lossy()
+                        .into_owned()
+                }),
+                input: input.map(|input| missrecord::relative_to_basedirs(&input, &basedirs)),
                 language: None,
                 workspace: crate::agent::workspace(cwd),
                 agent: crate::agent::identity(env_vars, cwd),

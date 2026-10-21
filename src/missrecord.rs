@@ -256,11 +256,12 @@ pub struct MissRecord {
     /// The cache key that was looked up. Absent when the compilation was
     /// refused before one could be computed.
     pub key: Option<String>,
-    /// The output, as the rest of sccache describes it -- usually a basename,
-    /// and the compiler's own name when the arguments were never parsed.
+    /// The output, as the rest of sccache describes it -- usually a basename.
+    /// When the arguments were never parsed it is what the command line names
+    /// (see [`named_in_command`]), or the compiler's own name if it names none.
     pub output: String,
     /// The primary input, basedir-relative. Absent for compilations that have
-    /// no single one, and for those whose arguments were never parsed.
+    /// no single one, and for unparsed ones whose command line names none.
     pub input: Option<String>,
     /// The language, as `--show-stats` names it. Absent when the arguments were
     /// never parsed far enough to say.
@@ -322,6 +323,58 @@ pub fn command_digest(arguments: &[OsString], basedirs: &[Vec<u8>]) -> String {
         digest.update(b"\0");
     }
     digest.finish()
+}
+
+/// The input and output a command line names, read off it without parsing it.
+///
+/// For compilations refused before their arguments were parsed, whose records
+/// otherwise cannot say which invocation they were: one build reported 94
+/// `shared pdb` refusals, and every record named only `cl.exe`. Best effort by
+/// design, since the parser that would know better is the one that refused. The
+/// input is the last argument that is not an option and has a source file's
+/// extension, or what `/Tc` and `/Tp` name; the output is the basename of what
+/// `-o`, `/Fo` or `-Fo` names. Either is `None` when the command line does not
+/// say it that plainly, behind a response file for one.
+pub fn named_in_command(arguments: &[OsString]) -> (Option<PathBuf>, Option<String>) {
+    const SOURCE_EXTENSIONS: &[&str] = &[
+        "c", "cc", "cp", "cpp", "cxx", "c++", "m", "mm", "cu", "i", "ii", "rs",
+    ];
+    let basename = |path: &str| {
+        Path::new(path)
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+    };
+
+    let mut input = None;
+    let mut output = None;
+    let mut arguments = arguments.iter();
+    while let Some(argument) = arguments.next() {
+        let text = argument.to_string_lossy();
+        if text == "-o" {
+            output = arguments
+                .next()
+                .and_then(|next| basename(&next.to_string_lossy()));
+        } else if let Some(path) = ["/Fo", "-Fo"]
+            .iter()
+            .find_map(|flag| text.strip_prefix(flag))
+        {
+            output = basename(path.strip_prefix(':').unwrap_or(path));
+        } else if let Some(path) = ["/Tc", "-Tc", "/Tp", "-Tp"]
+            .iter()
+            .find_map(|flag| text.strip_prefix(flag))
+        {
+            input = Some(PathBuf::from(path));
+        } else if !text.starts_with('-')
+            && Path::new(argument).extension().is_some_and(|extension| {
+                SOURCE_EXTENSIONS
+                    .iter()
+                    .any(|known| extension.eq_ignore_ascii_case(known))
+            })
+        {
+            input = Some(PathBuf::from(argument));
+        }
+    }
+    (input, output)
 }
 
 /// A path as a record should carry it: relative to a basedir when one covers
@@ -432,6 +485,58 @@ pub fn sink_from_env(env_vars: &[(OsString, OsString)]) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn arguments(list: &[&str]) -> Vec<OsString> {
+        list.iter().map(OsString::from).collect()
+    }
+
+    /// A refused compilation's record has to say which one it was, and its
+    /// command line is all there is to go on.
+    #[test]
+    fn a_refused_msvc_command_names_its_source_and_object() {
+        let named = named_in_command(&arguments(&[
+            "-nologo",
+            "/TP",
+            "/Zi",
+            "/FoCMakeFiles/t.dir/a.cpp.obj",
+            "/FdTARGET.pdb",
+            "-c",
+            "D:/src/a.cpp",
+        ]));
+        assert_eq!(
+            named,
+            (
+                Some(PathBuf::from("D:/src/a.cpp")),
+                Some("a.cpp.obj".to_owned())
+            )
+        );
+    }
+
+    #[test]
+    fn a_refused_gcc_command_names_its_source_and_object() {
+        let named = named_in_command(&arguments(&["-c", "src/foo.c", "-o", "out/foo.o"]));
+        assert_eq!(
+            named,
+            (Some(PathBuf::from("src/foo.c")), Some("foo.o".to_owned()))
+        );
+    }
+
+    /// `/Fo:` takes its path after a colon, and `/Tp` names a source whatever
+    /// its extension.
+    #[test]
+    fn msvc_colon_and_explicit_source_forms_are_read() {
+        let named = named_in_command(&arguments(&["/Fo:out/b.obj", "/Tpweird.inc"]));
+        assert_eq!(
+            named,
+            (Some(PathBuf::from("weird.inc")), Some("b.obj".to_owned()))
+        );
+    }
+
+    /// Nothing named is nothing guessed: the caller falls back to what it had.
+    #[test]
+    fn a_command_naming_no_files_names_none() {
+        assert_eq!(named_in_command(&arguments(&["--version"])), (None, None));
+    }
 
     fn record(output: &str) -> MissRecord {
         MissRecord {
