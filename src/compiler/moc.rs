@@ -43,8 +43,10 @@ use crate::errors::*;
 
 /// Bumped when anything about how a moc key is derived, or what its entry
 /// stores, changes. moc-2: the dependency file and JSON are stored with
-/// checkout roots taken out (`reroot`).
-const MOC_CACHE_VERSION: &[u8] = b"moc-2";
+/// checkout roots taken out (`reroot`). moc-3: a root is named by its rank
+/// among the basedirs containing the compilation, as with `c::CACHE_VERSION`
+/// 15.
+const MOC_CACHE_VERSION: &[u8] = b"moc-3";
 
 /// Qt's meta-object compiler.
 #[derive(Clone, Debug)]

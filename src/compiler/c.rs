@@ -1987,8 +1987,10 @@ impl pkg::ToolchainPackager for CToolchainPackager {
 /// The cache is versioned by the inputs to `HashKeyParams::compute`, and by
 /// the form of what an entry stores: 14 stores compiler output and dependency
 /// files with checkout roots taken out (`reroot`), and an entry from before
-/// that would replay another checkout's paths.
-pub const CACHE_VERSION: &[u8] = b"14";
+/// that would replay another checkout's paths. 15 names a root by its rank
+/// among the basedirs containing the compilation rather than by its place in
+/// the basedir list, which a 14 entry's markers still mean.
+pub const CACHE_VERSION: &[u8] = b"15";
 
 /// Environment variables that are factored into the cache key.
 static CACHED_ENV_VARS: LazyLock<HashSet<&'static OsStr>> = LazyLock::new(|| {

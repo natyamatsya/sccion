@@ -81,8 +81,17 @@ objects that include it, and reran its moc.
 So sccion stores them with the checkout root taken out wherever a path starts
 with it, and a hit puts back the root of the checkout it serves, in the
 separator style the text used (`/`, `\`, or `\\` as JSON escapes it). The build
-system receives what a compile in that checkout would have printed. A root
-spelled with escaped spaces (`\ ` in a Make-style dependency file) is not
+system receives what a compile in that checkout would have printed.
+
+A compilation's checkout root is the declared root that contains its working
+directory -- the `.sccion.toml` directory above it, or the entry of
+`SCCACHE_BASEDIRS` it is under when that lists every checkout. A root that does
+not contain the working directory is some other tree, and paths under it are
+replayed as they stand; so is everything a compilation prints when its working
+directory is under no root at all, a build directory outside the checkout
+being the usual case.
+
+A root spelled with escaped spaces (`\ ` in a Make-style dependency file) is not
 recognized, so a checkout whose path contains a space keeps absolute paths in
 its dependency output.
 

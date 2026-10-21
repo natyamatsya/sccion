@@ -750,12 +750,15 @@ where
             })
             .collect::<Vec<_>>();
 
-        // The checkout roots this compilation's key was stripped of, and how
-        // this checkout spells them. What the entry replays -- the compiler's
-        // output and the dependency files -- is stored with the roots taken
-        // out and restored with this checkout's put back; see `reroot`.
-        let output_basedirs = crate::compiler::c::effective_basedirs_for(storage.basedirs(), &cwd);
-        let output_roots = reroot::roots_for(&output_basedirs, &cwd);
+        // The checkout roots of this compilation, the basedirs containing its
+        // working directory, and how this checkout spells them. What the entry
+        // replays -- the compiler's output and the dependency files -- is
+        // stored with the roots taken out and restored with this checkout's put
+        // back; see `reroot`.
+        let output_roots = reroot::roots_for(
+            &crate::compiler::c::effective_basedirs_for(storage.basedirs(), &cwd),
+            &cwd,
+        );
 
         let miss = MissContext {
             key: &key,
@@ -1187,12 +1190,12 @@ where
                     fmt_duration_as_secs(&duration_compilation)
                 );
                 let start_create_artifact = Instant::now();
-                let neutral_basedirs = output_basedirs.clone();
+                let neutral_roots = output_roots.clone();
                 let mut entry = CacheWrite::from_objects_rewriting(
                     outputs,
                     &pool,
                     reroot::is_dependency_output,
-                    move |bytes| match reroot::neutralize(&bytes, &neutral_basedirs) {
+                    move |bytes| match reroot::neutralize(&bytes, &neutral_roots) {
                         Cow::Borrowed(_) => bytes,
                         Cow::Owned(neutral) => neutral,
                     },
@@ -1200,14 +1203,8 @@ where
                 .await
                 .context("failed to zip up compiler outputs")?;
 
-                entry.put_stdout(&reroot::neutralize(
-                    &compiler_result.stdout,
-                    &output_basedirs,
-                ))?;
-                entry.put_stderr(&reroot::neutralize(
-                    &compiler_result.stderr,
-                    &output_basedirs,
-                ))?;
+                entry.put_stdout(&reroot::neutralize(&compiler_result.stdout, &output_roots))?;
+                entry.put_stderr(&reroot::neutralize(&compiler_result.stderr, &output_roots))?;
                 debug!(
                     "[{}]: Created cache artifact in {}",
                     out_pretty,
@@ -1879,7 +1876,7 @@ pub async fn write_temp_file(
 /// Puts this checkout's roots back into dependency files a hit restored with
 /// them taken out. A file that names none is left as it was, so a hit with no
 /// dependency outputs, or a checkout with no basedirs, writes nothing.
-fn reroot_files(paths: &[PathBuf], roots: &[Vec<u8>]) -> Result<()> {
+fn reroot_files(paths: &[PathBuf], roots: &[reroot::Root]) -> Result<()> {
     for path in paths {
         let bytes = match fs::read(path) {
             Ok(b) => b,

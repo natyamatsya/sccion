@@ -20,10 +20,19 @@
 //! and MSVC's `/d1trimfile` rewrite `__FILE__`, debug information and coverage
 //! data, not dependency output; `/sourceDependencies` writes the same absolute
 //! paths as JSON. So the rewriting happens here, as ccache does it: where a
-//! path starts with a basedir, [`neutralize`] stores a marker in place of the
-//! root, and [`reroot`] puts back the root of the checkout serving the hit, in
-//! the separator style the text used. The result is what a compile in that
+//! path starts with a checkout root, [`neutralize`] stores a marker in place of
+//! the root, and [`reroot`] puts back the root of the checkout serving the hit,
+//! in the separator style the text used. The result is what a compile in that
 //! checkout would itself have printed.
+//!
+//! A checkout's roots are the basedirs that contain the compilation's working
+//! directory ([`roots_for`]), and a marker names one by its rank among them,
+//! innermost first -- never by its place in the basedir list. That list is the
+//! same in every checkout when it is configured (`SCCACHE_BASEDIRS` naming
+//! both trees, say), so a place in it names the *storing* checkout wherever
+//! the entry is replayed. A basedir that does not contain the working
+//! directory is another tree, not this one, and paths under it are stored as
+//! they stand.
 //!
 //! Matching folds ASCII case only where the basedir's volume does, and only
 //! ASCII, for the reason given at `util::starts_with_on`. A root that appears
@@ -36,7 +45,7 @@ use std::path::Path;
 
 use crate::errors::*;
 
-/// Opens a marker: `\x1fsccion-root<index>:<style>\x1f`. The unit separator
+/// Opens a marker: `\x1fsccion-root<rank>:<style>\x1f`. The unit separator
 /// does not occur in compiler output or in paths, so a marker cannot be
 /// mistaken for text, nor text for a marker.
 const OPEN: &[u8] = b"\x1fsccion-root";
@@ -126,19 +135,11 @@ fn match_root(text: &[u8], basedir: &[u8], folds: bool) -> Option<(usize, Style)
     style.map(|s| (i, s))
 }
 
-/// `text` with every basedir that starts a path replaced by a marker.
-pub fn neutralize<'a>(text: &'a [u8], basedirs: &[Vec<u8>]) -> Cow<'a, [u8]> {
-    if basedirs.is_empty() || text.is_empty() {
+/// `text` with every one of `roots` that starts a path replaced by a marker.
+pub fn neutralize<'a>(text: &'a [u8], roots: &[Root]) -> Cow<'a, [u8]> {
+    if roots.is_empty() || text.is_empty() {
         return Cow::Borrowed(text);
     }
-    // Longest first, so a basedir nested in another is matched as itself.
-    let mut order: Vec<usize> = (0..basedirs.len()).collect();
-    order.sort_by_key(|&i| std::cmp::Reverse(basedirs[i].len()));
-    let folds: Vec<bool> = basedirs
-        .iter()
-        .map(|b| crate::volume::basedir_folds_case(b))
-        .collect();
-
     let mut out: Option<Vec<u8>> = None;
     let mut copied = 0;
     let mut i = 0;
@@ -146,8 +147,10 @@ pub fn neutralize<'a>(text: &'a [u8], basedirs: &[Vec<u8>]) -> Cow<'a, [u8]> {
         let at_boundary = i == 0 || is_boundary(text[i - 1]);
         let found = at_boundary
             .then(|| {
-                order.iter().find_map(|&idx| {
-                    match_root(&text[i..], &basedirs[idx], folds[idx]).map(|(n, s)| (idx, n, s))
+                // Innermost first, so a root nested in another is matched as
+                // itself.
+                roots.iter().enumerate().find_map(|(rank, root)| {
+                    match_root(&text[i..], &root.basedir, root.folds).map(|(n, s)| (rank, n, s))
                 })
             })
             .flatten();
@@ -175,14 +178,14 @@ pub fn neutralize<'a>(text: &'a [u8], basedirs: &[Vec<u8>]) -> Cow<'a, [u8]> {
     }
 }
 
-/// `text` with every marker replaced by the matching root in `roots`, spelled
-/// in the style the marker recorded and followed by one separator.
+/// `text` with every marker replaced by the root of that rank in `roots`,
+/// spelled in the style the marker recorded and followed by one separator.
 ///
-/// Fails on a marker it cannot resolve -- an index with no root, which means
-/// this checkout declares fewer basedirs than the one that stored the entry --
-/// rather than replay a path that names nothing. The caller treats that as a
-/// miss.
-pub fn reroot<'a>(text: &'a [u8], roots: &[Vec<u8>]) -> Result<Cow<'a, [u8]>> {
+/// Fails on a marker it cannot resolve -- a rank with no root, which means
+/// fewer basedirs contain this compilation than contained the one that stored
+/// the entry -- rather than replay a path that names nothing. The caller
+/// treats that as a miss.
+pub fn reroot<'a>(text: &'a [u8], roots: &[Root]) -> Result<Cow<'a, [u8]>> {
     let Some(first) = memchr::memmem::find(text, OPEN) else {
         return Ok(Cow::Borrowed(text));
     };
@@ -194,12 +197,15 @@ pub fn reroot<'a>(text: &'a [u8], roots: &[Vec<u8>]) -> Result<Cow<'a, [u8]>> {
         let body = &rest[pos + OPEN.len()..];
         let end = memchr::memchr(CLOSE, body).context("unterminated checkout-root marker")?;
         let (idx, style) = parse_marker(&body[..end])?;
-        let root = roots.get(idx).with_context(|| {
-            format!(
-                "the entry names checkout root {idx}, and this checkout has {}",
-                roots.len()
-            )
-        })?;
+        let root = &roots
+            .get(idx)
+            .with_context(|| {
+                format!(
+                    "the entry names checkout root {idx}, and this compilation has {}",
+                    roots.len()
+                )
+            })?
+            .spelled;
         let path_start = out.len();
         for &b in root {
             if b == b'/' {
@@ -281,16 +287,30 @@ fn parse_marker(body: &[u8]) -> Result<(usize, Style)> {
     let idx = std::str::from_utf8(idx)
         .ok()
         .and_then(|s| s.parse().ok())
-        .context("malformed checkout-root index")?;
+        .context("malformed checkout-root rank")?;
     let style = Style::from_code(style).context("malformed checkout-root style")?;
     Ok((idx, style))
 }
 
-/// The root each basedir stands for in this checkout, with `/` separators and
-/// no trailing one: spelled as the working directory spells it where the
-/// basedir contains it, so a rerooted path has the case a compile here would
-/// print, and as the normalized basedir otherwise.
-pub fn roots_for(basedirs: &[Vec<u8>], cwd: &Path) -> Vec<Vec<u8>> {
+/// A checkout root of one compilation: a basedir that contains its working
+/// directory.
+#[derive(Clone, Debug)]
+pub struct Root {
+    /// As normalized: `/` separators and a trailing `/`.
+    basedir: Vec<u8>,
+    folds: bool,
+    /// As the working directory spells it, with `/` separators and no trailing
+    /// one, so a rerooted path has the case a compile here would print.
+    spelled: Vec<u8>,
+}
+
+/// The basedirs that contain `cwd`, innermost first: what [`neutralize`] takes
+/// out of a compilation's output, and what [`reroot`] puts back, by rank.
+///
+/// Each contains `cwd`, so they nest, and innermost is longest. A compilation
+/// whose working directory no basedir contains has no roots, and its output is
+/// stored as it stands.
+pub fn roots_for(basedirs: &[Vec<u8>], cwd: &Path) -> Vec<Root> {
     let mut cwd: Vec<u8> = cwd
         .to_string_lossy()
         .bytes()
@@ -299,33 +319,46 @@ pub fn roots_for(basedirs: &[Vec<u8>], cwd: &Path) -> Vec<Vec<u8>> {
     if !cwd.ends_with(b"/") {
         cwd.push(b'/');
     }
-    basedirs
+    let mut roots: Vec<Root> = basedirs
         .iter()
-        .map(|b| {
+        .filter_map(|b| {
             let folds = crate::volume::basedir_folds_case(b);
             let contains_cwd = cwd.len() >= b.len()
                 && cwd[..b.len()]
                     .iter()
                     .zip(b)
                     .all(|(c, b)| c == b || (folds && c.eq_ignore_ascii_case(b)));
-            let spelled = if contains_cwd {
-                &cwd[..b.len()]
-            } else {
-                &b[..]
-            };
-            spelled.strip_suffix(b"/").unwrap_or(spelled).to_vec()
+            contains_cwd.then(|| Root {
+                basedir: b.clone(),
+                folds,
+                spelled: cwd[..b.len()]
+                    .strip_suffix(b"/")
+                    .unwrap_or(&cwd[..b.len()])
+                    .to_vec(),
+            })
         })
-        .collect()
+        .collect();
+    roots.sort_by_key(|r| std::cmp::Reverse(r.basedir.len()));
+    roots.dedup_by(|a, b| a.basedir.len() == b.basedir.len());
+    roots
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn here_and_there() -> (Vec<Vec<u8>>, Vec<Vec<u8>>) {
-        // Stored in checkout `a`, served in checkout `b`. Lowercase, as basedirs
-        // are normalized; the text below uses mixed case where the volume folds.
-        (vec![b"/w/a/".to_vec()], vec![b"/w/b".to_vec()])
+    /// The roots of a compilation in `cwd`, `basedirs` normalized.
+    fn roots(basedirs: &[&str], cwd: &str) -> Vec<Root> {
+        let basedirs: Vec<Vec<u8>> = basedirs.iter().map(|b| b.as_bytes().to_vec()).collect();
+        roots_for(&basedirs, Path::new(cwd))
+    }
+
+    fn here_and_there() -> (Vec<Root>, Vec<Root>) {
+        // Stored in checkout `a`, served in checkout `b`.
+        (
+            roots(&["/w/a/"], "/w/a/build"),
+            roots(&["/w/b/"], "/w/b/build"),
+        )
     }
 
     fn round_trip(text: &str) -> String {
@@ -362,8 +395,8 @@ mod tests {
 
     #[test]
     fn each_separator_style_is_kept() {
-        let stored_in = vec![b"d:/w/a/".to_vec()];
-        let served_in = vec![b"D:/w/b".to_vec()];
+        let stored_in = roots(&["d:/w/a/"], "d:/w/a/build");
+        let served_in = roots(&["D:/w/b/"], "D:/w/b/build");
         let text = "Note: including file:  D:\\w\\a\\src\\x.h\n\
                     {\"Includes\":[\"d:\\\\w\\\\a\\\\src\\\\y.h\"]}\n\
                     D:/w/a/build/moc_z.cpp: D:/w/a/src/z.h\n";
@@ -384,7 +417,7 @@ mod tests {
 
     #[test]
     fn mixed_separators_within_one_root_are_not_a_root() {
-        let stored_in = vec![b"/w/a/".to_vec()];
+        let stored_in = roots(&["/w/a/"], "/w/a");
         assert_eq!(
             neutralize(b"\\w/a\\x.h", &stored_in).as_ref(),
             b"\\w/a\\x.h".as_ref()
@@ -392,13 +425,13 @@ mod tests {
     }
 
     #[test]
-    fn the_longest_basedir_wins() {
-        let stored_in = vec![b"/w/".to_vec(), b"/w/a/".to_vec()];
-        let served_in = vec![b"/v".to_vec(), b"/w/b".to_vec()];
+    fn the_innermost_root_wins() {
+        let stored_in = roots(&["/w/", "/w/a/"], "/w/a/build");
+        let served_in = roots(&["/v/b/", "/v/"], "/v/b/build");
         let neutral = neutralize(b"/w/a/x.h /w/c/y.h", &stored_in);
         assert_eq!(
             reroot(&neutral, &served_in).unwrap().as_ref(),
-            b"/w/b/x.h /v/c/y.h".as_ref()
+            b"/v/b/x.h /v/c/y.h".as_ref()
         );
     }
 
@@ -417,9 +450,9 @@ mod tests {
 
     #[test]
     fn a_marker_this_checkout_cannot_resolve_fails() {
-        let stored_in = vec![b"/x/".to_vec(), b"/w/a/".to_vec()];
-        let neutral = neutralize(b"/w/a/x.h", &stored_in);
-        let err = reroot(&neutral, &[b"/w/b".to_vec()])
+        let stored_in = roots(&["/w/", "/w/a/"], "/w/a/build");
+        let neutral = neutralize(b"/w/c/x.h", &stored_in);
+        let err = reroot(&neutral, &roots(&["/v/b/"], "/v/b/build"))
             .unwrap_err()
             .to_string();
         assert!(err.contains("checkout root 1"), "{err}");
@@ -430,8 +463,11 @@ mod tests {
         // Measured: cl.exe printed this 259-character include in the checkout
         // that stored it, and two characters more of root made it 261 here,
         // which ninja refuses ("path too long").
-        let stored_in = vec![b"d:/dev/ac/".to_vec()];
-        let served_in = vec![b"D:/dev/ac-longer-checkout-name".to_vec()];
+        let stored_in = roots(&["d:/dev/ac/"], "d:/dev/ac/build");
+        let served_in = roots(
+            &["D:/dev/ac-longer-checkout-name/"],
+            "D:/dev/ac-longer-checkout-name/build",
+        );
         let deep = "build\\rel\\gen\\TLDSB7EF3Q\\../../../../";
         let filler = "x".repeat(200);
         let text = format!("Note: including file:  D:\\dev\\ac\\{deep}src/{filler}/w.h\r\n");
@@ -450,8 +486,8 @@ mod tests {
 
     #[test]
     fn a_path_that_fits_keeps_the_spelling_cl_gave_it() {
-        let stored_in = vec![b"d:/dev/ac/".to_vec()];
-        let served_in = vec![b"D:/dev/ac-b".to_vec()];
+        let stored_in = roots(&["d:/dev/ac/"], "d:/dev/ac/build");
+        let served_in = roots(&["D:/dev/ac-b/"], "D:/dev/ac-b/build");
         let text = "Note: including file:  D:\\dev\\ac\\gen\\TL\\../../src/w.h\n";
         let neutral = neutralize(text.as_bytes(), &stored_in);
         let back = String::from_utf8(reroot(&neutral, &served_in).unwrap().into_owned()).unwrap();
@@ -478,10 +514,45 @@ mod tests {
 
     #[test]
     fn roots_are_spelled_the_way_the_working_directory_is() {
-        let basedirs = vec![b"d:/dev/proj/".to_vec(), b"/elsewhere/".to_vec()];
-        let roots = roots_for(&basedirs, Path::new("D:\\Dev\\Proj\\build\\rel"));
+        let roots = roots(&["d:/dev/proj/"], "D:\\Dev\\Proj\\build\\rel");
         #[cfg(windows)]
-        assert_eq!(roots[0], b"D:/Dev/Proj".to_vec());
-        assert_eq!(roots[1], b"/elsewhere".to_vec());
+        assert_eq!(roots[0].spelled, b"D:/Dev/Proj".to_vec());
+        #[cfg(not(windows))]
+        let _ = roots;
+    }
+
+    /// Only the basedirs containing the working directory are its roots,
+    /// innermost first, whatever order they were declared in.
+    #[test]
+    fn roots_are_the_basedirs_containing_the_working_directory() {
+        let roots = roots(&["/w/", "/elsewhere/", "/w/a/", "/w/ab/"], "/w/a/build");
+        let spelled: Vec<_> = roots.iter().map(|r| r.spelled.clone()).collect();
+        assert_eq!(spelled, [b"/w/a".to_vec(), b"/w".to_vec()]);
+    }
+
+    /// `SCCACHE_BASEDIRS` naming both checkouts is the same list in each, so a
+    /// root's place in it names the checkout that stored the entry. Its rank
+    /// among the roots containing the compilation names the one serving it.
+    #[test]
+    fn a_configured_list_of_both_checkouts_reroots_to_the_serving_one() {
+        let basedirs = ["/build/dir1/", "/build/dir2/"];
+        let stored_in = roots(&basedirs, "/build/dir1");
+        let served_in = roots(&basedirs, "/build/dir2");
+        let neutral = neutralize(b"x.o: /build/dir1/x.c /build/dir1/x.h\n", &stored_in);
+        assert_eq!(
+            reroot(&neutral, &served_in).unwrap().as_ref(),
+            b"x.o: /build/dir2/x.c /build/dir2/x.h\n".as_ref()
+        );
+    }
+
+    /// A basedir that is not this checkout's is another tree, and what names
+    /// it is stored as it stands.
+    #[test]
+    fn a_basedir_not_containing_the_compilation_is_left_alone() {
+        let stored_in = roots(&["/build/dir1/", "/build/dir2/"], "/build/dir1");
+        assert!(matches!(
+            neutralize(b"/build/dir2/x.h", &stored_in),
+            Cow::Borrowed(_)
+        ));
     }
 }
