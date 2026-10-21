@@ -107,6 +107,9 @@ pub enum Command {
     CheckEnv(StatsFormat),
     /// Write a `.sccion.toml` for the tree this was run in, and exit.
     Init,
+    /// Write sccion's CMake module for this version, print its directory, and
+    /// exit.
+    CMakeModuleDir,
     /// Show the status of the distributed client.
     DistStatus,
     /// Perform a login to authenticate for distributed compilation.
@@ -195,6 +198,9 @@ fn get_clap_command() -> clap::Command {
             flag_infer_long("init")
                 .help("write a .sccion.toml for this checkout and exit")
                 .action(ArgAction::SetTrue),
+            flag_infer_long("cmake-module-dir")
+                .help("write sccion's CMake module for this version, print its directory and exit")
+                .action(ArgAction::SetTrue),
             flag_infer_long("dist-auth")
                 .help("authenticate for distributed compilation")
                 .action(ArgAction::SetTrue),
@@ -229,6 +235,7 @@ fn get_clap_command() -> clap::Command {
                     "zero-stats",
                     "check-env",
                     "init",
+                    "cmake-module-dir",
                     "package-toolchain",
                     "CMD",
                 ])
@@ -483,6 +490,8 @@ pub fn try_parse() -> Result<Command> {
                 ))
             } else if matches.get_flag("init") {
                 Ok(Command::Init)
+            } else if matches.get_flag("cmake-module-dir") {
+                Ok(Command::CMakeModuleDir)
             } else if matches.get_flag("zero-stats") {
                 Ok(Command::ZeroStats)
             } else if matches.get_flag("dist-auth") {

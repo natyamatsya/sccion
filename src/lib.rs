@@ -38,6 +38,7 @@ pub mod blockclone;
 pub mod cache;
 mod checkenv;
 mod client;
+pub mod cmake_module;
 mod cmdline;
 mod commands;
 mod compiler;

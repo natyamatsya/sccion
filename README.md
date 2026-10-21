@@ -110,6 +110,7 @@ Contents
 * [Sharing one cache between checkouts](docs/Checkouts.md)
 * [Measuring and checking](docs/Benchmarks.md)
 * [Asking sccion why it missed, from an agent](docs/MCP.md)
+* [A CMake module that chooses the cache](docs/CMake.md)
 * [Interaction with GNU `make` jobserver](#interaction-with-gnu-make-jobserver)
 * [Normalizing Paths with `SCCION_BASEDIRS`](#normalizing-paths-with-sccion_basedirs)
 * [Known Caveats](#known-caveats)
@@ -213,6 +214,11 @@ To use sccion with cmake, provide the following command line arguments to cmake 
 -DCMAKE_C_COMPILER_LAUNCHER=sccion
 -DCMAKE_CXX_COMPILER_LAUNCHER=sccion
 ```
+
+Or let the project decide, once, for everyone who builds it: sccion ships a CMake
+module that uses sccion when it is installed, sccache or ccache when one of those
+is, nothing otherwise, and passes the cache to cargo's Rust builds as well. See
+[A CMake module that chooses the cache](docs/CMake.md).
 
 The process for using sccion with MSVC and cmake, depends on which version of cmake you're using. **For versions of cmake 3.24 and earlier**, to generate PDB files for debugging with MSVC, you can use the [`/Z7` option](https://docs.microsoft.com/en-us/cpp/build/reference/z7-zi-zi-debug-information-format?view=msvc-160). Alternatively, the `/Zi` option together with `/Fd` can work if `/Fd` names a different PDB file name for each object file created. It will not work if `/FS` is also passed: that flag is the build system stating that several compilations write the one PDB, so sccion declines to cache them rather than capture a file the others are still writing. CMake with Ninja passes `/FS` for exactly that reason, which makes `/Z7` the only option there. Note that CMake sets `/Zi` by default, so if you use CMake, you can use `/Z7` by adding code like this in your CMakeLists.txt:
 

@@ -679,6 +679,9 @@ jobs:
           for d in sccion-*; do
             chmod +x "$d/sccion"*
             cp README.md LICENSE "$d/"
+            # The CMake module, for a project to commit a copy of; the binary
+            # carries the same file (`sccion --cmake-module-dir`).
+            cp -R cmake "$d/"
             tar -zcvf "$d.tar.gz" "$d"
             echo -n "$(shasum -ba 256 "$d.tar.gz" | cut -d " " -f 1)" > "$d.tar.gz.sha256"
             if [[ $d =~ sccion-.*-pc-windows-.* ]]; then

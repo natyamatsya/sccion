@@ -144,6 +144,13 @@ fn prefer_existing(new: PathBuf, legacy: PathBuf) -> PathBuf {
     }
 }
 
+/// Where sccion keeps files that are not a cache: its CMake module, for one
+/// (see `cmake_module`). XDG on Linux and macOS, `%APPDATA%` on Windows, for
+/// the reasons `base_dirs` gives.
+pub fn default_data_dir() -> PathBuf {
+    base_dirs().data_dir().join(APP_NAME)
+}
+
 // Unfortunately this means that nothing else can use the sccion cache dir as
 // this top level directory is used directly to store sccion cached objects...
 pub fn default_disk_cache_dir() -> PathBuf {

@@ -848,6 +848,12 @@ pub fn run_command(cmd: Command) -> Result<i32> {
                 return Ok(1);
             }
         }
+        Command::CMakeModuleDir => {
+            trace!("Command::CMakeModuleDir");
+            // No daemon is contacted: this only writes files that ship inside
+            // the binary.
+            println!("{}", crate::cmake_module::run()?.display());
+        }
         Command::Init => {
             trace!("Command::Init");
             // No daemon is contacted: this writes a file for a repository, and
