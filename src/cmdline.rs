@@ -594,11 +594,12 @@ mod tests {
     fn masquerade_skips_every_spelling_of_its_own_directory() {
         let own_dir = tempfile::tempdir().unwrap();
         let real_dir = tempfile::tempdir().unwrap();
-        let links = tempfile::tempdir().unwrap();
         let own = fake_tool(own_dir.path(), "tool");
         let real = fake_tool(real_dir.path(), "tool");
         // The same directory under a name that compares unequal to its own:
         // through a symlink, or in other case on a volume that folds it.
+        #[cfg(unix)]
+        let links = tempfile::tempdir().unwrap();
         #[cfg(unix)]
         let respelled = {
             let link = links.path().join("own");
