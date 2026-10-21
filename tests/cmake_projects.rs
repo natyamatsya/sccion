@@ -128,16 +128,28 @@ fn automoc_runs_moc_through_sccion() {
         .path()
         .join("build/sccion-wraps")
         .join(format!("moc{}", env::consts::EXE_SUFFIX));
-    assert_eq!(automoc_of(&out, "app"), slash(&standin), "{}", text(&out));
-    assert_eq!(automoc_of(&out, "lib"), slash(&standin), "{}", text(&out));
+    // The same file, however each side spells it: Windows hands out both the
+    // long and the 8.3 form of a temp directory.
+    let same = |a: &str| Path::new(a).canonicalize().ok() == standin.canonicalize().ok();
+    assert!(same(&automoc_of(&out, "app")), "{}", text(&out));
+    assert!(same(&automoc_of(&out, "lib")), "{}", text(&out));
     assert_eq!(
         fs::read(&standin).unwrap(),
         fs::read(&sccion).unwrap(),
         "the stand-in is this sccion"
     );
-    let wraps =
-        fs::read_to_string(dir.path().join("build/sccion-wraps/sccion-wraps.toml")).unwrap();
-    assert_eq!(wraps, format!("[wraps]\nmoc = '{}'\n", slash(&real_moc)));
+    let wraps = fs::read_to_string(dir.path().join("build/sccion-wraps/sccion-wraps.toml"))
+        .unwrap()
+        .replace("\r\n", "\n");
+    let named = wraps
+        .strip_prefix("[wraps]\nmoc = '")
+        .and_then(|rest| rest.strip_suffix("'\n"))
+        .unwrap_or_else(|| panic!("{wraps}"));
+    assert_eq!(
+        Path::new(named).canonicalize().unwrap(),
+        real_moc.canonicalize().unwrap(),
+        "{wraps}"
+    );
 }
 
 /// sccache and ccache do not cache moc, so with either AUTOMOC is left as it
@@ -287,8 +299,12 @@ impl ToolWorld {
         out
     }
 
+    /// The tool's output, line endings as written on Unix: CMake writes the
+    /// fake tool's file with CRLF on Windows.
     fn output(&self, c: &Checkout) -> String {
-        fs::read_to_string(c.build.join("out/tool.txt")).unwrap()
+        fs::read_to_string(c.build.join("out/tool.txt"))
+            .unwrap()
+            .replace("\r\n", "\n")
     }
 }
 
