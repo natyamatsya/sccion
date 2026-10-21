@@ -234,6 +234,7 @@ pub mod fake {
             max_cache_size: 0,
             compression: "none".into(),
             project_config: None,
+            wraps_file: "sccion-wraps.toml".into(),
             preprocessor_cache_mode: sccion::api::Setting {
                 name: "use_preprocessor_cache_mode".into(),
                 value: true,
