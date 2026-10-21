@@ -360,6 +360,21 @@ jobs:
           SCCACHE_IGNORE_SERVER_IO_ERROR: "1"
           RUSTFLAGS: "-Cinstrument-coverage -Ccodegen-units=1 -Copt-level=0 -Coverflow-checks=off"
 
+      # sccion-mcp is a crate of its own, which `cargo test` above does not
+      # reach: its tests stopped compiling once (0e63d6f8) and nothing noticed.
+      # Its own features only, so not on the entries that pick the main
+      # crate's; the same flags as above, so the sccion it links is not built
+      # twice.
+      - name: Build sccion-mcp tests
+        if: ${{ !contains(matrix.extra_args, 'features') }}
+        run: cargo test --locked -p sccion-mcp --no-run
+        env:
+          CARGO_INCREMENTAL: "0"
+          RUSTC_WRAPPER: ${{ env.CI_SCCACHE }}
+          SCCACHE_SERVER_PORT: "4227"
+          SCCACHE_IGNORE_SERVER_IO_ERROR: "1"
+          RUSTFLAGS: "-Cinstrument-coverage -Ccodegen-units=1 -Copt-level=0 -Coverflow-checks=off"
+
       # A cache that stores nothing costs nothing visible -- the build passes,
       # only slower -- so failed writes are raised as a warning here, with the
       # server's own account of why, rather than left in the stats.
@@ -381,6 +396,14 @@ jobs:
       # freshness, so dropping it here recompiles nothing.
       - name: Execute tests
         run: cargo test --locked --lib --bins --tests ${{ matrix.extra_args }}
+        env:
+          CARGO_INCREMENTAL: "0"
+          RUSTC_WRAPPER: ""
+          RUSTFLAGS: "-Cinstrument-coverage -Ccodegen-units=1 -Copt-level=0 -Coverflow-checks=off"
+
+      - name: Execute sccion-mcp tests
+        if: ${{ !contains(matrix.extra_args, 'features') }}
+        run: cargo test --locked -p sccion-mcp
         env:
           CARGO_INCREMENTAL: "0"
           RUSTC_WRAPPER: ""
