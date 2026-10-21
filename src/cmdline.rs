@@ -24,7 +24,7 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
-use which::which_in;
+use which::which_in_all;
 
 use crate::envvar::START_SERVER as ENV_VAR_INTERNAL_START_SERVER;
 
@@ -296,19 +296,13 @@ fn resolve_masquerade(
         return Ok(named);
     }
 
-    let found = match which_in(name, Some(path), cwd) {
-        Ok(first) if is_own(&first) => {
-            // Look again without the directory it was found in. The filter
-            // compares spellings, so a second spelling of that directory can
-            // still lead back here, which the last check catches.
-            let dir = first.parent();
-            let rest =
-                env::join_paths(env::split_paths(path).filter(|d| Some(d.as_path()) != dir)).ok();
-            which_in(name, rest, cwd).ok().filter(|p| !is_own(p))
-        }
-        Ok(first) => Some(first),
-        Err(_) => None,
-    };
+    // Every `name` on the PATH in order, skipping each that is this file
+    // however its directory is spelled there -- `.`, a symlink, a second entry.
+    // Leaving out the directory this one was found in would compare spellings,
+    // and one it missed would lead back here.
+    let found = which_in_all(name, Some(path), cwd)
+        .ok()
+        .and_then(|mut all| all.find(|p| !is_own(p)));
     found.ok_or_else(|| {
         anyhow!(
             "started as `{shown}` ({}), a name other than its own, so it stands in for \
@@ -578,6 +572,47 @@ mod tests {
         let own = fake_tool(own_dir.path(), "tool");
         let real = fake_tool(real_dir.path(), "tool");
         let path = env::join_paths([own_dir.path(), real_dir.path()]).unwrap();
+
+        let wrapped = resolve_masquerade(
+            &exe_name("tool"),
+            own_dir.path(),
+            &path,
+            own_dir.path(),
+            &own,
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            wrapped.canonicalize().unwrap(),
+            real.canonicalize().unwrap()
+        );
+    }
+
+    /// The PATH can name this copy's directory more than once, spelled
+    /// differently each time; none of them is the real tool.
+    #[test]
+    fn masquerade_skips_every_spelling_of_its_own_directory() {
+        let own_dir = tempfile::tempdir().unwrap();
+        let real_dir = tempfile::tempdir().unwrap();
+        let links = tempfile::tempdir().unwrap();
+        let own = fake_tool(own_dir.path(), "tool");
+        let real = fake_tool(real_dir.path(), "tool");
+        // The same directory under a name that compares unequal to its own:
+        // through a symlink, or in other case on a volume that folds it.
+        #[cfg(unix)]
+        let respelled = {
+            let link = links.path().join("own");
+            std::os::unix::fs::symlink(own_dir.path(), &link).unwrap();
+            link
+        };
+        #[cfg(windows)]
+        let respelled = PathBuf::from(own_dir.path().to_string_lossy().to_uppercase());
+        let path = env::join_paths([
+            own_dir.path().to_path_buf(),
+            respelled,
+            real_dir.path().to_path_buf(),
+        ])
+        .unwrap();
 
         let wrapped = resolve_masquerade(
             &exe_name("tool"),
