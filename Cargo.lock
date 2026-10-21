@@ -3729,7 +3729,7 @@ dependencies = [
 
 [[package]]
 name = "sccion"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "anyhow",
  "ar",
@@ -3846,7 +3846,7 @@ dependencies = [
 
 [[package]]
 name = "sccion-mcp"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "anyhow",
  "env_logger",

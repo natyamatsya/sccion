@@ -60,7 +60,7 @@
 include_guard(GLOBAL)
 
 # The sccion release this copy of the module comes from.
-set(SCCION_CMAKE_MODULE_VERSION "0.1.4")
+set(SCCION_CMAKE_MODULE_VERSION "0.1.5")
 
 # What an entry holds, and how a key is spelled. A change to either makes every
 # key new.

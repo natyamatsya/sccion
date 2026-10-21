@@ -23,7 +23,7 @@
 include_guard(GLOBAL)
 
 # The sccion release this copy of the module comes from.
-set(SCCION_CMAKE_MODULE_VERSION "0.1.4")
+set(SCCION_CMAKE_MODULE_VERSION "0.1.5")
 
 # The cache that also takes rustc, as cargo's RUSTC_WRAPPER, when `cache` is
 # one that can: sccion and sccache can, ccache cannot. Empty otherwise -- and

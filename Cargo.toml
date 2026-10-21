@@ -3,7 +3,7 @@
 edition = "2024"
 name = "sccion"
 rust-version = "1.91.0"
-version = "0.1.4"
+version = "0.1.5"
 
 categories = ["command-line-utilities", "development-tools::build-utils"]
 description = "sccion is a compiler cache, grafted from Mozilla's sccache. It is used as a compiler wrapper and avoids compilation when possible, storing results in local or remote storage."
