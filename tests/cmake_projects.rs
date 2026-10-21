@@ -57,6 +57,7 @@ fn cmake(args: &[&str], vars: &[(&str, &str)]) -> Output {
 // sccion_wrap_automoc
 
 fn automoc_project(dir: &Path, launcher: &Path, real_moc: &Path) -> Output {
+    let compiler_cache = slash(Path::new(COMPILER_CACHE));
     let src = dir.join("src");
     fs::create_dir_all(&src).unwrap();
     fs::write(
@@ -64,7 +65,7 @@ fn automoc_project(dir: &Path, launcher: &Path, real_moc: &Path) -> Output {
         format!(
             "cmake_minimum_required(VERSION 3.17)\n\
              project(t NONE)\n\
-             include(\"{COMPILER_CACHE}\")\n\
+             include(\"{compiler_cache}\")\n\
              sccion_compiler_cache()\n\
              add_executable(Fake::moc IMPORTED)\n\
              set_target_properties(Fake::moc PROPERTIES IMPORTED_LOCATION \"{moc}\")\n\
@@ -201,6 +202,7 @@ impl ToolWorld {
     }
 
     fn checkout(&self, name: &str, git: bool) -> Checkout {
+        let tool_cache = slash(Path::new(TOOL_CACHE));
         let src = self.dir.path().join(name);
         fs::create_dir_all(src.join("pkg")).unwrap();
         fs::write(src.join("pkg/input.txt"), "one\n").unwrap();
@@ -220,7 +222,7 @@ impl ToolWorld {
             format!(
                 "cmake_minimum_required(VERSION 3.21)\n\
                  project(t NONE)\n\
-                 include(\"{TOOL_CACHE}\")\n\
+                 include(\"{tool_cache}\")\n\
                  sccion_cached_tool(tool ALL\n\
                    OUTPUTS \"${{CMAKE_BINARY_DIR}}/out/tool.txt\"\n\
                    COMMAND \"${{CMAKE_COMMAND}}\" \"-DIN=${{CMAKE_SOURCE_DIR}}/pkg/input.txt\"\n\
@@ -548,11 +550,12 @@ fn checkout_roots_are_replaced_only_at_path_boundaries() {
         return;
     }
     let dir = tempfile::tempdir().unwrap();
+    let tool_cache = slash(Path::new(TOOL_CACHE));
     let script = dir.path().join("t.cmake");
     fs::write(
         &script,
         format!(
-            "include(\"{TOOL_CACHE}\")\n\
+            "include(\"{tool_cache}\")\n\
              set(SCCION_TOOL_SOURCE_ROOT \"/w/v1.2+b\")\n\
              set(SCCION_TOOL_BINARY_ROOT \"/w/v1.2+b/.build\")\n\
              foreach(t IN ITEMS \"/w/v1.2+b/pkg/x\" \"/w/v1.2+bx/y\" \"/w/v1x2+b/z\" \
