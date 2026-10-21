@@ -34,6 +34,15 @@
 //! directory is another tree, not this one, and paths under it are stored as
 //! they stand.
 //!
+//! A root has more than one spelling when a symlink leads to it. The working
+//! directory comes resolved -- `/private/tmp/x/build` on macOS, for a checkout
+//! the build reached as `/tmp/x` -- so the root found from it is spelled
+//! resolved, while the build names its paths through the link. [`spellings_in`]
+//! learns those other spellings from the paths a compilation's arguments name,
+//! accepting one only when it resolves to the root itself. They are stripped
+//! from the key like any basedir, so the two spellings key alike, and matched
+//! here as the root they spell, the marker noting which spelling it replaced.
+//!
 //! Matching folds ASCII case only where the basedir's volume does, and only
 //! ASCII, for the reason given at `util::starts_with_on`. A root that appears
 //! with its spaces escaped (`\ ` in a Make-style dependency file) is not
@@ -45,7 +54,8 @@ use std::path::Path;
 
 use crate::errors::*;
 
-/// Opens a marker: `\x1fsccion-root<rank>:<style>\x1f`. The unit separator
+/// Opens a marker: `\x1fsccion-root<rank>:<style>[a]\x1f`, the `a` when the
+/// text spelled the root through a symlink (see [`Root::aliases`]). The unit separator
 /// does not occur in compiler output or in paths, so a marker cannot be
 /// mistaken for text, nor text for a marker.
 const OPEN: &[u8] = b"\x1fsccion-root";
@@ -150,18 +160,25 @@ pub fn neutralize<'a>(text: &'a [u8], roots: &[Root]) -> Cow<'a, [u8]> {
                 // Innermost first, so a root nested in another is matched as
                 // itself.
                 roots.iter().enumerate().find_map(|(rank, root)| {
-                    match_root(&text[i..], &root.basedir, root.folds).map(|(n, s)| (rank, n, s))
+                    let own = std::iter::once((&root.basedir, root.folds, false));
+                    let aliases = root.aliases.iter().map(|(a, folds)| (a, *folds, true));
+                    own.chain(aliases).find_map(|(spelling, folds, alias)| {
+                        match_root(&text[i..], spelling, folds).map(|(n, s)| (rank, n, s, alias))
+                    })
                 })
             })
             .flatten();
         match found {
-            Some((idx, len, style)) => {
+            Some((idx, len, style, alias)) => {
                 let buf = out.get_or_insert_with(|| Vec::with_capacity(text.len()));
                 buf.extend_from_slice(&text[copied..i]);
                 buf.extend_from_slice(OPEN);
                 buf.extend_from_slice(idx.to_string().as_bytes());
                 buf.push(b':');
                 buf.push(style.code());
+                if alias {
+                    buf.push(b'a');
+                }
                 buf.push(CLOSE);
                 i += len;
                 copied = i;
@@ -179,7 +196,9 @@ pub fn neutralize<'a>(text: &'a [u8], roots: &[Root]) -> Cow<'a, [u8]> {
 }
 
 /// `text` with every marker replaced by the root of that rank in `roots`,
-/// spelled in the style the marker recorded and followed by one separator.
+/// spelled in the style the marker recorded and followed by one separator. A
+/// root the stored text reached through a symlink is put back through this
+/// compilation's own, where it has one.
 ///
 /// Fails on a marker it cannot resolve -- a rank with no root, which means
 /// fewer basedirs contain this compilation than contained the one that stored
@@ -196,16 +215,17 @@ pub fn reroot<'a>(text: &'a [u8], roots: &[Root]) -> Result<Cow<'a, [u8]>> {
         out.extend_from_slice(&rest[..pos]);
         let body = &rest[pos + OPEN.len()..];
         let end = memchr::memchr(CLOSE, body).context("unterminated checkout-root marker")?;
-        let (idx, style) = parse_marker(&body[..end])?;
-        let root = &roots
-            .get(idx)
-            .with_context(|| {
-                format!(
-                    "the entry names checkout root {idx}, and this compilation has {}",
-                    roots.len()
-                )
-            })?
-            .spelled;
+        let (idx, style, alias) = parse_marker(&body[..end])?;
+        let root = roots.get(idx).with_context(|| {
+            format!(
+                "the entry names checkout root {idx}, and this compilation has {}",
+                roots.len()
+            )
+        })?;
+        let root = match root.aliases.first() {
+            Some((spelling, _)) if alias => spelling.strip_suffix(b"/").unwrap_or(spelling),
+            _ => &root.spelled[..],
+        };
         let path_start = out.len();
         for &b in root {
             if b == b'/' {
@@ -279,9 +299,10 @@ fn collapse_dots(path: &[u8], style: Style) -> Vec<u8> {
     segments.join(sep)
 }
 
-fn parse_marker(body: &[u8]) -> Result<(usize, Style)> {
-    let (idx, style) = match body {
-        [digits @ .., b':', code] => (digits, *code),
+fn parse_marker(body: &[u8]) -> Result<(usize, Style, bool)> {
+    let (idx, style, alias) = match body {
+        [digits @ .., b':', code, b'a'] => (digits, *code, true),
+        [digits @ .., b':', code] => (digits, *code, false),
         _ => bail!("malformed checkout-root marker"),
     };
     let idx = std::str::from_utf8(idx)
@@ -289,7 +310,7 @@ fn parse_marker(body: &[u8]) -> Result<(usize, Style)> {
         .and_then(|s| s.parse().ok())
         .context("malformed checkout-root rank")?;
     let style = Style::from_code(style).context("malformed checkout-root style")?;
-    Ok((idx, style))
+    Ok((idx, style, alias))
 }
 
 /// A checkout root of one compilation: a basedir that contains its working
@@ -302,6 +323,9 @@ pub struct Root {
     /// As the working directory spells it, with `/` separators and no trailing
     /// one, so a rerooted path has the case a compile here would print.
     spelled: Vec<u8>,
+    /// The other basedirs that resolve to this one -- its spellings through a
+    /// symlink, normalized like `basedir` -- and whether each folds case.
+    aliases: Vec<(Vec<u8>, bool)>,
 }
 
 /// The basedirs that contain `cwd`, innermost first: what [`neutralize`] takes
@@ -335,12 +359,142 @@ pub fn roots_for(basedirs: &[Vec<u8>], cwd: &Path) -> Vec<Root> {
                     .strip_suffix(b"/")
                     .unwrap_or(&cwd[..b.len()])
                     .to_vec(),
+                aliases: Vec::new(),
             })
         })
         .collect();
     roots.sort_by_key(|r| std::cmp::Reverse(r.basedir.len()));
     roots.dedup_by(|a, b| a.basedir.len() == b.basedir.len());
+
+    // A basedir that does not contain the working directory by its text may
+    // still be one of these roots, spelled through a symlink.
+    let resolved: Vec<Option<Vec<u8>>> = roots.iter().map(|r| resolved_dir(&r.basedir)).collect();
+    if resolved.iter().any(Option::is_some) {
+        for b in basedirs {
+            if roots.iter().any(|r| &r.basedir == b) {
+                continue;
+            }
+            let Some(target) = resolved_dir(b) else {
+                continue;
+            };
+            if let Some(i) = resolved.iter().position(|r| r.as_ref() == Some(&target)) {
+                let alias = (b.clone(), crate::volume::basedir_folds_case(b));
+                if !roots[i].aliases.contains(&alias) {
+                    roots[i].aliases.push(alias);
+                }
+            }
+        }
+    }
     roots
+}
+
+/// `dir` with every symlink resolved, with a trailing `/`, or `None` when it
+/// does not exist. Unix only: Windows resolves to `\\?\` paths, and its
+/// junctions are not what puts a checkout behind a second name there.
+#[cfg(unix)]
+fn resolved_dir(dir: &[u8]) -> Option<Vec<u8>> {
+    use std::os::unix::ffi::{OsStrExt, OsStringExt};
+    let resolved = std::fs::canonicalize(std::ffi::OsStr::from_bytes(dir)).ok()?;
+    let mut bytes = resolved.into_os_string().into_vec();
+    if !bytes.ends_with(b"/") {
+        bytes.push(b'/');
+    }
+    Some(bytes)
+}
+
+#[cfg(not(unix))]
+fn resolved_dir(_dir: &[u8]) -> Option<Vec<u8>> {
+    None
+}
+
+/// The spellings of this compilation's checkout roots that `paths` use and
+/// `basedirs` do not have: each a directory that resolves to a root, named the
+/// way the build named it, with a trailing `/`.
+///
+/// `paths` are the compilation's arguments; a path is an argument that starts
+/// with `/`, or what follows the first `/` of an option (`-I/x`,
+/// `--sysroot=/x`). For each that is under no basedir as written, the nearest
+/// directory of it that exists is resolved. When that lands under a root, and
+/// the part below the root reads the same in both spellings, what comes before
+/// it is the root's other spelling -- accepted only if it resolves to the root
+/// itself, so a link to somewhere inside the checkout (`/opt/vendor` to
+/// `<root>/vendor`) cannot pass `/opt/` off as the root.
+#[cfg(unix)]
+pub fn spellings_in<'a>(
+    basedirs: &[Vec<u8>],
+    cwd: &Path,
+    paths: impl IntoIterator<Item = &'a std::ffi::OsStr>,
+) -> Vec<Vec<u8>> {
+    use std::os::unix::ffi::OsStrExt;
+
+    let resolved_roots: Vec<Vec<u8>> = roots_for(basedirs, cwd)
+        .iter()
+        .filter_map(|r| resolved_dir(&r.basedir))
+        .collect();
+    let mut found: Vec<Vec<u8>> = Vec::new();
+    if resolved_roots.is_empty() {
+        return found;
+    }
+    for arg in paths {
+        let bytes = arg.as_bytes();
+        let start = match bytes {
+            [b'/', ..] => 0,
+            [b'-', ..] => match memchr::memchr(b'/', bytes) {
+                Some(i) => i,
+                None => continue,
+            },
+            _ => continue,
+        };
+        let path = &bytes[start..];
+        let known = |b: &Vec<u8>| crate::util::strip_basedirs_in_arg(path, std::slice::from_ref(b));
+        if basedirs
+            .iter()
+            .chain(&found)
+            .any(|b| matches!(known(b), Cow::Owned(_)))
+        {
+            continue;
+        }
+        // The nearest directory of it that exists: an output need not yet.
+        let mut dir = Path::new(std::ffi::OsStr::from_bytes(path));
+        let resolved = loop {
+            if let Some(r) = resolved_dir(dir.as_os_str().as_bytes()) {
+                break r;
+            }
+            match dir.parent() {
+                Some(parent) => dir = parent,
+                None => break Vec::new(),
+            }
+        };
+        let mut written = dir.as_os_str().as_bytes().to_vec();
+        if !written.ends_with(b"/") {
+            written.push(b'/');
+        }
+        for root in &resolved_roots {
+            let Some(below) = resolved.strip_prefix(root.as_slice()) else {
+                continue;
+            };
+            let Some(spelling) = written.strip_suffix(below) else {
+                continue;
+            };
+            if spelling.ends_with(b"/")
+                && spelling != root.as_slice()
+                && !found.iter().any(|f| f == spelling)
+                && resolved_dir(spelling).as_ref() == Some(root)
+            {
+                found.push(spelling.to_vec());
+            }
+        }
+    }
+    found
+}
+
+#[cfg(not(unix))]
+pub fn spellings_in<'a>(
+    _basedirs: &[Vec<u8>],
+    _cwd: &Path,
+    _paths: impl IntoIterator<Item = &'a std::ffi::OsStr>,
+) -> Vec<Vec<u8>> {
+    Vec::new()
 }
 
 #[cfg(test)]
@@ -542,6 +696,141 @@ mod tests {
         assert_eq!(
             reroot(&neutral, &served_in).unwrap().as_ref(),
             b"x.o: /build/dir2/x.c /build/dir2/x.h\n".as_ref()
+        );
+    }
+
+    /// A checkout in `real/<name>`, reached through `link` -> `real`, with
+    /// `inc/` and `build/` in it: the root spelled resolved, as a working
+    /// directory reports it, and through the link, as a build names it.
+    #[cfg(unix)]
+    struct Linked {
+        resolved: Vec<u8>,
+        linked: Vec<u8>,
+        cwd: std::path::PathBuf,
+    }
+
+    #[cfg(unix)]
+    fn linked(dir: &tempfile::TempDir, name: &str) -> Linked {
+        use std::os::unix::ffi::OsStrExt;
+        let base = dir.path().canonicalize().unwrap();
+        let root = base.join("real").join(name);
+        std::fs::create_dir_all(root.join("inc")).unwrap();
+        std::fs::create_dir_all(root.join("build")).unwrap();
+        if !base.join("link").exists() {
+            std::os::unix::fs::symlink(base.join("real"), base.join("link")).unwrap();
+        }
+        let slash = |p: &Path| [p.as_os_str().as_bytes(), b"/"].concat();
+        Linked {
+            resolved: slash(&root),
+            linked: slash(&base.join("link").join(name)),
+            cwd: root.join("build"),
+        }
+    }
+
+    #[cfg(unix)]
+    fn os(text: &[u8]) -> std::ffi::OsString {
+        use std::os::unix::ffi::OsStrExt;
+        std::ffi::OsStr::from_bytes(text).to_owned()
+    }
+
+    /// A build that names its headers through a symlink to the checkout names
+    /// them under no basedir: the root is found from the resolved working
+    /// directory. Its spelling through the link is learned from those paths.
+    #[cfg(unix)]
+    #[test]
+    fn a_root_reached_through_a_symlink_is_learned_from_the_arguments() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = linked(&dir, "a");
+        let include = os(&[b"-I".as_slice(), &a.linked, b"inc"].concat());
+        let output = os(&[a.linked.as_slice(), b"build/not-yet.o"].concat());
+        let basedirs = vec![a.resolved.clone()];
+
+        let spellings = spellings_in(
+            &basedirs,
+            &a.cwd,
+            [
+                include.as_os_str(),
+                output.as_os_str(),
+                std::ffi::OsStr::new("-c"),
+            ],
+        );
+        assert_eq!(spellings, std::slice::from_ref(&a.linked));
+    }
+
+    /// A link from outside into the checkout is not the checkout: `/opt/vendor`
+    /// -> `<root>/vendor` must not make `/opt/` a spelling of the root, or every
+    /// path under `/opt/` would key as if it were in the checkout.
+    #[cfg(unix)]
+    #[test]
+    fn a_link_into_the_checkout_is_not_a_spelling_of_its_root() {
+        use std::os::unix::ffi::OsStrExt;
+        let dir = tempfile::tempdir().unwrap();
+        let a = linked(&dir, "a");
+        let root = Path::new(std::ffi::OsStr::from_bytes(&a.resolved));
+        std::fs::create_dir_all(root.join("vendor").join("inc")).unwrap();
+        let opt = dir.path().canonicalize().unwrap().join("opt");
+        std::fs::create_dir_all(&opt).unwrap();
+        std::os::unix::fs::symlink(root.join("vendor"), opt.join("vendor")).unwrap();
+        let include = os(&[
+            b"-I".as_slice(),
+            opt.join("vendor/inc").as_os_str().as_bytes(),
+        ]
+        .concat());
+
+        let spellings = spellings_in(
+            std::slice::from_ref(&a.resolved),
+            &a.cwd,
+            [include.as_os_str()],
+        );
+        assert!(spellings.is_empty(), "{spellings:?}");
+    }
+
+    /// Output that spells the root through the link is put back through the
+    /// serving checkout's own link, and resolved where it has none.
+    #[cfg(unix)]
+    #[test]
+    fn a_root_spelled_through_a_symlink_is_put_back_the_same_way() {
+        let dir = tempfile::tempdir().unwrap();
+        let (a, b) = (linked(&dir, "a"), linked(&dir, "b"));
+        let stored_in = roots_for(&[a.resolved.clone(), a.linked.clone()], &a.cwd);
+        let text = [
+            b"x.o: ".as_slice(),
+            &a.linked,
+            b"inc/x.h ",
+            &a.resolved,
+            b"inc/y.h\n",
+        ]
+        .concat();
+        let neutral = neutralize(&text, &stored_in);
+        assert!(
+            !neutral
+                .windows(a.linked.len())
+                .any(|w| w == a.linked.as_slice())
+        );
+
+        let through_link = roots_for(&[b.resolved.clone(), b.linked.clone()], &b.cwd);
+        assert_eq!(
+            reroot(&neutral, &through_link).unwrap().as_ref(),
+            [
+                b"x.o: ".as_slice(),
+                &b.linked,
+                b"inc/x.h ",
+                &b.resolved,
+                b"inc/y.h\n"
+            ]
+            .concat()
+        );
+        let resolved_only = roots_for(std::slice::from_ref(&b.resolved), &b.cwd);
+        assert_eq!(
+            reroot(&neutral, &resolved_only).unwrap().as_ref(),
+            [
+                b"x.o: ".as_slice(),
+                &b.resolved,
+                b"inc/x.h ",
+                &b.resolved,
+                b"inc/y.h\n"
+            ]
+            .concat()
         );
     }
 

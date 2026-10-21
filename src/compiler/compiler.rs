@@ -686,6 +686,7 @@ where
             preprocessor_cache_hit,
             key_components,
             compiled_for,
+            key_basedirs,
         ) = match result {
             Err(e) => {
                 return match e.downcast::<ProcessError>() {
@@ -703,6 +704,7 @@ where
                 preprocessor_cache_hit,
                 key_components,
                 compiled_for,
+                basedirs,
             }) => {
                 if let Some(hit) = preprocessor_cache_hit {
                     service
@@ -716,6 +718,7 @@ where
                     preprocessor_cache_hit,
                     key_components,
                     compiled_for,
+                    basedirs,
                 )
             }
         };
@@ -754,11 +757,8 @@ where
         // working directory, and how this checkout spells them. What the entry
         // replays -- the compiler's output and the dependency files -- is
         // stored with the roots taken out and restored with this checkout's put
-        // back; see `reroot`.
-        let output_roots = reroot::roots_for(
-            &crate::compiler::c::effective_basedirs_for(storage.basedirs(), &cwd),
-            &cwd,
-        );
+        // back; see `reroot`. The same basedirs the key was stripped of.
+        let output_roots = reroot::roots_for(&key_basedirs, &cwd);
 
         let miss = MissContext {
             key: &key,
@@ -1624,6 +1624,12 @@ where
     ///
     /// `None` on every path that has not compiled yet, which is the normal one.
     pub compiled_for: Option<std::time::Duration>,
+    /// The basedirs the key was stripped of, with the spellings of its
+    /// checkout roots that the compilation's own paths use
+    /// ([`reroot::spellings_in`]). What the entry replays is rerooted against
+    /// the same, so a path that shares the key also gets its own checkout's
+    /// root back.
+    pub basedirs: Vec<Vec<u8>>,
 }
 
 /// Possible results of parsing compiler arguments.

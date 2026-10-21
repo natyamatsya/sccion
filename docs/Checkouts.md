@@ -91,6 +91,14 @@ replayed as they stand; so is everything a compilation prints when its working
 directory is under no root at all, a build directory outside the checkout
 being the usual case.
 
+A checkout reached through a symlink has two spellings of its root: the working
+directory comes resolved (`/private/tmp/x` on macOS for a checkout under `/tmp`),
+while the build names its paths through the link. sccion learns the second
+spelling from the paths each compilation's arguments name, accepting it only
+when it resolves to the root itself, and treats it as the same root -- in the
+key, so the two spellings share, and in what a hit replays, which puts the root
+back the way this checkout's build spells it.
+
 A root spelled with escaped spaces (`\ ` in a Make-style dependency file) is not
 recognized, so a checkout whose path contains a space keeps absolute paths in
 its dependency output.

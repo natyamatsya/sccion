@@ -354,7 +354,15 @@ impl<T: CommandCreatorSync> CompilerHasher<T> for MocHasher {
         cache_control: CacheControl,
     ) -> Result<HashResult<T>> {
         let config = storage.preprocessor_cache_mode_config();
-        let basedirs = crate::compiler::c::effective_basedirs_for(storage.basedirs(), &cwd);
+        // With the spellings of the checkout roots moc's own paths use, as for
+        // a C compilation: see `reroot::spellings_in`.
+        let mut basedirs = crate::compiler::c::effective_basedirs_for(storage.basedirs(), &cwd);
+        let spellings = crate::compiler::reroot::spellings_in(
+            &basedirs,
+            &cwd,
+            self.parsed.all_args.iter().map(OsString::as_os_str),
+        );
+        basedirs.extend(spellings);
         let manifest_key = self.manifest_key(&cwd, &basedirs);
 
         // 1. Ask the manifest whether everything this compilation read is
@@ -390,6 +398,7 @@ impl<T: CommandCreatorSync> CompilerHasher<T> for MocHasher {
                         preprocessor_cache_hit: Some(true),
                         key_components: None,
                         compiled_for: None,
+                        basedirs: basedirs.clone(),
                     });
                 }
             }
@@ -460,6 +469,7 @@ impl<T: CommandCreatorSync> CompilerHasher<T> for MocHasher {
                     preprocessor_cache_hit: Some(false),
                     key_components: None,
                     compiled_for: None,
+                    basedirs: basedirs.clone(),
                 });
             }
         };
@@ -497,6 +507,7 @@ impl<T: CommandCreatorSync> CompilerHasher<T> for MocHasher {
             preprocessor_cache_hit: Some(false),
             key_components,
             compiled_for: None,
+            basedirs: basedirs.clone(),
         })
     }
 

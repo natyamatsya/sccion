@@ -1414,10 +1414,13 @@ where
         _may_dist: bool,
         pool: &tokio::runtime::Handle,
         _rewrite_includes_only: bool,
-        _storage: Arc<dyn Storage>,
+        storage: Arc<dyn Storage>,
         _cache_control: CacheControl,
     ) -> Result<HashResult<T>> {
         trace!("[{}]: generate_hash_key", self.parsed_args.crate_name);
+        // Not stripped from the key, which names its paths as they stand; what
+        // rustc prints is still stored with the checkout roots taken out.
+        let basedirs = crate::compiler::c::effective_basedirs_for(storage.basedirs(), &cwd);
         // TODO: this doesn't produce correct arguments if they should be concatenated - should use iter_os_strings
         let os_string_arguments: Vec<(OsString, Option<OsString>)> = self
             .parsed_args
@@ -1770,6 +1773,7 @@ where
             preprocessor_cache_hit: None,
             key_components: None,
             compiled_for: None,
+            basedirs,
         })
     }
 

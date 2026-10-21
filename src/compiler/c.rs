@@ -714,6 +714,7 @@ where
             key_components: None,
             // The one path that has already compiled by this point.
             compiled_for: Some(compiled_for),
+            basedirs: basedirs.to_vec(),
         })
     }
 }
@@ -749,7 +750,20 @@ where
             // checkout. See `involves_pch`.
             Vec::new()
         } else {
-            effective_basedirs_for(storage.basedirs(), &cwd)
+            // With the spellings of the checkout roots this compilation's own
+            // paths use: reached through a symlink, a checkout names its
+            // headers under a root the working directory does not spell, and
+            // two checkouts would key apart on that alone.
+            let mut basedirs = effective_basedirs_for(storage.basedirs(), &cwd);
+            let parsed = &self.parsed_args;
+            let paths = std::iter::once(parsed.input.as_os_str())
+                .chain(parsed.preprocessor_args.iter().map(OsString::as_os_str))
+                .chain(parsed.common_args.iter().map(OsString::as_os_str))
+                .chain(parsed.dependency_args.iter().map(OsString::as_os_str))
+                .chain(parsed.arch_args.iter().map(OsString::as_os_str));
+            let spellings = crate::compiler::reroot::spellings_in(&basedirs, &cwd, paths);
+            basedirs.extend(spellings);
+            basedirs
         };
 
         let mut extra_hashes =
@@ -977,6 +991,7 @@ where
                             preprocessor_cache_hit: Some(true),
                             key_components: None,
                             compiled_for: None,
+                            basedirs: basedirs.clone(),
                         });
                     } else {
                         debug!("Preprocessor cache miss: {preprocessor_key}");
@@ -1215,6 +1230,7 @@ where
             preprocessor_cache_hit,
             key_components,
             compiled_for: None,
+            basedirs,
         })
     }
 
