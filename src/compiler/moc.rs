@@ -41,8 +41,10 @@ use crate::util::{Digest, run_input_output, strip_basedirs_in_arg};
 
 use crate::errors::*;
 
-/// Bumped when anything about how a moc key is derived changes.
-const MOC_CACHE_VERSION: &[u8] = b"moc-1";
+/// Bumped when anything about how a moc key is derived, or what its entry
+/// stores, changes. moc-2: the dependency file and JSON are stored with
+/// checkout roots taken out (`reroot`).
+const MOC_CACHE_VERSION: &[u8] = b"moc-2";
 
 /// Qt's meta-object compiler.
 #[derive(Clone, Debug)]

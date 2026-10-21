@@ -30,6 +30,7 @@ use crate::compiler::nvcc::Nvcc;
 use crate::compiler::nvcc::NvccHostCompiler;
 use crate::compiler::nvhpc::Nvhpc;
 use crate::compiler::ptxas::Ptxas;
+use crate::compiler::reroot;
 use crate::compiler::rust::{Rust, RustupProxy};
 use crate::compiler::tasking_vx::TaskingVX;
 #[cfg(feature = "dist-client")]
@@ -749,6 +750,13 @@ where
             })
             .collect::<Vec<_>>();
 
+        // The checkout roots this compilation's key was stripped of, and how
+        // this checkout spells them. What the entry replays -- the compiler's
+        // output and the dependency files -- is stored with the roots taken
+        // out and restored with this checkout's put back; see `reroot`.
+        let output_basedirs = crate::compiler::c::effective_basedirs_for(storage.basedirs(), &cwd);
+        let output_roots = reroot::roots_for(&output_basedirs, &cwd);
+
         let miss = MissContext {
             key: &key,
             output: &out_pretty,
@@ -784,16 +792,35 @@ where
             .flatten();
 
         let lookup = match cache_status.await {
-            (Ok(Ok(Cache::Hit(mut entry))), duration) => {
+            (Ok(Ok(Cache::Hit(mut entry))), duration) => 'hit: {
                 debug!(
                     "[{}]: Cache hit in {}",
                     out_pretty,
                     fmt_duration_as_secs(&duration)
                 );
+                // An entry this checkout cannot put its roots back into is no
+                // answer for it; compiling gives the right one.
+                let unrootable = |e: Error| {
+                    debug!("[{}]: Cached output cannot be rerooted: {e:#}", out_pretty);
+                };
+                let rerooted = reroot::reroot(&entry.get_stdout(), &output_roots)
+                    .map(|o| o.into_owned())
+                    .and_then(|stdout| {
+                        reroot::reroot(&entry.get_stderr(), &output_roots)
+                            .map(|e| (stdout, e.into_owned()))
+                    });
+                let (stdout, stderr) = match rerooted {
+                    Ok(both) => both,
+                    Err(e) => {
+                        unrootable(e);
+                        pending = Some(miss.record(Classification::ReadError));
+                        break 'hit Ok(CacheLookupResult::Miss(MissType::CacheReadError));
+                    }
+                };
                 let output = process::Output {
                     status: exit_status(0),
-                    stdout: entry.get_stdout(),
-                    stderr: entry.get_stderr(),
+                    stdout,
+                    stderr,
                 };
 
                 let filtered_outputs = if compilation.is_locally_preprocessed() {
@@ -822,8 +849,21 @@ where
                 // writes out every object. Under `/Z7` the second is by far the
                 // larger, and folding them together hid it completely.
                 let materialize_start = Instant::now();
+                let dependency_files: Vec<PathBuf> = filtered_outputs
+                    .iter()
+                    .filter(|o| reroot::is_dependency_output(&o.key))
+                    .map(|o| o.path.clone())
+                    .collect();
                 match entry.extract_objects(filtered_outputs, &pool).await {
                     Ok(cloned) => {
+                        // The dependency files were written as stored, roots
+                        // taken out; put this checkout's back. One that cannot
+                        // be is overwritten by the compile that follows.
+                        if let Err(e) = reroot_files(&dependency_files, &output_roots) {
+                            unrootable(e);
+                            pending = Some(miss.record(Classification::ReadError));
+                            break 'hit Ok(CacheLookupResult::Miss(MissType::CacheReadError));
+                        }
                         // A hit is normally not worth a record -- a warm build
                         // would fill the ring with 2,557 of them and push out
                         // everything that explains anything. Under trace-all it
@@ -1147,12 +1187,27 @@ where
                     fmt_duration_as_secs(&duration_compilation)
                 );
                 let start_create_artifact = Instant::now();
-                let mut entry = CacheWrite::from_objects(outputs, &pool)
-                    .await
-                    .context("failed to zip up compiler outputs")?;
+                let neutral_basedirs = output_basedirs.clone();
+                let mut entry = CacheWrite::from_objects_rewriting(
+                    outputs,
+                    &pool,
+                    reroot::is_dependency_output,
+                    move |bytes| match reroot::neutralize(&bytes, &neutral_basedirs) {
+                        Cow::Borrowed(_) => bytes,
+                        Cow::Owned(neutral) => neutral,
+                    },
+                )
+                .await
+                .context("failed to zip up compiler outputs")?;
 
-                entry.put_stdout(&compiler_result.stdout)?;
-                entry.put_stderr(&compiler_result.stderr)?;
+                entry.put_stdout(&reroot::neutralize(
+                    &compiler_result.stdout,
+                    &output_basedirs,
+                ))?;
+                entry.put_stderr(&reroot::neutralize(
+                    &compiler_result.stderr,
+                    &output_basedirs,
+                ))?;
                 debug!(
                     "[{}]: Created cache artifact in {}",
                     out_pretty,
@@ -1821,6 +1876,24 @@ pub async fn write_temp_file(
 
 /// Returns true if the given path looks like a program known to have
 /// a rustc compatible interface.
+/// Puts this checkout's roots back into dependency files a hit restored with
+/// them taken out. A file that names none is left as it was, so a hit with no
+/// dependency outputs, or a checkout with no basedirs, writes nothing.
+fn reroot_files(paths: &[PathBuf], roots: &[Vec<u8>]) -> Result<()> {
+    for path in paths {
+        let bytes = match fs::read(path) {
+            Ok(b) => b,
+            // An optional output the entry did not hold.
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(e) => return Err(e.into()),
+        };
+        if let Cow::Owned(rerooted) = reroot::reroot(&bytes, roots)? {
+            fs::write(path, rerooted)?;
+        }
+    }
+    Ok(())
+}
+
 fn is_rustc_like<P: AsRef<Path>>(p: P) -> bool {
     matches!(
         p.as_ref()

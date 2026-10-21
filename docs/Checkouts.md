@@ -65,6 +65,32 @@ compilation's directory in the key so two directories cannot share an entry. See
 [Local.md](Local.md#preprocessor-cache-mode). Declaring a checkout root asserts
 that the trade above has been made.
 
+## What a hit replays
+
+A hit hands the build more than the object: what the compiler printed, and the
+dependency files it wrote. Those name every header by absolute path -- MSVC's
+`/showIncludes` lines, a `-MD` file, moc's `--output-dep-file` and
+`--output-json` -- and the build system takes them as the compilation's
+dependencies. Replayed as the first checkout wrote them, the second checkout
+would depend on the first one's headers, and an edit to a header there would
+rebuild nothing. Measured before this was handled: 1,853 objects of a second
+checkout depended on the first one's headers rather than their own. After it, a
+declaration added to a header in the second checkout rebuilt exactly the 16
+objects that include it, and reran its moc.
+
+So sccion stores them with the checkout root taken out wherever a path starts
+with it, and a hit puts back the root of the checkout it serves, in the
+separator style the text used (`/`, `\`, or `\\` as JSON escapes it). The build
+system receives what a compile in that checkout would have printed. A root
+spelled with escaped spaces (`\ ` in a Make-style dependency file) is not
+recognized, so a checkout whose path contains a space keeps absolute paths in
+its dependency output.
+
+No compiler option does this instead. `-ffile-prefix-map` and its
+`-fdebug-`/`-fmacro-` siblings, and MSVC's `/d1trimfile`, rewrite `__FILE__`,
+debug information and coverage data, not dependency output, and MSVC's
+`/sourceDependencies` writes the same absolute paths as JSON.
+
 ## What is deliberately not shared
 
 **Precompiled headers stay inside the checkout that built them.** A `.pch`

@@ -738,6 +738,91 @@ fn test_gcc_clang_depfile(compiler: Compiler, tempdir: &Path) {
     assert_ne!(first, second);
 }
 
+/// A hit in a second checkout must hand the build system that checkout's
+/// headers as dependencies -- MSVC's `/showIncludes` lines, or the `-MD` file
+/// -- not the first one's. A dependency on the other tree's header makes an
+/// edit here rebuild nothing, and nothing reports it.
+fn test_dependencies_name_the_serving_checkout(compiler: Compiler, tempdir: &Path) {
+    let Compiler {
+        name,
+        exe,
+        env_vars,
+    } = compiler;
+    println!("test_dependencies_name_the_serving_checkout: {}", name);
+    let checkouts = [tempdir.join("checkout-a"), tempdir.join("checkout-b")];
+    for c in &checkouts {
+        fs::create_dir_all(c.join("inc")).unwrap();
+        // The project file declares the checkout root, so both checkouts key
+        // the compile alike and the second one hits.
+        fs::write(c.join(".sccion.toml"), "").unwrap();
+        fs::write(c.join("inc").join("dep.h"), "#define DEP 1\n").unwrap();
+        fs::write(
+            c.join("dep.c"),
+            "#include \"dep.h\"\nint f(void) { return DEP; }\n",
+        )
+        .unwrap();
+    }
+    let hits = || {
+        let n = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let seen = n.clone();
+        get_stats(move |info| {
+            seen.store(
+                info.stats.cache_hits.all(),
+                std::sync::atomic::Ordering::SeqCst,
+            );
+        });
+        n.load(std::sync::atomic::Ordering::SeqCst)
+    };
+    // Paths compared the way the volume does: Windows folds case and takes
+    // either separator.
+    let spell = |s: &str| {
+        if cfg!(windows) {
+            s.replace('\\', "/").to_lowercase()
+        } else {
+            s.to_owned()
+        }
+    };
+
+    let mut said = Vec::new();
+    let before = hits();
+    for c in &checkouts {
+        let include = format!("-I{}", c.join("inc").display());
+        let extra = if name == "cl.exe" {
+            vec_from!(OsString, include, "/showIncludes")
+        } else {
+            vec_from!(OsString, include, "-MD", "-MF", "dep.d")
+        };
+        let out = sccache_command()
+            .args(compile_cmdline(name, &exe, "dep.c", OUTPUT, extra))
+            .current_dir(c)
+            .envs(env_vars.clone())
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{out:?}");
+        said.push(if name == "cl.exe" {
+            String::from_utf8_lossy(&out.stdout).into_owned()
+                + &String::from_utf8_lossy(&out.stderr)
+        } else {
+            fs::read_to_string(c.join("dep.d")).unwrap()
+        });
+    }
+    assert_eq!(hits(), before + 1, "the second checkout did not hit");
+
+    let header = |c: &Path| spell(&c.join("inc").join("dep.h").display().to_string());
+    let (first, second) = (spell(&said[0]), spell(&said[1]));
+    assert!(first.contains(&header(&checkouts[0])), "{}", said[0]);
+    assert!(
+        second.contains(&header(&checkouts[1])),
+        "the hit does not name this checkout's header:\n{}",
+        said[1]
+    );
+    assert!(
+        !second.contains(&spell(&checkouts[0].display().to_string())),
+        "the hit names the other checkout:\n{}",
+        said[1]
+    );
+}
+
 fn run_sccache_command_tests(compiler: Compiler, tempdir: &Path, preprocessor_cache_mode: bool) {
     if compiler.name != "clang++" {
         test_basic_compile(compiler.clone(), tempdir);
@@ -760,6 +845,9 @@ fn run_sccache_command_tests(compiler: Compiler, tempdir: &Path, preprocessor_ca
     }
     if compiler.name == "clang++" {
         test_clang_multicall(compiler.clone(), tempdir);
+    }
+    if matches!(compiler.name, "cl.exe" | "gcc" | "clang") {
+        test_dependencies_name_the_serving_checkout(compiler.clone(), tempdir);
     }
 
     // If we are testing with clang-14 or later, we expect the -fminimize-whitespace flag to be used.

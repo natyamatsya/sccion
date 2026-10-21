@@ -63,7 +63,13 @@ use super::{Language, NotCacheable};
 ///   changed rather than the struct.
 /// - **3** (`4c21b17`): `IncludeEntry::digest` became the digest's 32 bytes
 ///   instead of its 64 hex characters, which bincode encodes differently.
-const FORMAT_VERSION: u8 = 3;
+/// - **4**: the key takes `c::CACHE_VERSION` too. A manifest holds the result
+///   key it was written with, so a direct-mode hit never recomputes it, and
+///   raising `CACHE_VERSION` alone -- to 14, when results began storing their
+///   output with checkout roots taken out -- still served every result from
+///   before. Measured: 2,023 of a build's direct-mode hits went to such
+///   entries.
+const FORMAT_VERSION: u8 = 4;
 const MAX_PREPROCESSOR_CACHE_ENTRIES: usize = 100;
 const MAX_PREPROCESSOR_CACHE_FILE_INFO_ENTRIES: usize = 10000;
 
@@ -1119,6 +1125,9 @@ pub fn preprocessor_cache_entry_hash_key(
     // we have to incorporate that into the hash as well.
     m.update(&[plusplus as u8]);
     m.update(&[FORMAT_VERSION]);
+    // What a manifest leads to is a result, so a change to how results are
+    // stored has to retire the manifests too.
+    m.update(crate::compiler::c::CACHE_VERSION);
     m.update(language.as_str().as_bytes());
     for arg in arguments {
         if basedirs.is_empty() {

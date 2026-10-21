@@ -77,6 +77,16 @@ test_backend() {
         exit 1
     fi
 
+    # The hits replayed dependency files the first build wrote. They must name
+    # dir2's headers: a dependency on dir1's makes an edit in dir2 rebuild
+    # nothing, and nothing else would notice.
+    if grep -rl /build/dir1 /build/dir2/.deps >/dev/null 2>&1; then
+        echo "✗ FAIL: $backend_name - dependency files in dir2 name dir1:"
+        grep -rl /build/dir1 /build/dir2/.deps
+        exit 1
+    fi
+    echo "✓ PASS: $backend_name - dependency files name their own checkout"
+
     # Verify basedirs are shown in stats
     BASEDIRS_IN_STATS=$(echo "$STATS_JSON" | python3 -c "import sys, json; bd = json.load(sys.stdin).get('basedirs', []); print(':'.join(bd) if bd else 'none')")
     echo "Basedirs in stats: $BASEDIRS_IN_STATS"

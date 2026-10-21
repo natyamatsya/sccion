@@ -490,6 +490,24 @@ impl CacheWrite {
     where
         T: IntoIterator<Item = FileObjectSource> + Send + Sync + 'static,
     {
+        Self::from_objects_rewriting(objects, pool, |_| false, |bytes| bytes).await
+    }
+
+    /// [`from_objects`](Self::from_objects), with the members `rewrites`
+    /// selects stored as `rewrite` turns their contents, rather than as they
+    /// are on disk. Only those are read into memory; an object streams in as
+    /// before.
+    pub async fn from_objects_rewriting<T, S, F>(
+        objects: T,
+        pool: &tokio::runtime::Handle,
+        rewrites: S,
+        rewrite: F,
+    ) -> Result<CacheWrite>
+    where
+        T: IntoIterator<Item = FileObjectSource> + Send + Sync + 'static,
+        S: Fn(&str) -> bool + Send + 'static,
+        F: Fn(Vec<u8>) -> Vec<u8> + Send + 'static,
+    {
         pool.spawn_blocking(move || {
             let mut entry = CacheWrite::new();
             for FileObjectSource {
@@ -501,6 +519,16 @@ impl CacheWrite {
                 let f = fs::File::open(&path)
                     .with_context(|| format!("failed to open file `{:?}`", path));
                 match (f, optional) {
+                    (Ok(mut f), _) if rewrites(&key) => {
+                        let mode = get_file_mode(&f)?;
+                        let mut bytes = Vec::new();
+                        f.read_to_end(&mut bytes)?;
+                        entry
+                            .put_object(&key, &mut Cursor::new(rewrite(bytes)), mode)
+                            .with_context(|| {
+                                format!("failed to put object `{:?}` in cache entry", path)
+                            })?;
+                    }
                     (Ok(mut f), _) => {
                         let mode = get_file_mode(&f)?;
                         entry.put_object(&key, &mut f, mode).with_context(|| {
