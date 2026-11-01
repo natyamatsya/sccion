@@ -23,7 +23,7 @@ tracing-appender = "0.2"
 tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
 
 [target.'cfg(windows)'.dependencies.windows-sys]
-version = "0.52"
+version = "0.61"
 # GetVolumeInformationW. `fsutil fsinfo volumeinfo` needs elevation, and a check
 # that silently degrades to "unknown" when unelevated is worse than no check.
 features = ["Win32_Foundation", "Win32_Storage_FileSystem"]
