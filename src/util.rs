@@ -1430,9 +1430,135 @@ fn starts_with_on(haystack: &[u8], needle: &[u8], folds: bool) -> bool {
             .all(|(h, n)| h.eq_ignore_ascii_case(n))
 }
 
+/// The basedirs whose paths `object` carries into the program.
+///
+/// What [`StrippedOutput::embedded`] learns from the preprocessed text, for a
+/// compilation that never had any: one keyed on the dependencies its compiler
+/// reported. Only the sections a linker loads are read -- code, data, read-only
+/// data and strings, and COFF's linker directives, which a `#pragma comment`
+/// can fill with a path. Debug information, symbol tables (an ELF `STT_FILE`
+/// symbol names the source) and notes carry the path too, and are the
+/// documented trade of declaring a checkout root.
+///
+/// A file that is not an object this can read is searched whole: guessing it
+/// clean would be the direction that serves one checkout another's paths.
+pub fn basedirs_in_object(object: &[u8], basedirs: &[Vec<u8>]) -> Vec<Vec<u8>> {
+    use object::{Object, ObjectSection, SectionKind};
+    if basedirs.is_empty() {
+        return Vec::new();
+    }
+    let loaded: Vec<&[u8]> = match object::File::parse(object) {
+        Ok(file) => file
+            .sections()
+            .filter(|s| {
+                matches!(
+                    s.kind(),
+                    SectionKind::Text
+                        | SectionKind::Data
+                        | SectionKind::ReadOnlyData
+                        | SectionKind::ReadOnlyDataWithRel
+                        | SectionKind::ReadOnlyString
+                        | SectionKind::Tls
+                        | SectionKind::Linker
+                )
+            })
+            .filter_map(|s| s.data().ok())
+            .collect(),
+        Err(_) => vec![object],
+    };
+    basedirs
+        .iter()
+        .filter(|b| {
+            let folds = crate::volume::basedir_folds_case(b);
+            loaded
+                .iter()
+                .any(|section| names_basedir(section, b, folds))
+        })
+        .cloned()
+        .collect()
+}
+
+/// Whether `bytes` contain `basedir` as a path spells it: with either
+/// separator on Windows, and in either case where its volume folds.
+fn names_basedir(bytes: &[u8], basedir: &[u8], folds: bool) -> bool {
+    if !folds && !cfg!(windows) {
+        return memchr::memmem::find(bytes, basedir).is_some();
+    }
+    let normalize = |b: u8| {
+        let b = if cfg!(windows) && b == b'\\' { b'/' } else { b };
+        if folds { b.to_ascii_lowercase() } else { b }
+    };
+    let haystack: Vec<u8> = bytes.iter().copied().map(normalize).collect();
+    let needle: Vec<u8> = basedir.iter().copied().map(normalize).collect();
+    memchr::memmem::find(&haystack, &needle).is_some()
+}
+
+/// [`strip_basedirs_in_output`], for a caller that only needs the text.
 pub fn strip_basedirs<'a>(preprocessor_output: &'a [u8], basedirs: &[Vec<u8>]) -> Cow<'a, [u8]> {
+    strip_basedirs_in_output(preprocessor_output, basedirs).text
+}
+
+/// Preprocessor output with its line markers made checkout-independent.
+#[derive(Debug)]
+pub struct StrippedOutput<'a> {
+    /// The output, each line marker's file name relative to its basedir.
+    pub text: Cow<'a, [u8]>,
+    /// The basedirs the output names *outside* a line marker, as declared.
+    ///
+    /// Such a path is code -- `__FILE__` expanded, a `-D` value, a literal
+    /// written in the source -- and the compiler puts it into the object, so it
+    /// is kept in the text and the key: a second checkout would compile its own
+    /// path there. A result whose output named one cannot be served to another
+    /// checkout through a manifest either, which never sees the text.
+    pub embedded: Vec<Vec<u8>>,
+}
+
+/// Where the file name of the line marker holding `pos` starts, if `pos` is on
+/// one: `# 12 "name"` (GNU), or `#line 12 "name"` (MSVC).
+///
+/// Only a line marker's name goes where nothing but the debugger and the
+/// diagnostics read it, and both are the documented trade of declaring a
+/// checkout root. A path anywhere else in preprocessed text was produced by the
+/// code, and becomes part of the program.
+fn line_marker_name_start(text: &[u8], pos: usize) -> Option<usize> {
+    let line_start = memchr::memrchr(b'\n', &text[..pos]).map_or(0, |i| i + 1);
+    let blank = |b: &u8| *b == b' ' || *b == b'\t';
+    let skip_blanks = |i: usize| i + text[i..pos].iter().take_while(|b| blank(b)).count();
+    let mut i = skip_blanks(line_start);
+    if text.get(i) != Some(&b'#') {
+        return None;
+    }
+    i = skip_blanks(i + 1);
+    if text[i..pos].starts_with(b"line") {
+        i = skip_blanks(i + 4);
+    }
+    let digits = text[i..pos]
+        .iter()
+        .take_while(|b| b.is_ascii_digit())
+        .count();
+    let after_digits = i + digits;
+    i = skip_blanks(after_digits);
+    if digits == 0 || i == after_digits || text.get(i) != Some(&b'"') {
+        return None;
+    }
+    let name_start = i + 1;
+    // Still inside the name: no closing quote between its start and `pos`. An
+    // escaped quote cannot occur before a basedir does, and a basedir contains
+    // none.
+    (name_start <= pos && !text[name_start..pos].contains(&b'"')).then_some(name_start)
+}
+
+/// Strip basedirs from the file names of the line markers in
+/// `preprocessor_output`, and report the ones it names anywhere else.
+pub fn strip_basedirs_in_output<'a>(
+    preprocessor_output: &'a [u8],
+    basedirs: &[Vec<u8>],
+) -> StrippedOutput<'a> {
     if basedirs.is_empty() || preprocessor_output.is_empty() {
-        return Cow::Borrowed(preprocessor_output);
+        return StrippedOutput {
+            text: Cow::Borrowed(preprocessor_output),
+            embedded: Vec::new(),
+        };
     }
 
     trace!(
@@ -1443,6 +1569,7 @@ pub fn strip_basedirs<'a>(preprocessor_output: &'a [u8], basedirs: &[Vec<u8>]) -
     // Find all potential matches for each basedir using fast substring search
     // Store as (position, length, basedir_idx) sorted by position
     let mut matches: Vec<(usize, usize, usize)> = Vec::new();
+    let mut embedded: Vec<Vec<u8>> = Vec::new();
     // We must return the original preprocessor output on all platforms,
     // so we only normalize a copy for searching.
     #[cfg(not(target_os = "windows"))]
@@ -1500,21 +1627,27 @@ pub fn strip_basedirs<'a>(preprocessor_output: &'a [u8], basedirs: &[Vec<u8>]) -
             let finder = memchr::memmem::find_iter(normalized_output, needle);
 
             for pos in finder {
-                // Check if this is a valid boundary (start, whitespace, quote, or '<')
-                let is_boundary = pos == 0
-                    || normalized_output[pos - 1].is_ascii_whitespace()
-                    || normalized_output[pos - 1] == b'"'
-                    || normalized_output[pos - 1] == b'<';
-
-                if is_boundary {
-                    matches.push((pos, needle.len(), idx));
+                // Stripped only where a line marker's name starts. Inside the
+                // name further on it is some other path that happens to contain
+                // this one, and harmless either way; anywhere else it is code.
+                match line_marker_name_start(normalized_output, pos) {
+                    Some(start) if start == pos => matches.push((pos, needle.len(), idx)),
+                    Some(_) => {}
+                    None => {
+                        if !embedded.contains(&basedirs[idx]) {
+                            embedded.push(basedirs[idx].clone());
+                        }
+                    }
                 }
             }
         }
     }
 
     if matches.is_empty() {
-        return Cow::Borrowed(preprocessor_output);
+        return StrippedOutput {
+            text: Cow::Borrowed(preprocessor_output),
+            embedded,
+        };
     }
 
     // Sort matches by position, then by length descending (longest first for overlaps)
@@ -1552,7 +1685,10 @@ pub fn strip_basedirs<'a>(preprocessor_output: &'a [u8], basedirs: &[Vec<u8>]) -
     // Copy remaining data
     result.extend_from_slice(&preprocessor_output[current_pos..]);
 
-    Cow::Owned(result)
+    StrippedOutput {
+        text: Cow::Owned(result),
+        embedded,
+    }
 }
 
 /// Double every `/` in a normalized path.
@@ -2245,13 +2381,60 @@ mod tests {
 
     #[test]
     fn test_strip_basedir_not_at_boundary() {
-        // basedir should only match at word boundaries
+        // basedir should only match where a line marker's name starts
         let basedir = b"/home/user/".to_vec();
-        let input = b"text/home/user/file.c and \"/home/user/other.c\"";
-        let output = super::strip_basedirs(input, std::slice::from_ref(&basedir));
-        // Should only replace the second occurrence (after quote)
-        let expected = b"text/home/user/file.c and \"other.c\"";
-        assert_eq!(&*output, expected);
+        let input = b"# 1 \"text/home/user/file.c\"\n# 2 \"/home/user/other.c\"";
+        let output = super::strip_basedirs_in_output(input, std::slice::from_ref(&basedir));
+        // Should only replace the second occurrence (the start of a name)
+        let expected = b"# 1 \"text/home/user/file.c\"\n# 2 \"other.c\"";
+        assert_eq!(&*output.text, expected);
+        assert!(output.embedded.is_empty());
+    }
+
+    /// What cannot be read as an object is searched whole.
+    #[test]
+    fn test_basedirs_in_object_that_is_not_one() {
+        let (a, b) = (b"/work/a/".to_vec(), b"/work/b/".to_vec());
+        let dirs = [a.clone(), b];
+        let bytes = b"\0\x01bitcode or so\0/work/a/src/main.c\0";
+        assert_eq!(super::basedirs_in_object(bytes, &dirs), vec![a]);
+        assert!(super::basedirs_in_object(b"\0nothing\0", &dirs).is_empty());
+        assert!(super::basedirs_in_object(bytes, &[]).is_empty());
+    }
+
+    /// `__FILE__` expands to a string literal naming the checkout, and the
+    /// compiler puts that literal into the object. Stripped from the key, as it
+    /// once was, a second checkout's compilation hit the first one's object and
+    /// printed the first one's path -- a test locating its fixtures through
+    /// `__FILE__` read them from another tree, or from one that was gone.
+    #[test]
+    fn test_strip_basedir_keeps_paths_the_code_names() {
+        let basedir = b"/home/user/project/".to_vec();
+        let input = b"# 1 \"/home/user/project/src/main.c\"\n\
+            #line 2 \"/home/user/project/src/main.h\"\n\
+            \t# 3 \"/home/user/project/src/main.c\" 2\n\
+            const char *f = \"/home/user/project/src/main.c\";\n";
+        let output = super::strip_basedirs_in_output(input, std::slice::from_ref(&basedir));
+        assert_eq!(
+            &*output.text,
+            &b"# 1 \"src/main.c\"\n\
+            #line 2 \"src/main.h\"\n\
+            \t# 3 \"src/main.c\" 2\n\
+            const char *f = \"/home/user/project/src/main.c\";\n"[..]
+        );
+        assert_eq!(output.embedded, vec![basedir.clone()]);
+
+        // Something that only looks like a line marker is code too.
+        for line in [
+            &b"#pragma message \"/home/user/project/x\""[..],
+            b"# \"/home/user/project/x\"",
+            b"#1\"/home/user/project/x\"",
+            b"x # 1 \"/home/user/project/x\"",
+        ] {
+            let output = super::strip_basedirs_in_output(line, std::slice::from_ref(&basedir));
+            assert_eq!(&*output.text, line, "{}", String::from_utf8_lossy(line));
+            assert_eq!(output.embedded, vec![basedir.clone()]);
+        }
     }
 
     #[test]

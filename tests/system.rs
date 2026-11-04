@@ -823,6 +823,71 @@ fn test_dependencies_name_the_serving_checkout(compiler: Compiler, tempdir: &Pat
     );
 }
 
+/// `__FILE__` puts the checkout's path into the object. Two checkouts must
+/// then not share it -- the second one's program would name the first one's
+/// files -- until the build maps the path away, after which they may.
+fn test_file_macro_names_the_compiling_checkout(compiler: Compiler, tempdir: &Path) {
+    let Compiler {
+        name,
+        exe,
+        env_vars,
+    } = compiler;
+    println!("test_file_macro_names_the_compiling_checkout: {}", name);
+    let checkouts = [tempdir.join("file-macro-a"), tempdir.join("file-macro-b")];
+    for c in &checkouts {
+        fs::create_dir_all(c).unwrap();
+        fs::write(c.join(".sccion.toml"), "").unwrap();
+        fs::write(c.join("where.c"), "const char *where = __FILE__;\n").unwrap();
+    }
+    let hits = || {
+        let n = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let seen = n.clone();
+        get_stats(move |info| {
+            seen.store(
+                info.stats.cache_hits.all(),
+                std::sync::atomic::Ordering::SeqCst,
+            );
+        });
+        n.load(std::sync::atomic::Ordering::SeqCst)
+    };
+    let compile = |c: &Path, extra: Vec<OsString>| {
+        // Named absolutely, as CMake names sources, so `__FILE__` is the path.
+        let input = c.join("where.c").display().to_string();
+        let out = sccache_command()
+            .args(compile_cmdline(name, &exe, &input, OUTPUT, extra))
+            .current_dir(c)
+            .envs(env_vars.clone())
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{out:?}");
+        fs::read(c.join(OUTPUT)).unwrap()
+    };
+    let names = |object: &[u8], c: &Path| {
+        let path = c.display().to_string();
+        object.windows(path.len()).any(|w| w == path.as_bytes())
+    };
+
+    let before = hits();
+    let objects: Vec<Vec<u8>> = checkouts.iter().map(|c| compile(c, vec![])).collect();
+    assert_eq!(
+        hits(),
+        before,
+        "the second checkout was served the first one's object"
+    );
+    assert!(names(&objects[0], &checkouts[0]));
+    assert!(names(&objects[1], &checkouts[1]));
+    assert!(!names(&objects[1], &checkouts[0]));
+
+    // Mapped to a relative path, the objects no longer differ, and share.
+    let before = hits();
+    for c in &checkouts {
+        let map = format!("-fmacro-prefix-map={}=.", c.display());
+        let object = compile(c, vec_from!(OsString, map));
+        assert!(!names(&object, c));
+    }
+    assert_eq!(hits(), before + 1, "a prefix-mapped build did not share");
+}
+
 fn run_sccache_command_tests(compiler: Compiler, tempdir: &Path, preprocessor_cache_mode: bool) {
     if compiler.name != "clang++" {
         test_basic_compile(compiler.clone(), tempdir);
@@ -848,6 +913,11 @@ fn run_sccache_command_tests(compiler: Compiler, tempdir: &Path, preprocessor_ca
     }
     if matches!(compiler.name, "cl.exe" | "gcc" | "clang") {
         test_dependencies_name_the_serving_checkout(compiler.clone(), tempdir);
+    }
+    // Not cl.exe: with dependency keying it compiles without preprocessing,
+    // and `/d1trimfile` rather than a prefix map is what removes the path.
+    if matches!(compiler.name, "gcc" | "clang") {
+        test_file_macro_names_the_compiling_checkout(compiler.clone(), tempdir);
     }
 
     // If we are testing with clang-14 or later, we expect the -fminimize-whitespace flag to be used.

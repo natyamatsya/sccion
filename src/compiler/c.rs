@@ -34,6 +34,7 @@ use crate::mock_command::CommandCreatorSync;
 use crate::util::{
     Digest, HashToDigest, MetadataCtimeExt, TimeMacroFinder, Timestamp, decode_path, encode_path,
     hash_all_memoized, strip_basedirs, strip_basedirs_in_arg, strip_basedirs_in_dir,
+    strip_basedirs_in_output,
 };
 use async_trait::async_trait;
 use fs_err as fs;
@@ -51,7 +52,7 @@ use std::sync::{Arc, LazyLock};
 use crate::errors::*;
 
 use super::CacheControl;
-use super::preprocessor_cache::PreprocessorCacheEntry;
+use super::preprocessor_cache::{PreprocessorCacheEntry, checkout_locations};
 
 /// The basedirs in force for a compilation in `cwd`.
 ///
@@ -148,6 +149,26 @@ pub fn dependency_result_key(
         m.update(&(stripped.len() as u64).to_le_bytes());
         m.update(&stripped);
         m.update(digest.as_bytes());
+    }
+    m.finish()
+}
+
+/// `key`, for an object that embeds paths under `embedded`.
+///
+/// Two checkouts key a dependency-keyed compilation alike -- its includes are
+/// recorded relative to their roots -- but such an object differs between
+/// them, so the basedirs it names go into its key. The preprocessed key needs
+/// no such step: it keeps those paths in the text it hashes.
+pub fn embedding_result_key(key: String, embedded: &[Vec<u8>]) -> String {
+    if embedded.is_empty() {
+        return key;
+    }
+    let mut m = Digest::new();
+    m.update(key.as_bytes());
+    m.update(b"embeds=");
+    for basedir in embedded {
+        m.update(&(basedir.len() as u64).to_le_bytes());
+        m.update(basedir);
     }
     m.finish()
 }
@@ -665,9 +686,29 @@ where
             Err(NotCacheable::CompilationFailed)
         };
 
+        // Nothing here saw preprocessed text, so what the object embeds of this
+        // checkout -- `__FILE__`, a `-D` path -- is read from the object.
+        let embedded = match (&includes, self.parsed_args.outputs.get("obj")) {
+            (Ok(_), Some(obj)) if !basedirs.is_empty() => match fs::read(cwd.join(&obj.path)) {
+                Ok(object) => crate::util::basedirs_in_object(&object, basedirs),
+                // An object that is not there is not stored, so no checkout is
+                // served it.
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+                // Unread, it may embed any of them.
+                Err(e) => {
+                    debug!("[{}]: object unreadable: {e}", obj.path.display());
+                    basedirs.to_vec()
+                }
+            },
+            _ => Vec::new(),
+        };
+
         let (key, cacheable) = match &includes {
             Ok(includes) => (
-                dependency_result_key(manifest_key, includes, basedirs),
+                embedding_result_key(
+                    dependency_result_key(manifest_key, includes, basedirs),
+                    &embedded,
+                ),
                 cacheable,
             ),
             Err(why) => (uncacheable_key(manifest_key), Cacheable::No(*why)),
@@ -679,6 +720,7 @@ where
         if let (Ok(includes), Cacheable::Yes) = (includes, cacheable) {
             let mut entry = PreprocessorCacheEntry::new();
             entry.add_result(start_of_compilation, &key, includes, basedirs);
+            entry.embed_in_result(&key, &embedded);
             if let Err(e) = storage
                 .put_preprocessor_cache_entry(manifest_key, entry)
                 .await
@@ -938,11 +980,12 @@ where
                 };
                 let mut updated = false;
                 let hit = preprocessor_cache_entry
-                    .lookup_result_digest(
+                    .lookup_result_digest_from(
                         preprocessor_cache_mode_config,
                         &mut updated,
                         pool,
                         &basedirs,
+                        &checkout_locations(&cwd, &absolute_input_path),
                     )
                     .await;
 
@@ -1179,7 +1222,7 @@ where
                 .hash_working_directory
                 .then_some(cwd.as_path()),
         );
-        let key = key_params.compute();
+        let (key, embedded) = key_params.compute_with_embedded();
         // A second pass over everything the key was made of, only when this
         // compilation asked for it.
         let key_components =
@@ -1196,6 +1239,7 @@ where
                 .collect();
             files.sort_unstable_by(|a, b| a.1.cmp(&b.1));
             preprocessor_cache_entry.add_result(start_of_compilation, &key, files, &basedirs);
+            preprocessor_cache_entry.embed_in_result(&key, &embedded);
 
             if let Err(e) = storage
                 .put_preprocessor_cache_entry(&preprocessor_key, preprocessor_cache_entry)
@@ -2141,7 +2185,15 @@ impl<'a> HashKeyParams<'a> {
     ///
     /// # Note
     /// If you change any of the inputs to the hash, you should change `CACHE_VERSION`.
+    #[cfg(test)]
     pub fn compute(&self) -> String {
+        self.compute_with_embedded().0
+    }
+
+    /// [`compute`](Self::compute), and the basedirs the preprocessor output
+    /// names outside its line markers: paths the object embeds, which the key
+    /// keeps (see [`crate::util::StrippedOutput::embedded`]).
+    pub fn compute_with_embedded(&self) -> (String, Vec<Vec<u8>>) {
         let mut m = Digest::new();
         m.update(self.compiler_digest.as_bytes());
         // clang and clang++ have different behavior despite being byte-for-byte identical binaries, so
@@ -2192,10 +2244,10 @@ impl<'a> HashKeyParams<'a> {
         }
 
         // Strip basedirs from preprocessor output if configured
-        let preprocessor_output_to_hash = strip_basedirs(self.preprocessor_output, self.basedirs);
+        let stripped = strip_basedirs_in_output(self.preprocessor_output, self.basedirs);
 
-        m.update(&preprocessor_output_to_hash);
-        m.finish()
+        m.update(&stripped.text);
+        (m.finish(), stripped.embedded)
     }
 
     /// The same inputs, digested section by section.

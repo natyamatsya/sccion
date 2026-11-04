@@ -39,7 +39,7 @@ use crate::{
     config::PreprocessorCacheModeConfig,
     util::{
         DIGEST_BYTES, Digest, HashToDigest, MetadataCtimeExt, TimeMacroFinder, Timestamp,
-        encode_path, strip_basedirs, strip_basedirs_in_arg, strip_basedirs_in_dir,
+        encode_path, strip_basedirs_in_arg, strip_basedirs_in_dir,
     },
 };
 
@@ -69,7 +69,11 @@ use super::{Language, NotCacheable};
 ///   output with checkout roots taken out -- still served every result from
 ///   before. Measured: 2,023 of a build's direct-mode hits went to such
 ///   entries.
-const FORMAT_VERSION: u8 = 4;
+/// - **5**: entries record the basedirs each result's object embeds
+///   (`PreprocessorCacheEntry::embedded`), and the input path in the key is
+///   stripped as a path rather than as preprocessed text. A result from before
+///   could be one that hands a second checkout the first one's `__FILE__`.
+const FORMAT_VERSION: u8 = 5;
 const MAX_PREPROCESSOR_CACHE_ENTRIES: usize = 100;
 const MAX_PREPROCESSOR_CACHE_FILE_INFO_ENTRIES: usize = 10000;
 
@@ -348,6 +352,48 @@ pub struct PreprocessorCacheEntry {
     /// C preprocessor. Entries correspond to the included files during the
     /// preprocessing step.
     results: BTreeMap<String, Vec<IncludeEntry>>,
+    /// The basedirs a result's object embeds, by result: the ones its
+    /// preprocessed output named outside a line marker, as declared.
+    ///
+    /// The key of such a result has its checkout's path in it, but a manifest
+    /// hit never computes that key -- it hands back the one stored here, and a
+    /// second checkout would get the first one's `__FILE__`. So a result listed
+    /// here is only served where each of these basedirs is the compilation's
+    /// own; see [`checkout_locations`].
+    embedded: BTreeMap<String, Vec<Vec<u8>>>,
+}
+
+/// Where a compilation is, as [`PreprocessorCacheEntry::lookup_result_digest_from`]
+/// compares it with the basedirs a result embeds: its working directory and
+/// its input, with `/` separators and the directory with a trailing one.
+///
+/// Both, because either may be the one in the checkout: an in-tree build runs
+/// there, and an out-of-tree build compiles sources from there.
+pub fn checkout_locations(cwd: &Path, input: &Path) -> Vec<Vec<u8>> {
+    let normalized = |p: &Path| -> Vec<u8> {
+        p.to_string_lossy()
+            .bytes()
+            .map(|b| if b == b'\\' { b'/' } else { b })
+            .collect()
+    };
+    let mut dir = normalized(cwd);
+    if !dir.ends_with(b"/") {
+        dir.push(b'/');
+    }
+    vec![dir, normalized(input)]
+}
+
+/// Whether `basedir` contains one of `locations`, folding case where its
+/// volume does.
+fn contains_any(basedir: &[u8], locations: &[Vec<u8>]) -> bool {
+    let folds = crate::volume::basedir_folds_case(basedir);
+    locations.iter().any(|l| {
+        l.len() >= basedir.len()
+            && l[..basedir.len()]
+                .iter()
+                .zip(basedir)
+                .all(|(l, b)| l == b || (folds && l.eq_ignore_ascii_case(b)))
+    })
 }
 
 impl PreprocessorCacheEntry {
@@ -358,10 +404,7 @@ impl PreprocessorCacheEntry {
     /// Tries to deserialize a preprocessor cache entry from `contents`
     pub fn read(contents: &[u8]) -> Result<Self, Error> {
         if contents.is_empty() {
-            Ok(Self {
-                number_of_entries: 0,
-                results: Default::default(),
-            })
+            Ok(Self::default())
         } else if contents[0] != FORMAT_VERSION {
             Err(Error::UnknownFormat(contents[0]))
         } else {
@@ -415,6 +458,7 @@ impl PreprocessorCacheEntry {
                 MAX_PREPROCESSOR_CACHE_ENTRIES
             );
             self.results.clear();
+            self.embedded.clear();
             self.number_of_entries = 0;
         }
         let includes: Result<Vec<_>, std::io::Error> = included_files
@@ -460,6 +504,7 @@ impl PreprocessorCacheEntry {
                         new_number_of_entries, MAX_PREPROCESSOR_CACHE_FILE_INFO_ENTRIES
                     );
                     self.results.clear();
+                    self.embedded.clear();
                 }
                 match self.results.entry(result_key.to_string()) {
                     std::collections::btree_map::Entry::Occupied(mut entry) => {
@@ -480,14 +525,44 @@ impl PreprocessorCacheEntry {
         }
     }
 
+    /// Record that the object of `result_key` embeds paths under `basedirs`.
+    ///
+    /// After [`add_result`](Self::add_result) for the same key; nothing is
+    /// recorded for a result that is not there.
+    pub fn embed_in_result(&mut self, result_key: &str, basedirs: &[Vec<u8>]) {
+        if basedirs.is_empty() || !self.results.contains_key(result_key) {
+            return;
+        }
+        self.embedded
+            .insert(result_key.to_string(), basedirs.to_vec());
+    }
+
     /// Returns the digest of the first result whose expected included files
     /// are already on disk and have not changed.
+    ///
+    /// Without the compilation's locations, a result that embeds a checkout's
+    /// path is never served: there is nothing to tell whose checkout it is.
     pub async fn lookup_result_digest(
         &mut self,
         config: PreprocessorCacheModeConfig,
         updated: &mut bool,
         pool: &tokio::runtime::Handle,
         basedirs: &[Vec<u8>],
+    ) -> Option<String> {
+        self.lookup_result_digest_from(config, updated, pool, basedirs, &[])
+            .await
+    }
+
+    /// [`lookup_result_digest`](Self::lookup_result_digest) for a compilation
+    /// at `locations` (see [`checkout_locations`]), which also serves a result
+    /// embedding a checkout's path when that checkout is this one.
+    pub async fn lookup_result_digest_from(
+        &mut self,
+        config: PreprocessorCacheModeConfig,
+        updated: &mut bool,
+        pool: &tokio::runtime::Handle,
+        basedirs: &[Vec<u8>],
+        locations: &[Vec<u8>],
     ) -> Option<String> {
         // One `stat` per distinct file, not one per file *per result*.
         //
@@ -505,6 +580,12 @@ impl PreprocessorCacheEntry {
 
         // Check newest result first since it's more likely to match.
         for (digest, includes) in self.results.iter_mut().rev() {
+            if let Some(embedded) = self.embedded.get(digest)
+                && !embedded.iter().all(|b| contains_any(b, locations))
+            {
+                debug!("Result {digest} embeds another checkout's path; not served here");
+                continue;
+            }
             let result_matches = Self::result_matches(
                 digest,
                 includes,
@@ -1166,8 +1247,9 @@ pub fn preprocessor_cache_entry_hash_key(
     let mut buf = vec![];
     encode_path(&mut buf, input_file)?;
 
-    // Strip basedirs from the input file path if configured
-    let buf_to_hash = strip_basedirs(&buf, basedirs);
+    // Strip basedirs from the input file path if configured. It is a path, not
+    // preprocessed text, whose rules would keep it whole.
+    let buf_to_hash = strip_basedirs_in_arg(&buf, basedirs);
     m.update(&buf_to_hash);
     let reader = std::fs::File::open(input_file)
         .with_context(|| format!("while hashing the input file '{}'", input_file.display()))?;
@@ -1608,6 +1690,72 @@ mod test {
             miss, None,
             "the second checkout's own file has to be what decides"
         );
+    }
+
+    /// A result whose object embeds checkout A's path -- `__FILE__` -- is
+    /// keyed with that path, but a manifest hit hands back the stored key
+    /// without computing one. It must only be handed back in A.
+    #[test]
+    fn a_result_embedding_a_checkout_is_served_only_there() {
+        use std::fs;
+        use tempfile::TempDir;
+
+        let runtime = rt();
+        let (a, b) = (TempDir::new().unwrap(), TempDir::new().unwrap());
+        let basedirs_of = |d: &TempDir| {
+            vec![crate::config::normalize_basedir(d.path().to_str().unwrap()).unwrap()]
+        };
+        for d in [&a, &b] {
+            fs::create_dir_all(d.path().join("src")).unwrap();
+            fs::write(d.path().join("src/h.h"), b"shared header").unwrap();
+        }
+        let config = PreprocessorCacheModeConfig::activated();
+        let digest = match digest_one_file(&a.path().join("src/h.h"), config.ignore_time_macros) {
+            Some(FileContents::Plain(d)) | Some(FileContents::WithTimeMacros(d, _)) => d,
+            None => panic!("could not digest the header"),
+        };
+
+        let mut entry = PreprocessorCacheEntry::new();
+        entry.add_result(
+            SystemTime::now(),
+            "embeds-a",
+            [(digest, a.path().join("src/h.h"))],
+            &basedirs_of(&a),
+        );
+        entry.embed_in_result("embeds-a", &basedirs_of(&a));
+        let serialized = {
+            let mut buf = Vec::new();
+            entry.serialize_to(&mut buf).unwrap();
+            buf
+        };
+        let lookup = |d: &TempDir, locations: &[Vec<u8>]| {
+            let mut updated = false;
+            runtime.block_on(
+                PreprocessorCacheEntry::read(&serialized)
+                    .unwrap()
+                    .lookup_result_digest_from(
+                        config,
+                        &mut updated,
+                        runtime.handle(),
+                        &basedirs_of(d),
+                        locations,
+                    ),
+            )
+        };
+        let in_tree = |d: &TempDir| checkout_locations(d.path(), &d.path().join("src/main.c"));
+
+        assert_eq!(lookup(&a, &in_tree(&a)).as_deref(), Some("embeds-a"));
+        assert_eq!(
+            lookup(&b, &in_tree(&b)),
+            None,
+            "B compiles its own path there"
+        );
+        // An out-of-tree build of A still compiles A's sources.
+        let elsewhere = TempDir::new().unwrap();
+        let out_of_tree = checkout_locations(elsewhere.path(), &a.path().join("src/main.c"));
+        assert_eq!(lookup(&a, &out_of_tree).as_deref(), Some("embeds-a"));
+        // And with nothing to say where the compilation is, it is not served.
+        assert_eq!(lookup(&a, &[]), None);
     }
 
     /// The manifest key names the input file absolutely, which pins the

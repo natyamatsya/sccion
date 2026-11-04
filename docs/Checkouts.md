@@ -65,6 +65,37 @@ compilation's directory in the key so two directories cannot share an entry. See
 [Local.md](Local.md#preprocessor-cache-mode). Declaring a checkout root asserts
 that the trade above has been made.
 
+### Paths the program itself contains
+
+That trade covers what a debugger reads. A path the *code* names is another
+matter: it becomes part of the program. `__FILE__` -- and `assert`,
+`std::source_location` and the logging macros built on it -- expands to the
+source's path, and a `-D` value naming a directory under the checkout is
+compiled in the same way. Shared between checkouts, such an object makes the
+second checkout's program use the first one's files: a test that finds its
+fixtures relative to `__FILE__` reads them from the other tree, or from one
+that has since been deleted.
+
+So sccion does not share these objects, whatever the build does:
+
+- In preprocessed text, only the file names of line markers (`# 12 "..."`,
+  `#line 12 "..."`) are taken relative to the root. A path anywhere else stays
+  in the key as it is, so each checkout keys its own.
+- A compilation keyed on its reported dependencies has no text to read, so the
+  object is read instead: a root found in its code, data or string sections --
+  not its debug information or symbol table -- goes into its key.
+- A manifest result for such an object is only handed back to a compilation in
+  that checkout: one whose working directory or source is under that root.
+
+That costs the hit and nothing else. To share these objects, take the path out
+of them: `-fmacro-prefix-map=<checkout root>=.` (or `-ffile-prefix-map`, which
+includes it) for GCC and Clang, `/d1trimfile:<checkout root>` for MSVC.
+`__FILE__` then reads relative to the root, so code that resolves it against
+the filesystem has to know where the root is.
+
+Not covered: a distributed compilation preprocessed with `-frewrite-includes`,
+whose macros are only expanded by the remote compile.
+
 ## What a hit replays
 
 A hit hands the build more than the object: what the compiler printed, and the
